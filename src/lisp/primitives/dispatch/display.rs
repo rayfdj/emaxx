@@ -3671,7 +3671,7 @@ fn apply_window_adjustment(interp: &mut Interpreter, w: WindowRef) {
     }
 }
 
-/// window.c:set_window_buffer: WINDOW_ID shows BUFFER_ID.  Its start,
+/// window.c:set_window_buffer: WINDOW shows BUFFER_ID.  Its start,
 /// points and hscroll are the buffer's unless KEEP_MARGINS_P and the
 /// window already shows that buffer; without KEEP_MARGINS_P its margins
 /// are the buffer's (a same-buffer refresh included); RUN_HOOKS_P runs
@@ -4487,7 +4487,7 @@ fn window_line_height(interp: &Interpreter, buffer_id: u64, format_variable: &st
     i64::from(format.is_some_and(|format| !format.is_nil()))
 }
 
-/// The lines of WINDOW_ID showing BUFFER_ID that are not its body:
+/// The lines of WINDOW showing BUFFER_ID that are not its body:
 /// window.c's window_wants_mode_line, window_wants_header_line and
 /// window_wants_tab_line, each a line of a leaf (WINDOW_LEAF_P, contents a
 /// buffer: none for a deleted window, BUFFER_ID None) that is no

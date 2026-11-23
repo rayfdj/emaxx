@@ -37,6 +37,8 @@ pub(crate) use buffer_edit::{
     window_text_geometry,
 };
 #[cfg(test)]
+pub(crate) use display::WindowList;
+#[cfg(test)]
 pub(crate) use display::echo_area_message_with_spans;
 #[cfg(test)]
 pub(crate) use display::render_mode_line_glass;

@@ -268,9 +268,10 @@ pub(crate) fn slot_marker_position(value: Option<&Value>) -> Option<usize> {
     }
 }
 
-/// A window object: the one handle a window's state is read and written
-/// through, whatever holds it (a value, a frame's field, an id in the
-/// registry).  The state behind it is the window object's own
+/// A window object, window.c's `struct window *': the one handle a
+/// window's state is read and written through, and what the code that
+/// works on a window holds and passes (a value, a frame's field, the
+/// selected window).  The state behind it is the window object's own
 /// (alloc/vectors/windows.rs): window.h's contents, its use_time and
 /// sequence_number, the integers of its geometry and of its scrolling
 /// and redisplay, its bits, and the Lisp words laid out by the

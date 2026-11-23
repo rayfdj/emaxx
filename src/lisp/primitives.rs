@@ -302,6 +302,8 @@ pub(crate) fn arith_error() -> LispError {
 pub(crate) use dispatch::DirectPrimitive;
 pub(crate) use dispatch::FnvBuildHasher;
 pub(crate) use dispatch::NameFacts;
+#[cfg(test)]
+pub(crate) use dispatch::WindowList;
 pub(crate) use dispatch::check_point_in_composition;
 pub(crate) use dispatch::compute_name_facts;
 pub(crate) use dispatch::echo_area_message;

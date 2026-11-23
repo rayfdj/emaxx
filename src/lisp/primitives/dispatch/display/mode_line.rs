@@ -1811,7 +1811,7 @@ thread_local! {
 }
 
 /// display_mode_lines' start: the column and line number displayed are
-/// set again while WINDOW_ID's formats are processed.
+/// set again while WINDOW's formats are processed.
 pub(crate) fn begin_display_mode_lines(window: WindowRef) {
     LINE_NUMBER_DISPLAYED.set(false);
     crate::lisp::primitives::set_window_column_number_displayed(window, None);

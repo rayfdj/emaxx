@@ -2986,7 +2986,7 @@ pub(crate) fn visual_vertical_motion_from(
     result
 }
 
-/// Fvertical_motion once WINDOW_ID shows the current buffer.
+/// Fvertical_motion once WINDOW shows the current buffer.
 fn vertical_motion_in_window(
     interp: &mut Interpreter,
     env: &mut Env,

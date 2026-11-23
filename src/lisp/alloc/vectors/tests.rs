@@ -966,3 +966,75 @@ fn the_interpreters_window_holders_keep_their_windows() {
     }
     assert_eq!(interpreter.record_ids_by_type("window"), windows_before);
 }
+
+#[test]
+fn a_list_of_windows_keeps_them_for_the_collector() {
+    // A walk's windows are held by the list while its user runs Lisp
+    // (window.c's window_list is a Lisp list on the C stack): a window
+    // of the list that nothing else names survives a collection, a
+    // deleted window, and goes once the list does.
+    use crate::lisp::primitives::{WindowList, WindowRef};
+    const HIDE: usize = 0x5555_5555_5555_5555;
+
+    #[inline(never)]
+    fn listed(interpreter: &mut crate::lisp::eval::Interpreter) -> (WindowList, [(usize, u64); 3]) {
+        let mut list = WindowList::new();
+        let hidden = std::array::from_fn(|_| {
+            let window = interpreter.make_window(Vec::new());
+            list.push(window);
+            let Kind::Window(object) = window.value().kind() else {
+                panic!("a window is a window object")
+            };
+            (object.identity() ^ HIDE, window.id())
+        });
+        (list, hidden)
+    }
+    #[inline(never)]
+    fn is_live(hidden: usize) -> bool {
+        let address = hidden ^ HIDE;
+        matches!(unsafe { crate::lisp::alloc::mem_find(address) },
+            Some(crate::lisp::alloc::Found::Vectorlike(header))
+                if header as usize == address
+                    && unsafe { header_tag(header) } == VectorTag::Window)
+    }
+    #[inline(never)]
+    fn check(
+        interpreter: &crate::lisp::eval::Interpreter,
+        list: &[WindowRef],
+        hidden: &[(usize, u64)],
+    ) {
+        assert_eq!(list.len(), hidden.len());
+        for (window, (address, id)) in list.iter().zip(hidden) {
+            assert!(is_live(*address));
+            // A window nothing shows: deleted, and still the registry's.
+            assert!(!window.is_valid());
+            assert_eq!(window.id(), *id);
+            assert_eq!(interpreter.window_ref(*id), Some(*window));
+        }
+    }
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let environment = Env::new();
+    let windows_before = interpreter.record_ids_by_type("window");
+    let (mut list, hidden) = listed(&mut interpreter);
+    for _ in 0..2 {
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+        check(&interpreter, &list, &hidden);
+    }
+    // A window taken off the list is collected; the others stay.
+    #[inline(never)]
+    fn take_second(list: &mut WindowList) {
+        list.remove(1);
+    }
+    take_second(&mut list);
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+    assert!(!is_live(hidden[1].0), "a window off the list retained");
+    assert!(interpreter.window_ref(hidden[1].1).is_none());
+    check(&interpreter, &list, &[hidden[0], hidden[2]]);
+    drop(list);
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+    assert!(hidden.iter().all(|(address, _)| !is_live(*address)));
+    assert_eq!(interpreter.record_ids_by_type("window"), windows_before);
+}

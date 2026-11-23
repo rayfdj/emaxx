@@ -3077,7 +3077,7 @@ pub(crate) struct ModeLineMeasure {
 }
 
 impl ModeLineMeasure {
-    /// The measures of WINDOW_ID's rows, which show its buffer.
+    /// The measures of WINDOW's rows, which show its buffer.
     #[cfg(test)]
     pub(crate) fn for_window(
         interpreter: &Interpreter,
@@ -9966,7 +9966,7 @@ fn run_pre_redisplay_function(interpreter: &mut Interpreter, env: &mut Env, wind
     dsafe_call(interpreter, env, true, function, &[windows]);
 }
 
-/// redisplay_window's force_start block, point moved into WINDOW_ID: the
+/// redisplay_window's force_start block, point moved into WINDOW: the
 /// window's and its buffer's redisplay flags cleared (all but the cursor
 /// is done, and propagate_buffer_redisplay passed the buffer's on), then
 /// `pre-redisplay-function' called with the window alone so that it can
@@ -11355,6 +11355,52 @@ fn call(
 mod tests {
     use super::*;
     use crate::test_support::initialized_upstream_interactive_interpreter as initialized_interactive_runtime;
+
+    #[test]
+    fn views_and_the_last_layout_hold_their_windows() {
+        // A window's display anchors live beside the window in the
+        // frontend's table, and the last layout names its windows: both
+        // keep a window nothing else names until redisplay drops its
+        // entry, so that a pointer in them never names another window.
+        #[inline(never)]
+        fn shown(interpreter: &mut Interpreter, state: &mut TtyState) -> [u64; 2] {
+            let viewed = interpreter.make_window(Vec::new());
+            state.views.entry(viewed).top_line = 7;
+            let laid_out = interpreter.make_window(Vec::new());
+            state.last_layout.push((laid_out, 0, 1, 80, 22));
+            [viewed.id(), laid_out.id()]
+        }
+        #[inline(never)]
+        fn check(interpreter: &Interpreter, state: &TtyState, ids: [u64; 2]) {
+            let viewed = interpreter.window_ref(ids[0]).expect("the viewed window");
+            assert_eq!(state.views.get(viewed).map(|view| view.top_line), Some(7));
+            let laid_out = interpreter.window_ref(ids[1]).expect("the window laid out");
+            assert_eq!(state.last_layout[0], (laid_out, 0, 1, 80, 22));
+        }
+        let mut interpreter = Interpreter::new();
+        let environment = Env::new();
+        let mut state = TtyState::new();
+        let ids = shown(&mut interpreter, &mut state);
+        for _ in 0..2 {
+            crate::lisp::alloc::clobber_stack();
+            crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+            check(&interpreter, &state, ids);
+        }
+        // redisplay's `retain' of the views it still shows, and a new
+        // layout in place of the last.
+        state.views.retain(|_| false);
+        state.last_layout = crate::lisp::alloc::RootedVec::new();
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+        assert!(ids.iter().all(|id| interpreter.window_ref(*id).is_none()));
+        // A view asked for is made, and found again by its window.
+        let window = interpreter.selected_window_ref();
+        assert!(state.views.get(window).is_none());
+        state.views.entry(window).top_seg = 3;
+        assert_eq!(state.views.entry(window).top_seg, 3);
+        state.views.clear();
+        assert!(state.views.get(window).is_none());
+    }
 
     /// plan_window_text for a window with no redisplay flags set, as a
     /// window freshly shown with START and POINT.
