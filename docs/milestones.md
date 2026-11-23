@@ -43,7 +43,7 @@ unfinished work pushed as a packaged draft (wip/r367).
 
 This document.
 
-## M2. Structure and performance (30 items; 4 done)
+## M2. Structure and performance (30 items; 5 done)
 
 Exit test: the remaining representation, collector and ownership engineering
 is done, the recorded per-call excesses are removed where GNU does less, and
@@ -113,6 +113,7 @@ a diagnostic run of the locked suite on the profile-guided build.
 - D13: looking-at ~250 instructions over GNU around the match (rounds 174-176,
   296)
 - D14: make-symbol ~690 instructions (round 173)
+  **Done** (round 379: 1,280 against 1,965 a call).
 - D17: Rust-to-byte-code call ~120 instructions over GNU (rounds 167, 297).
   In progress (round 370: 414 against 289 a `mapc' callback, was 458).
 - D22: Building ucs-names costs 1,024M vs 818M instructions (round 162)

@@ -148,6 +148,12 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   before); the lexical one 360.1 against 314.9, and the suite's
   byte-code-calls loop 447.1 against 467.8 (B4's bound is a timing and
   is measured with the suite).
+- **Done: D14** (round 379).  `make-symbol' costs 1,280 instructions
+  a call of the probe's loop against GNU's 1,965 (2,262 before); an
+  intern and unintern 4,422 against 2,552.  The rest of the symbols
+  plan (docs/plans/d14-symbols.md: one name for the host text, identity
+  carried as text and the comparisons with literals made symbols and
+  keys, the host text deleted) belongs to A3.6 and is not done.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -19995,6 +20001,73 @@ setup_process_coding_systems's check now refuses). A 13-form
   read as nil before the first frame's windows exist, and an optional
   argument's default moved with its line), and 4,314 changed lines with
   two tests and 205 assertions added.
+- **Round 379: `make-symbol' makes no host text, and a symbol's
+  interned state is its field (M2, D14 done; A3.6 not closed).**  The
+  first three stages of the symbols plan (docs/plans/d14-symbols.md).
+  Every Emaxx symbol carries a host text beside its Lisp name: for a
+  symbol of the initial obarray its name, for an uninterned or private
+  one the name with a marker and a serial, which code compares where C
+  compares objects and from which it read whether the symbol was
+  interned.  Making one cost two or three heap allocations and the
+  formatting of the marked text: `make-symbol' 2,257 instructions a call
+  of the probe's loop against GNU's 1,965.  **S0** records GNU 30.2's
+  answers for 99 forms where an uninterned or private symbol shares its
+  name with a symbol C names (nil, t, `&rest', `lambda', `interactive',
+  `:test', `invisible', `error' and others, interpreted and
+  byte-compiled), as the fixture every later stage keeps.  **S1**: the
+  marked text of a symbol `make-symbol' or the reader's `#:' makes is
+  pending until some code asks for it, and a comparison with a literal
+  answers false for a pending text without building it (a pending text
+  has never been seen and the marked text equals no literal).  **S2**:
+  GNU's `interned' (uninterned, interned, interned in the initial
+  obarray) is the symbol's field, read where the marker was (`#:' in
+  printing, `keywordp', the dumper's flags and the loader's record, the
+  standard obarray's test); a private obarray's symbols get the pending
+  text too; Funintern no longer scans the 4,096 slots of the address
+  cache of symbols, it marks the cache and the next collection empties
+  the slots of uninterned symbols before the sweep, and a hit checks the
+  field.  **After**: `make-symbol' 1,280 (GNU 1,965), an intern and
+  unintern 4,422 (24,900 before; GNU 2,552), an intern into a private
+  obarray 3,662 (5,134; GNU 2,421), reading `#:x' 3,412 (4,217; GNU
+  4,250), all with their collections; without collections (the
+  probe at a hundredth of its length) `make-symbol' is 406.5 against
+  GNU's 406.6.  The call and interpreter guards move by three or less
+  (`lex-rec' 357.1, `dyn-rec' 631.0, `mapc-bc' 415.7, the interpreted
+  loop of `ignore' 2,753.2, the window accessors 318.4), the code's
+  layout.  **What Lisp sees
+  change**: a gensym whose name string was changed by `aset' before any
+  code asked for its text is now known by the new name where code reads
+  the host text (`json-serialize' writes it, as GNU does), and `#:'
+  read with an escaped U+001F names the symbol as GNU names it; a code
+  path that builds the text freezes the name it has then (`set', a
+  dynamic binding, `defvar', `make-local-variable', `add-hook',
+  `run-hooks', `default-boundp', `json-serialize'), so until the plan's
+  stage that reads names from the Lisp string such answers depend on
+  what ran first; and `test-completion' of a private obarray's symbol
+  renamed by `aset' answers t for the new name and nil for the old,
+  where it answered the reverse and GNU answers nil for both.
+  The independent review (the one question: does the round cheat or
+  break something) read the pending text's install and free and every
+  converted site of the marker, ran an unintern, collect and intern
+  loop 120 times over symbols C names with Rust-side lookups and a
+  3,000-step stress of gensyms, private obarrays, `obarray-clear' and
+  collections, the plan's fixture with the texts built first and
+  pending, and a dump and load of pending and built, uninterned,
+  private and re-interned symbols: GNU, the build before and this one
+  alike but for the answers above.  It found no cheat and nothing
+  broken; its note that the built-or-pending reader had become a
+  function only the tests call, hidden from the dead-code lint by
+  types.rs's module-wide allowance, is answered by the sixth commit,
+  which compiles it for the tests only.
+  Validation of the six commits (gate profile, one test thread a
+  process): the grouped gate 3,566 passed, 0 failed, 2 ignored (ten
+  library tests more); cli 30, cli_parity 175, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding; it lists one
+  assertion changed (the symbol cell's layout assert of byte 57, which
+  holds the image bit and now the interned bits, renamed with the field)
+  and 1,391 changed lines with ten tests and 56 assertions added.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23332,6 +23405,19 @@ ert-tests as a whole 26,307 ms against 27,211.
   targets (218) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 379, its review and the plans
+  made beside it), outside the round and in no milestone.**  One line
+  each: a buffer killed before `dump-emacs-portable' answers t to
+  `buffer-live-p' after the load, where GNU answers nil (its name nil in
+  both; the buffers plan's first stage tests it); hand-made byte code
+  whose stack underflows (`make-byte-code' with the bytes #o301 #o030
+  #o001 #o207) panics in the unverified loop where GNU's segfaults; the
+  compatibility harness runs Emaxx with EMAXX_TRACE_LOAD_ERRORS=1, which
+  turns off the byte-code loop's plain subr and native call paths, so
+  the frozen run's timings do not exercise them; `defvar-1' and
+  `internal--define-uninitialized-variable' called from byte code that
+  C called under an interpreted `let' of the same name signal in Emaxx
+  and succeed in GNU (the plan of D17 removes the cause).
 - **Found after the scope lock (round 378 and its review), outside the
   round.**  One line each: the census sizes of a process (42 against
   GNU's 45), a window configuration (13 against 14), a thread (63
