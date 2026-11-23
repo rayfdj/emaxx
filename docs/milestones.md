@@ -94,8 +94,12 @@ a diagnostic run of the locked suite on the profile-guided build.
 - D2: tramp-tests body gap: pty read timing, 2.3x string consing (round 327)
 - D3: Windows as generic records rather than GNU's struct window pseudovector
   (round 321). In progress (round 369: every access through one handle;
-  round 371: the window is its own PVEC_WINDOW object with its slots in it).
-- D4: Native code's calls into subrs cost ~65 vs 14 instructions (round 321)
+  round 371: the window is its own PVEC_WINDOW object with its slots in it;
+  round 372: GNU's contents word and bits, its own number, use time and cursor
+  bit; round 373: geometry and redisplay state as its own integers and bits).
+- D4: Native code's calls into subrs cost ~65 vs 14 instructions (round 321).
+  In progress (round 374: sixteen type predicates are their own entries, 78
+  against 73 for the probe; the general entry is unchanged).
 - D9: Dynamic-binding byte-code call from byte code ~80 instructions over GNU
   (rounds 289, 295)
 - D13: looking-at ~250 instructions over GNU around the match (rounds 174-176,

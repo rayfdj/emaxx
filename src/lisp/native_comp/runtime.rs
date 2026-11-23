@@ -13,7 +13,7 @@ use super::abi::{
     THREAD_HANDLERLIST_OFFSET, THREAD_STATE_SIZE,
 };
 use crate::lisp::eval::UnwindAction;
-use crate::lisp::primitives::wrong_type_argument;
+use crate::lisp::primitives::{predicates, wrong_type_argument};
 #[cfg(test)]
 use crate::lisp::types::SharedCons;
 use crate::lisp::types::{ConsCell, Kind, LispErrorKind, SymbolName, Value};
@@ -3349,6 +3349,97 @@ pub(super) extern "C" fn direct_native_identity(value: NativeWord) -> NativeWord
 pub(super) extern "C" fn direct_native_stringp(value: NativeWord) -> NativeWord {
     // data.c:Fstringp / lisp.h:STRINGP never reads the pointed-to payload.
     native_boolean(value & TAG_MASK == TAG_STRING)
+}
+
+/// A type predicate of data.c asked of a native caller's argument word, as
+/// its DEFUN is called through the freloc table: the word is the value, and
+/// PREDICATE the test the dispatch arm makes of it.  The predicates below
+/// read the object alone and neither signal nor allocate, so their entries
+/// take no active call and leave the handlers as native code left them.
+#[inline(always)]
+fn native_type_predicate(predicate: impl Fn(&Value) -> bool, word: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    native_boolean(predicate(&unsafe { Value::from_word(word) }))
+}
+
+/// data.c:Fsymbol_with_pos_p.
+pub(super) extern "C" fn direct_native_symbol_with_pos_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::symbol_with_pos_p, value)
+}
+
+/// data.c:Fvectorp.
+pub(super) extern "C" fn direct_native_vectorp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::vectorp, value)
+}
+
+/// data.c:Fbufferp.
+pub(super) extern "C" fn direct_native_bufferp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::bufferp, value)
+}
+
+/// data.c:Fmarkerp.
+pub(super) extern "C" fn direct_native_markerp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::markerp, value)
+}
+
+/// data.c:Fsubrp.
+pub(super) extern "C" fn direct_native_subrp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::subrp, value)
+}
+
+/// data.c:Fclosurep.
+pub(super) extern "C" fn direct_native_closurep(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::closurep, value)
+}
+
+/// data.c:Fbyte_code_function_p.
+pub(super) extern "C" fn direct_native_byte_code_function_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::byte_code_function_p, value)
+}
+
+/// data.c:Finterpreted_function_p.
+pub(super) extern "C" fn direct_native_interpreted_function_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::interpreted_function_p, value)
+}
+
+/// data.c:Ffloatp.
+pub(super) extern "C" fn direct_native_floatp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::floatp, value)
+}
+
+/// data.c:Fintegerp.
+pub(super) extern "C" fn direct_native_integerp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::integerp, value)
+}
+
+/// data.c:Fnumberp.
+pub(super) extern "C" fn direct_native_numberp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::numberp, value)
+}
+
+/// data.c:Fnatnump.
+pub(super) extern "C" fn direct_native_natnump(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::natnump, value)
+}
+
+/// data.c:Finteger_or_marker_p.
+pub(super) extern "C" fn direct_native_integer_or_marker_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::integer_or_marker_p, value)
+}
+
+/// data.c:Fnumber_or_marker_p.
+pub(super) extern "C" fn direct_native_number_or_marker_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::number_or_marker_p, value)
+}
+
+/// data.c:Fchar_or_string_p.
+pub(super) extern "C" fn direct_native_char_or_string_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::char_or_string_p, value)
+}
+
+/// data.c:Farrayp.
+pub(super) extern "C" fn direct_native_arrayp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::arrayp, value)
 }
 
 pub(super) extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWord {
@@ -7146,6 +7237,328 @@ mod tests {
         }
     }
 
+    /// Whether two conditions are one signal: lists of the same objects,
+    /// the datum a subr complains of among them.
+    fn same_condition(left: Value, right: Value) -> bool {
+        match (left.to_vec(), right.to_vec()) {
+            (Ok(left), Ok(right)) => {
+                left.len() == right.len()
+                    && left
+                        .iter()
+                        .zip(&right)
+                        .all(|(left, right)| left.eq_value(*right))
+            }
+            _ => left.eq_value(right),
+        }
+    }
+
+    /// NAME's primitive and its link-table entry, each given ARGUMENTS:
+    /// the same word from both, or the same condition signalled by both.
+    /// Their answer, a signal as its condition.
+    fn assert_entry_agrees(
+        interpreter: &mut Interpreter,
+        runtime: &mut NativeRuntime,
+        environment: &mut Env,
+        name: &str,
+        arguments: &[Value],
+    ) -> Result<Value, Value> {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == name)
+            .unwrap_or_else(|| panic!("{name} belongs to the native ABI"));
+        let ordinary = crate::lisp::primitives::call(interpreter, name, arguments, environment);
+        // The installed link-table target, given the words themselves as
+        // native code's freloc call gives them.
+        let native = runtime.invoke(
+            interpreter,
+            environment,
+            native_subr_address(index).cast_const(),
+            NativeCallingConvention::Fixed,
+            arguments,
+        );
+        match (ordinary, native) {
+            (Ok(ordinary), Ok(native)) => {
+                assert_eq!(
+                    native.word(),
+                    ordinary.word(),
+                    "{name} of {arguments:?}: its entry answers {native:?}, the primitive {ordinary:?}",
+                );
+                Ok(ordinary)
+            }
+            (Err(ordinary), Err(native)) => {
+                let ordinary = crate::lisp::eval::error_condition_value(&ordinary);
+                let native = crate::lisp::eval::error_condition_value(&native);
+                assert!(
+                    same_condition(ordinary, native),
+                    "{name} of {arguments:?}: its entry signals {native:?}, the primitive {ordinary:?}",
+                );
+                Err(ordinary)
+            }
+            (ordinary, native) => panic!(
+                "{name} of {arguments:?}: the primitive answers {ordinary:?}, its entry {native:?}"
+            ),
+        }
+    }
+
+    /// The place of VALUE's kind in `Kind', by a match the compiler keeps
+    /// complete: a kind added there needs a sample below.
+    fn kind_ordinal(value: Value) -> usize {
+        match value.kind() {
+            Kind::Nil => 0,
+            Kind::T => 1,
+            Kind::Integer(_) => 2,
+            Kind::BigInteger(_) => 3,
+            Kind::Float(_) => 4,
+            Kind::StringObject(_) => 5,
+            Kind::Symbol(_) => 6,
+            Kind::SymbolWithPos(_) => 7,
+            Kind::Cons(_) => 8,
+            Kind::Vector(_) => 9,
+            Kind::BuiltinFunc(_) => 10,
+            Kind::NativeFunction(_) => 11,
+            Kind::NativeCompUnit(_) => 12,
+            Kind::Closure(_) => 13,
+            Kind::Buffer(_) => 14,
+            Kind::Marker(_) => 15,
+            Kind::Overlay(_) => 16,
+            Kind::CharTable(_) => 17,
+            Kind::SubCharTable(_) => 18,
+            Kind::HashTable(_) => 19,
+            Kind::Frame(_) => 20,
+            Kind::Terminal(_) => 21,
+            Kind::Window(_) => 22,
+            Kind::Record(_) => 23,
+            Kind::LispRecord(_) => 24,
+            Kind::BoolVector(_) => 25,
+            Kind::Finalizer(_) => 26,
+            Kind::ReaderForm(_) => 27,
+            Kind::Unbound => UNBOUND_ORDINAL,
+        }
+    }
+
+    /// The unbound marker's place, after every kind of object: it is the
+    /// one kind with no sample, being no object a subr is given.
+    const UNBOUND_ORDINAL: usize = 28;
+
+    /// The samples as `sample_objects' gathers them.
+    struct Samples<'a> {
+        interpreter: &'a mut Interpreter,
+        environment: &'a mut Env,
+        objects: crate::lisp::alloc::RootedVec<(&'static str, Value)>,
+    }
+
+    impl Samples<'_> {
+        /// VALUE as the sample NAME.
+        fn add(&mut self, name: &'static str, value: Value) -> Value {
+            self.objects.push((name, value));
+            value
+        }
+
+        /// What the primitive CONSTRUCTOR answers of ARGUMENTS.
+        fn primitive(&mut self, constructor: &str, arguments: &[Value]) -> Value {
+            crate::lisp::primitives::call(
+                self.interpreter,
+                constructor,
+                arguments,
+                self.environment,
+            )
+            .unwrap_or_else(|error| panic!("{constructor} for a sample: {error:?}"))
+        }
+
+        /// That answer as the sample NAME.
+        fn make(&mut self, name: &'static str, constructor: &str, arguments: &[Value]) -> Value {
+            let value = self.primitive(constructor, arguments);
+            self.add(name, value)
+        }
+    }
+
+    /// One live value of every kind of object, and within a kind the cases
+    /// a type predicate tells apart, each with a name for a failed
+    /// assertion.  The collector scans the vector.
+    fn sample_objects(
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+    ) -> crate::lisp::alloc::RootedVec<(&'static str, Value)> {
+        use crate::lisp::alloc::vectors::native_functions::NativeFunctionSpec;
+        use crate::lisp::types::{
+            CharTableRef, NativeFunctionRef, NativeUnitRef, ReaderForm, ReaderFormRef,
+        };
+        extern "C" fn sample_subr(value: NativeWord) -> NativeWord {
+            value
+        }
+        let string = |text: &str, multibyte| {
+            crate::lisp::primitives::make_shared_string_value_with_multibyte(
+                text.to_owned(),
+                None,
+                multibyte,
+            )
+        };
+        let fixnum = Value::Integer;
+        let mut s = Samples {
+            interpreter,
+            environment,
+            objects: crate::lisp::alloc::RootedVec::new(),
+        };
+
+        s.add("nil", Value::Nil);
+        s.add("t", Value::T);
+        s.add("0", fixnum(0));
+        s.add("-1", fixnum(-1));
+        s.add("most-positive-fixnum", fixnum(MOST_POSITIVE_FIXNUM));
+        s.add("most-negative-fixnum", fixnum(-MOST_POSITIVE_FIXNUM - 1));
+        s.add("the last character", fixnum(0x3F_FFFF));
+        s.add("the fixnum after the last character", fixnum(0x40_0000));
+        s.add("a positive bignum", Value::Integer(i64::MAX));
+        s.add("a negative bignum", Value::Integer(i64::MIN));
+        s.add("a float", Value::float(1.5));
+        s.add("a NaN", Value::float(f64::NAN));
+        s.add("a unibyte string", string("unibyte", false));
+        s.add("a multibyte string", string("multibyte \u{e9}", true));
+        s.add("an empty string", string("", false));
+
+        let function = s.primitive("symbol-function", &[Value::symbol("car")]);
+        let symbol = s.add("an interned symbol", Value::symbol("word-level-sample"));
+        let defined = s.add(
+            "an interned symbol with a function",
+            Value::symbol("word-level-sample-function"),
+        );
+        s.primitive("fset", &[defined, function]);
+        let keyword = s.add("a keyword", Value::symbol(":word-level-sample"));
+        let name = string(":k", false);
+        s.make(
+            "an uninterned symbol named as a keyword",
+            "make-symbol",
+            &[name],
+        );
+        let obarray = s.make("an obarray", "obarray-make", &[]);
+        let name = string("word-level-private", false);
+        s.make("a symbol of a private obarray", "intern", &[name, obarray]);
+        s.make(
+            "a symbol with position",
+            "position-symbol",
+            &[defined, fixnum(7)],
+        );
+        s.make(
+            "a keyword with position",
+            "position-symbol",
+            &[keyword, fixnum(9)],
+        );
+
+        s.add("a list", Value::list([symbol, fixnum(2)]));
+        s.add("a dotted pair", Value::cons(symbol, fixnum(2)));
+        s.add("an empty vector", Value::vector([]));
+        s.add("a vector", Value::vector([symbol, fixnum(2)]));
+        s.make("a record", "record", &[symbol, Value::T]);
+        s.make(
+            "a bool-vector",
+            "make-bool-vector",
+            &[fixnum(2), Value::Nil],
+        );
+        s.make("a char-table", "make-char-table", &[Value::Nil, Value::Nil]);
+        let table = CharTableRef::new(symbol, Value::Nil, 0);
+        table.set(65, fixnum(19));
+        s.add("a char-table with a sub-table", Value::CharTable(table));
+        s.add("a sub-char-table", table.slot(3));
+        s.make("the standard syntax table", "standard-syntax-table", &[]);
+        s.make("a category table", "make-category-table", &[]);
+        s.make("the standard case table", "standard-case-table", &[]);
+        s.make("a hash table", "make-hash-table", &[]);
+
+        let name = string("word-level-live", false);
+        s.make("a live buffer", "get-buffer-create", &[name]);
+        let name = string("word-level-killed", false);
+        let killed = s.make("a killed buffer", "get-buffer-create", &[name]);
+        s.primitive("kill-buffer", &[killed]);
+        s.make("a marker in a buffer", "point-marker", &[]);
+        s.make("a marker in no buffer", "make-marker", &[]);
+        s.make("an overlay", "make-overlay", &[fixnum(1), fixnum(1)]);
+        let window = s.make("a live window", "selected-window", &[]);
+        s.make(
+            "a window configuration",
+            "current-window-configuration",
+            &[],
+        );
+        // window.c's split-window-internal after `split-window's staging:
+        // the old window's new size is what the split leaves it.
+        let height = s
+            .primitive("window-pixel-height", &[window])
+            .as_integer()
+            .expect("the selected window's height");
+        s.primitive(
+            "set-window-new-pixel",
+            &[window, fixnum(height - height / 2)],
+        );
+        let deleted = s.make(
+            "a deleted window",
+            "split-window-internal",
+            &[window, fixnum(height / 2), Value::Nil, Value::float(0.5)],
+        );
+        // And delete-window-internal after `delete-window's: the sibling
+        // and the parent staged at the whole height.
+        let parent = s.primitive("window-parent", &[window]);
+        s.primitive("set-window-new-pixel", &[parent, fixnum(height)]);
+        s.primitive("set-window-new-pixel", &[window, fixnum(height)]);
+        s.primitive("delete-window-internal", &[deleted]);
+        s.make("a frame", "selected-frame", &[]);
+        s.make("a terminal", "frame-terminal", &[]);
+
+        s.add("a builtin subr", function);
+        s.make("a special form", "symbol-function", &[Value::symbol("if")]);
+        let c_name = |name: &str| std::ffi::CString::new(name).expect("a name without NUL");
+        s.add(
+            "an allocated subr",
+            Value::NativeFunction(NativeFunctionRef::new(NativeFunctionSpec {
+                target: sample_subr as *const c_void,
+                min_args: 1,
+                max_args: 1,
+                name: c_name("word-level-sample-subr"),
+                c_name: c_name("Fword_level_sample_subr_0"),
+                doc: 0,
+                fields: [Value::Nil; 5],
+            })),
+        );
+        s.add(
+            "a native compilation unit",
+            Value::NativeCompUnit(NativeUnitRef::new()),
+        );
+        let code = string("\u{c0}\u{87}", false);
+        let constants = Value::vector([fixnum(11)]);
+        s.make(
+            "a byte-code function",
+            "make-byte-code",
+            &[fixnum(0), code, constants, fixnum(1)],
+        );
+        let (parameters, body) = (Value::list([symbol]), Value::list([symbol]));
+        s.make(
+            "an interpreted function",
+            "make-interpreted-closure",
+            &[parameters, body, Value::list([Value::T])],
+        );
+        s.make("a finalizer", "make-finalizer", &[function]);
+
+        let name = string("word-level-sample", false);
+        s.make(
+            "a process",
+            "make-pipe-process",
+            &[
+                Value::symbol(":name"),
+                name,
+                Value::symbol(":noquery"),
+                Value::T,
+            ],
+        );
+        s.make("a thread", "current-thread", &[]);
+        let mutex = s.make("a mutex", "make-mutex", &[]);
+        s.make("a condition variable", "make-condition-variable", &[mutex]);
+        s.add(
+            "a reader form",
+            Value::ReaderForm(ReaderFormRef::allocate(ReaderForm::Record {
+                slots: vec![symbol, Value::T],
+            })),
+        );
+        s.objects
+    }
+
     fn assert_string_type_predicates(
         interpreter: &mut Interpreter,
         runtime: &mut NativeRuntime,
@@ -7192,6 +7605,15 @@ mod tests {
                 expected,
                 "native {name}",
             );
+            let agreed = assert_entry_agrees(
+                interpreter,
+                runtime,
+                environment,
+                name,
+                std::slice::from_ref(value),
+            )
+            .expect("a type predicate does not signal");
+            assert!(agreed.eq_value(expected), "{name}: one word from both");
         }
     }
 
@@ -7331,6 +7753,202 @@ mod tests {
                 &value,
                 [false, true, true, false, false],
             );
+        }
+    }
+
+    /// A link-table entry that answers from its argument words and the
+    /// objects they name: the subr's name, how many arguments it takes,
+    /// and whether it is a predicate, answering t or nil.
+    struct WordLevelEntry {
+        name: &'static str,
+        arguments: usize,
+        predicate: bool,
+    }
+
+    const fn word_entry(name: &'static str, arguments: usize, predicate: bool) -> WordLevelEntry {
+        WordLevelEntry {
+            name,
+            arguments,
+            predicate,
+        }
+    }
+
+    const WORD_LEVEL_ENTRIES: &[WordLevelEntry] = &[
+        word_entry("null", 1, true),
+        word_entry("consp", 1, true),
+        word_entry("atom", 1, true),
+        word_entry("listp", 1, true),
+        word_entry("nlistp", 1, true),
+        word_entry("bare-symbol-p", 1, true),
+        word_entry("symbolp", 1, true),
+        word_entry("stringp", 1, true),
+        word_entry("eq", 2, true),
+        word_entry("fboundp", 1, true),
+        word_entry("symbol-function", 1, false),
+        word_entry("identity", 1, false),
+        word_entry("car", 1, false),
+        word_entry("car-safe", 1, false),
+        word_entry("cdr", 1, false),
+        word_entry("cdr-safe", 1, false),
+        word_entry("symbol-with-pos-p", 1, true),
+        word_entry("vectorp", 1, true),
+        word_entry("bufferp", 1, true),
+        word_entry("markerp", 1, true),
+        word_entry("subrp", 1, true),
+        word_entry("closurep", 1, true),
+        word_entry("byte-code-function-p", 1, true),
+        word_entry("interpreted-function-p", 1, true),
+        word_entry("floatp", 1, true),
+        word_entry("integerp", 1, true),
+        word_entry("numberp", 1, true),
+        word_entry("natnump", 1, true),
+        word_entry("integer-or-marker-p", 1, true),
+        word_entry("number-or-marker-p", 1, true),
+        word_entry("char-or-string-p", 1, true),
+        word_entry("arrayp", 1, true),
+    ];
+
+    /// The generator's other targets, which read the interpreter, walk or
+    /// store into their arguments, allocate or call Lisp: each has a
+    /// contract test of its own.
+    const OTHER_DIRECT_ENTRIES: &[&str] = &[
+        "eql",
+        "type-of",
+        "symbol-value",
+        "get",
+        "funcall",
+        "list",
+        "memq",
+        "assq",
+        "nreverse",
+        "nconc",
+        "aref",
+        "char-table-extra-slot",
+        "functionp",
+        "aset",
+        "autoload-do-load",
+        "gethash",
+        "puthash",
+        "length",
+        "plist-member",
+        "make-closure",
+    ];
+
+    #[test]
+    fn word_level_entries_agree_with_their_primitives() {
+        use std::collections::BTreeSet;
+
+        // The names here are the names the generator gives a target of
+        // their own, read from its selection as the fast-path inventory
+        // reads it: a name added there is tested here or named above.
+        let generator = std::fs::read_to_string(concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/tools/generate_native_subrs.rs"
+        ))
+        .expect("read the native subr generator");
+        let comments =
+            regex::Regex::new(r"(?s:/\*.*?\*/)|(?m://.*$)").expect("compile the comment pattern");
+        let generator = comments.replace_all(&generator, "");
+        let selection = generator
+            .split_once("fn direct_native_target")
+            .expect("the generator's target selection")
+            .1
+            .split_once("fn read_min_arg_constants")
+            .expect("the end of the generator's target selection")
+            .0;
+        let selected = regex::Regex::new(r#""([^"\\]+)"\s*=>"#)
+            .expect("compile the selection pattern")
+            .captures_iter(selection)
+            .map(|capture| capture[1].to_owned())
+            .collect::<BTreeSet<_>>();
+        let listed = WORD_LEVEL_ENTRIES
+            .iter()
+            .map(|entry| entry.name)
+            .chain(OTHER_DIRECT_ENTRIES.iter().copied())
+            .map(str::to_owned)
+            .collect::<BTreeSet<_>>();
+        assert_eq!(
+            listed.len(),
+            WORD_LEVEL_ENTRIES.len() + OTHER_DIRECT_ENTRIES.len(),
+            "an entry is listed once"
+        );
+        assert_eq!(selected, listed);
+
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let samples = sample_objects(&mut interpreter, &mut environment);
+        let mut kinds = [false; UNBOUND_ORDINAL];
+        for (_, value) in samples.iter() {
+            kinds[kind_ordinal(*value)] = true;
+        }
+        assert_eq!(kinds, [true; UNBOUND_ORDINAL], "a sample of every kind");
+
+        // (t answered, nil answered) of each entry over the samples.
+        let mut answers = vec![(false, false); WORD_LEVEL_ENTRIES.len()];
+        for enabled in [Value::Nil, Value::T] {
+            interpreter.set_symbol_value_cell("symbols-with-pos-enabled", enabled);
+            for (entry, answered) in WORD_LEVEL_ENTRIES.iter().zip(&mut answers) {
+                let mut agree = |names: &[&str], arguments: &[Value]| {
+                    let answer = assert_entry_agrees(
+                        &mut interpreter,
+                        &mut runtime,
+                        &mut environment,
+                        entry.name,
+                        arguments,
+                    );
+                    let Ok(answer) = answer else {
+                        return;
+                    };
+                    answered.0 |= answer.eq_value(Value::T);
+                    answered.1 |= answer.is_nil();
+                    if entry.predicate {
+                        assert!(
+                            answer.eq_value(Value::T) || answer.is_nil(),
+                            "{} of {names:?} answers {answer:?}",
+                            entry.name
+                        );
+                    }
+                };
+                match entry.arguments {
+                    1 => {
+                        for (name, value) in samples.iter() {
+                            agree(&[name], &[*value]);
+                        }
+                    }
+                    2 => {
+                        for (left_name, left) in samples.iter() {
+                            for (right_name, right) in samples.iter() {
+                                agree(&[left_name, right_name], &[*left, *right]);
+                            }
+                        }
+                    }
+                    count => panic!("{} takes {count} arguments", entry.name),
+                }
+            }
+        }
+        for (entry, answered) in WORD_LEVEL_ENTRIES.iter().zip(&answers) {
+            if entry.predicate {
+                assert_eq!(
+                    *answered,
+                    (true, true),
+                    "{} answers t of some sample and nil of some",
+                    entry.name
+                );
+            }
+        }
+
+        // The pipe process's descriptors go with the test.
+        for (name, value) in samples.iter() {
+            if *name == "a process" {
+                crate::lisp::primitives::call(
+                    &mut interpreter,
+                    "delete-process",
+                    &[*value],
+                    &mut environment,
+                )
+                .expect("delete the sample process");
+            }
         }
     }
 

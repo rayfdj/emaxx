@@ -569,4 +569,101 @@ mod tests {
         let unique = subrs.iter().map(|subr| subr.name).collect::<HashSet<_>>();
         assert_eq!(unique.len(), subrs.len());
     }
+
+    /// The subroutines one generated table lists, from its text: each
+    /// name with its arity and its entry.  An entry is the runtime
+    /// function the table names, or the wrapper the file defines for it:
+    /// that wrapper's signature and body with its index left out and the
+    /// formatter's layout removed.
+    fn generated_table_entries(file: &str) -> std::collections::HashMap<String, (String, String)> {
+        let path = format!("{}/src/lisp/native_comp/{file}", env!("CARGO_MANIFEST_DIR"));
+        let text = std::fs::read_to_string(&path).expect("read a generated subr table");
+        let compact = |text: &str| {
+            text.split_whitespace()
+                .collect::<String>()
+                .replace(",)", ")")
+        };
+
+        let mut wrappers = std::collections::HashMap::new();
+        let wrapper = regex::Regex::new(
+            r#"(?s)((?:unsafe )?extern "C" fn) native_subr_(\d{4,})\((.*?)\) -> super::runtime::NativeWord \{(.*?)\n\}"#,
+        )
+        .expect("compile the wrapper pattern");
+        for capture in wrapper.captures_iter(&text) {
+            let index = capture[2].parse::<usize>().expect("a wrapper's index");
+            let parameters = compact(&capture[3]);
+            let body = compact(&capture[4]).replace(&format!("({index},"), "(INDEX,");
+            let previous = wrappers.insert(
+                index,
+                (
+                    parameters.trim_end_matches(',').to_owned(),
+                    format!("{} {body}", &capture[1]),
+                ),
+            );
+            assert!(previous.is_none(), "{file} defines wrapper {index} once");
+        }
+
+        let mut entries = std::collections::HashMap::new();
+        let entry = regex::Regex::new(
+            r#"NativeSubr::new\(\s*c"([^"]*)",\s*\d+,\s*NativeMaxArgs::(Many|Unevalled|Fixed\(\d+\)),\s*(\S+) as \*const std::ffi::c_void,\s*(\d+),?\s*\)"#,
+        )
+        .expect("compile the entry pattern");
+        let word = "super::runtime::NativeWord";
+        let mut wrapped = 0;
+        for (position, capture) in entry.captures_iter(&text).enumerate() {
+            let (name, max_args, target) = (&capture[1], &capture[2], &capture[3]);
+            assert_eq!(capture[4].parse::<usize>().ok(), Some(position), "{name}");
+            let shape = if target.starts_with("super::runtime::") {
+                target.to_owned()
+            } else {
+                assert_eq!(target, format!("native_subr_{position:04}"), "{name}");
+                let (parameters, body) = wrappers
+                    .get(&position)
+                    .unwrap_or_else(|| panic!("{file} defines {name}'s wrapper"));
+                // As many parameters as the subroutine has arguments.
+                let expected = match max_args {
+                    "Many" => format!("nargs:isize,args:*const{word}"),
+                    "Unevalled" => format!("args:{word}"),
+                    fixed => {
+                        let count = fixed["Fixed(".len()..fixed.len() - 1]
+                            .parse::<usize>()
+                            .expect("a fixed arity");
+                        (0..count)
+                            .map(|argument| format!("arg_{argument}:{word}"))
+                            .collect::<Vec<_>>()
+                            .join(",")
+                    }
+                };
+                assert_eq!(*parameters, expected, "{file}: {name}'s wrapper");
+                wrapped += 1;
+                body.clone()
+            };
+            let previous = entries.insert(name.to_owned(), (max_args.to_owned(), shape));
+            assert!(previous.is_none(), "{file} lists {name} once");
+        }
+        assert_eq!(wrapped, wrappers.len(), "{file}: a wrapper for each use");
+        assert!(
+            text.contains(&format!("[NativeSubr; {}]", entries.len())),
+            "{file} declares as many entries as it lists"
+        );
+        entries
+    }
+
+    // Only one table is compiled into a build, and nothing regenerates the
+    // other from its reference tree, so their texts are compared: the
+    // generator's choice of an entry is by name, the same for both.
+    #[test]
+    fn generated_native_subr_tables_give_a_shared_name_the_same_entry() {
+        let linux = generated_table_entries("generated_native_subrs_x86_64_unknown_linux_gnu.rs");
+        let darwin = generated_table_entries("generated_native_subrs_aarch64_apple_darwin.rs");
+        let mut shared = 0;
+        for (name, entry) in &linux {
+            if let Some(other) = darwin.get(name) {
+                assert_eq!(entry, other, "{name}");
+                shared += 1;
+            }
+        }
+        // The names the two pinned builds have in common.
+        assert_eq!((linux.len(), darwin.len(), shared), (1_455, 1_445, 1_412));
+    }
 }

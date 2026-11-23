@@ -572,8 +572,12 @@ pub(crate) fn substitute_object_recurse(
             }
             Ok(*subtree)
         }
-        // The slots a window holds, as those of the host record it was.
+        // A window's contents and the slots it holds, as those of the
+        // host record it was.
         Kind::Window(window) => {
+            let contents =
+                substitute_object_recurse(interp, object, placeholder, &window.contents(), seen)?;
+            window.set_contents(contents);
             for index in 0..window.held() {
                 let current = window.slot(index).unwrap_or(Value::Nil);
                 let updated =

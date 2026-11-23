@@ -4527,6 +4527,42 @@ impl ImageGraphCopier {
                 );
                 let copied = Value::Window(copied_window);
                 self.records.insert(key, copied);
+                copied_window.set_use_time(window.use_time());
+                copied_window.set_sequence_number(window.sequence_number());
+                copied_window.set_change_stamp(window.change_stamp());
+                copied_window.set_pixel_left(window.pixel_left());
+                copied_window.set_pixel_top(window.pixel_top());
+                copied_window.set_left_col(window.left_col());
+                copied_window.set_top_line(window.top_line());
+                copied_window.set_pixel_width(window.pixel_width());
+                copied_window.set_pixel_height(window.pixel_height());
+                copied_window.set_old_pixel_width(window.old_pixel_width());
+                copied_window.set_old_pixel_height(window.old_pixel_height());
+                copied_window.set_old_body_pixel_width(window.old_body_pixel_width());
+                copied_window.set_old_body_pixel_height(window.old_body_pixel_height());
+                copied_window.set_total_cols(window.total_cols());
+                copied_window.set_total_lines(window.total_lines());
+                copied_window.set_hscroll(window.hscroll());
+                copied_window.set_min_hscroll(window.min_hscroll());
+                copied_window.set_last_modified(window.last_modified());
+                copied_window.set_last_overlay_modified(window.last_overlay_modified());
+                copied_window.set_last_point(window.last_point());
+                copied_window.set_column_number_displayed(window.column_number_displayed());
+                copied_window.set_left_margin_cols(window.left_margin_cols());
+                copied_window.set_right_margin_cols(window.right_margin_cols());
+                copied_window.set_window_end_pos(window.window_end_pos());
+                copied_window.set_mini(window.mini());
+                copied_window.set_horizontal(window.horizontal());
+                copied_window.set_update_mode_line(window.update_mode_line());
+                copied_window.set_last_had_star(window.last_had_star());
+                copied_window.set_start_at_line_beg(window.start_at_line_beg());
+                copied_window.set_force_start(window.force_start());
+                copied_window.set_optional_new_start(window.optional_new_start());
+                copied_window.set_cursor_off_p(window.cursor_off_p());
+                copied_window.set_window_end_valid(window.window_end_valid());
+                copied_window.set_redisplay(window.redisplay());
+                copied_window.set_suspend_auto_hscroll(window.suspend_auto_hscroll());
+                copied_window.set_contents(self.copy(&window.contents()));
                 for (index, slot) in window.held_values().enumerate() {
                     copied_window.set_held(index, self.copy(&slot));
                 }
@@ -5452,19 +5488,14 @@ impl Interpreter {
     }
 
     /// A window the image held, which pdumper.c:dump_nilled_pseudovec
-    /// wrote with every Lisp field nil: a deleted window of the new
-    /// process (w->contents nil), holding HELD nil slots, on no frame and
-    /// with no sequence number.  Its id is this state's next, so it names
-    /// no window this process made and none it makes later: the dumping
-    /// process's id is not an identity here.
+    /// wrote with every Lisp field nil and the rest zero: a deleted
+    /// window of the new process (w->contents nil, its bits clear),
+    /// holding HELD nil slots, on no frame and with no sequence number.
+    /// Its id is this state's next, so it names no window this process
+    /// made and none it makes later: the dumping process's id is not an
+    /// identity here.
     pub(crate) fn install_dead_window(&mut self, held: usize) -> primitives::WindowRef {
-        let window = self.allocate_window(held.max(primitives::WINDOW_KIND_SLOT + 1));
-        // A nil kind slot is a leaf's; contents nil is a deleted window.
-        window.set_held(
-            primitives::WINDOW_KIND_SLOT,
-            primitives::WindowKind::Deleted.value(),
-        );
-        primitives::WindowRef::from_object(window)
+        primitives::WindowRef::from_object(self.allocate_window(held))
     }
 
     /// A terminal the image nilled: a dead terminal object of its own,
@@ -6805,9 +6836,6 @@ pub struct InterpreterState {
     /// Root and minibuffer window identities are interpreter/frame state,
     /// never Lisp variables.
     minibuffer_selected_window_id: Option<u64>,
-    /// Whether each window should display its cursor on the next redisplay.
-    /// Missing entries retain GNU's visible-by-default state.
-    window_cursor_visibility: HashMap<u64, bool>,
     /// Window selected when the last window-change cycle completed.
     pub(crate) old_selected_window_id: u64,
     /// Per-frame old selected window.  GNU's initial batch frame leaves this
@@ -7130,10 +7158,9 @@ pub struct InterpreterState {
     /// print.c's `print_depth', `being_printed', `new_backquote_output'
     /// and `print_buffer'.
     pub(crate) print_globals: crate::lisp::primitives::print::PrintGlobals,
-    /// window.c's `sequence_number': the last one given a window, and each
-    /// live window's (struct window's `sequence_number').
+    /// window.c's `sequence_number': the last one given a window, which
+    /// keeps its own (struct window's `sequence_number').
     pub(crate) window_sequence_number: i64,
-    pub(crate) window_sequence_numbers: HashMap<u64, i64>,
     pub lossage_size: i64,
     interactive_call_depth: usize,
     /// xfaces.c's lface_id_to_name: each Lisp face's symbol at its id.
@@ -7610,7 +7637,6 @@ impl Interpreter {
             current_buffer_id: 0,
             selected_window_id: 0,
             minibuffer_selected_window_id: None,
-            window_cursor_visibility: HashMap::new(),
             old_selected_window_id: 0,
             window_select_count: 1,
             windows_or_buffers_changed: 1,
@@ -7833,7 +7859,6 @@ impl Interpreter {
             print_number_index: 0,
             print_globals: Default::default(),
             window_sequence_number: 0,
-            window_sequence_numbers: HashMap::new(),
             lossage_size: 300,
             interactive_call_depth: 0,
             lface_id_to_name: Vec::new(),
@@ -9124,27 +9149,24 @@ impl Interpreter {
             interp.define_special_variable(name, value);
         }
         let buffer_start = interp.buffer.borrow().point_min();
-        let selected_window_slots = primitives::window_record_slots(
-            &interp,
-            Some(interp.current_buffer_id),
-            buffer_start,
-            Value::Nil,
-            (
-                interp.frame_width(),
-                interp.frame_height().saturating_sub(1).max(1),
-                0,
-                0,
-            ),
+        let selected_window_geometry = (
+            interp.frame_width(),
+            interp.frame_height().saturating_sub(1).max(1),
+            0,
+            0,
         );
-        let selected_window = interp.make_window(selected_window_slots);
+        let selected_window_buffer = interp.current_buffer_id;
+        let selected_window = primitives::make_leaf_window(
+            &mut interp,
+            selected_window_buffer,
+            buffer_start,
+            false,
+            selected_window_geometry,
+        );
         interp.set_selected_window_id(selected_window.id());
         interp.set_root_window_id(selected_window.id());
         interp.old_selected_window_id = selected_window.id();
-        selected_window.set_held_slot(
-            &mut interp,
-            primitives::WINDOW_USE_TIME_SLOT,
-            Value::Integer(1),
-        );
+        selected_window.set_use_time(1);
         // frame.c:make_frame shows the current buffer in the root window
         // through set_window_buffer, and the minibuffer in the minibuffer
         // window.
@@ -9155,19 +9177,20 @@ impl Interpreter {
             .buffer_object(1)
             .map_or(Value::Nil, |buffer| buffer.borrow().name());
         interp.buffer_list.push((1, messages_name));
-        let minibuffer_window_slots = primitives::window_record_slots(
-            &interp,
-            Some(minibuffer_buffer_id),
+        let minibuffer_window_geometry = (
+            interp.frame_width(),
             1,
-            primitives::WindowKind::Minibuffer.value(),
-            (
-                interp.frame_width(),
-                1,
-                0,
-                interp.frame_height().saturating_sub(1).max(1),
-            ),
+            0,
+            interp.frame_height().saturating_sub(1).max(1),
         );
-        let minibuffer_window = interp.make_window(minibuffer_window_slots);
+        // make_frame: `mw->mini = 1'.
+        let minibuffer_window = primitives::make_leaf_window(
+            &mut interp,
+            minibuffer_buffer_id,
+            1,
+            true,
+            minibuffer_window_geometry,
+        );
         interp.set_minibuffer_window_id(minibuffer_window.id());
         // The two windows show their buffers from the start.
         interp.recount_buffer_windows();

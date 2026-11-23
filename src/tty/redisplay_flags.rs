@@ -8,10 +8,8 @@ use crate::lisp::cached_symbol;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::eval::runtime::REDISPLAY_SOME;
 use crate::lisp::primitives::{
-    WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT, WINDOW_LAST_HAD_STAR_SLOT, WINDOW_LAST_MODIFIED_SLOT,
-    WINDOW_LAST_OVERLAY_MODIFIED_SLOT, WINDOW_LAST_POINT_SLOT, WINDOW_POINT_SLOT,
-    WINDOW_REDISPLAY_SLOT, WINDOW_UPDATE_MODE_LINE_SLOT, set_window_count_slot, set_window_flag,
-    window_count_slot, window_flag, window_marker_position,
+    WINDOW_POINT_SLOT, WindowRef, set_window_flag, set_window_last_point,
+    window_column_number_displayed, window_flag, window_last_point, window_marker_position,
 };
 use crate::lisp::types::{Env, Kind, Value};
 
@@ -57,9 +55,11 @@ pub(super) fn window_outdated(interp: &Interpreter, window_id: u64) -> bool {
     else {
         return true;
     };
-    window_count_slot(interp, window_id, WINDOW_LAST_MODIFIED_SLOT).unwrap_or(0) < modiff
-        || window_count_slot(interp, window_id, WINDOW_LAST_OVERLAY_MODIFIED_SLOT).unwrap_or(0)
-            < overlay_modiff
+    let (last_modified, last_overlay_modified) =
+        interp.window_ref(window_id).map_or((0, 0), |window| {
+            (window.last_modified(), window.last_overlay_modified())
+        });
+    last_modified < modiff || last_overlay_modified < overlay_modiff
 }
 
 /// window_buffer_changed: whether the buffer was modified, as it was
@@ -68,7 +68,7 @@ pub(super) fn window_buffer_changed(interp: &Interpreter, window_id: u64) -> boo
     let modified = window_buffer(interp, window_id)
         .and_then(|buffer| buffer_counts(interp, buffer))
         .is_some_and(|(_, modified, _)| modified);
-    modified != window_flag(interp, window_id, WINDOW_LAST_HAD_STAR_SLOT)
+    modified != window_flag(interp, window_id, WindowRef::last_had_star)
 }
 
 /// mode_line_update_needed: the window's mode line shows a column (`%c'
@@ -78,12 +78,11 @@ pub(super) fn mode_line_update_needed(
     env: &mut Env,
     window_id: u64,
 ) -> bool {
-    let Some(displayed) = window_count_slot(interp, window_id, WINDOW_COLUMN_NUMBER_DISPLAYED_SLOT)
-    else {
+    let Some(displayed) = window_column_number_displayed(interp, window_id) else {
         return false;
     };
     let point = interp.buffer.borrow().point();
-    let last_point = window_count_slot(interp, window_id, WINDOW_LAST_POINT_SLOT);
+    let last_point = window_last_point(interp, window_id);
     if last_point == Some(point as i64) && !window_outdated(interp, window_id) {
         return false;
     }
@@ -96,8 +95,8 @@ pub(super) fn mode_line_update_needed(
 /// whose point did not move.
 pub(super) fn needs_no_redisplay(interp: &Interpreter, window_id: u64) -> bool {
     if !redisplay_some_p(interp)
-        || window_flag(interp, window_id, WINDOW_REDISPLAY_SLOT)
-        || window_flag(interp, window_id, WINDOW_UPDATE_MODE_LINE_SLOT)
+        || window_flag(interp, window_id, WindowRef::redisplay)
+        || window_flag(interp, window_id, WindowRef::update_mode_line)
     {
         return false;
     }
@@ -117,7 +116,7 @@ pub(super) fn needs_no_redisplay(interp: &Interpreter, window_id: u64) -> bool {
         return false;
     }
     window_point(interp, window_id).map(|point| point as i64)
-        == window_count_slot(interp, window_id, WINDOW_LAST_POINT_SLOT)
+        == window_last_point(interp, window_id)
 }
 
 /// propagate_buffer_redisplay: each window whose buffer's text must be
@@ -128,7 +127,7 @@ pub(super) fn propagate_buffer_redisplay(interp: &mut Interpreter, windows: &[u6
             .and_then(|buffer| interp.get_buffer_by_id(buffer).map(|b| b.text_redisplay()))
             .unwrap_or(false)
         {
-            set_window_flag(interp, window_id, WINDOW_REDISPLAY_SLOT, true);
+            set_window_flag(interp, window_id, WindowRef::set_redisplay, true);
         }
     }
 }
@@ -142,18 +141,15 @@ pub(super) fn mark_window_display_accurate(interp: &mut Interpreter, window_id: 
     let Some((modiff, modified, overlay_modiff)) = buffer_counts(interp, buffer_id) else {
         return;
     };
-    set_window_count_slot(interp, window_id, WINDOW_LAST_MODIFIED_SLOT, Some(modiff));
-    set_window_count_slot(
-        interp,
-        window_id,
-        WINDOW_LAST_OVERLAY_MODIFIED_SLOT,
-        Some(overlay_modiff),
-    );
-    set_window_flag(interp, window_id, WINDOW_LAST_HAD_STAR_SLOT, modified);
+    if let Some(window) = interp.window_ref(window_id) {
+        window.set_last_modified(modiff);
+        window.set_last_overlay_modified(overlay_modiff);
+    }
+    set_window_flag(interp, window_id, WindowRef::set_last_had_star, modified);
     set_window_flag(
         interp,
         window_id,
-        crate::lisp::primitives::WINDOW_END_VALID_SLOT,
+        crate::lisp::primitives::WindowRef::set_window_end_valid,
         true,
     );
     if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
@@ -163,9 +159,9 @@ pub(super) fn mark_window_display_accurate(interp: &mut Interpreter, window_id: 
         buffer.take_unchanged_counts();
     }
     let point = window_point(interp, window_id).map(|point| point as i64);
-    set_window_count_slot(interp, window_id, WINDOW_LAST_POINT_SLOT, point);
-    set_window_flag(interp, window_id, WINDOW_UPDATE_MODE_LINE_SLOT, false);
-    set_window_flag(interp, window_id, WINDOW_REDISPLAY_SLOT, false);
+    set_window_last_point(interp, window_id, point);
+    set_window_flag(interp, window_id, WindowRef::set_update_mode_line, false);
+    set_window_flag(interp, window_id, WindowRef::set_redisplay, false);
 }
 
 /// overlay_arrow_string_or_property: VAR's `overlay-arrow-string'

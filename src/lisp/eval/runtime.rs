@@ -862,40 +862,35 @@ impl Interpreter {
         std::mem::replace(&mut self.minibuffer_selected_window_id, window_id)
     }
 
+    /// xdisp.c:Finternal_show_cursor_p: `!w->cursor_off_p' of window ID.
     pub(crate) fn window_cursor_visible(&self, id: u64) -> bool {
-        self.window_cursor_visibility
-            .get(&id)
-            .copied()
-            .unwrap_or(true)
+        self.window_ref(id)
+            .is_none_or(|window| !window.cursor_off_p())
     }
 
+    /// xdisp.c:Finternal_show_cursor: `w->cursor_off_p = !VISIBLE'.
     pub(crate) fn set_window_cursor_visible(&mut self, id: u64, visible: bool) {
-        self.window_cursor_visibility.insert(id, visible);
+        if let Some(window) = self.window_ref(id) {
+            window.set_cursor_off_p(!visible);
+        }
     }
 
     pub(crate) fn old_selected_window_value(&self) -> Value {
         self.window_value(self.old_selected_window_id)
     }
 
+    /// w->use_time of window ID.
     pub(crate) fn window_use_time(&self, id: u64) -> i64 {
         self.window_ref(id)
-            .and_then(|window| {
-                window
-                    .slot(primitives::WINDOW_USE_TIME_SLOT)
-                    .integer_value()
-            })
-            .unwrap_or_default()
+            .map_or(0, primitives::WindowRef::use_time)
     }
 
+    /// select_window's `w->use_time = ++window_select_count'.
     pub(crate) fn record_window_selection(&mut self, id: u64) {
         self.window_select_count = self.window_select_count.saturating_add(1);
         let use_time = self.window_select_count;
         if let Some(window) = self.window_ref(id) {
-            window.set_held_slot(
-                self,
-                primitives::WINDOW_USE_TIME_SLOT,
-                Value::Integer(use_time),
-            );
+            window.set_use_time(use_time);
         }
     }
 
@@ -907,20 +902,12 @@ impl Interpreter {
         }
         let bumped = self.window_select_count;
         if let Some(window) = self.window_ref(id) {
-            window.set_held_slot(
-                self,
-                primitives::WINDOW_USE_TIME_SLOT,
-                Value::Integer(bumped),
-            );
+            window.set_use_time(bumped);
         }
         self.window_select_count = self.window_select_count.saturating_add(1);
         let selected_time = self.window_select_count;
         if let Some(selected) = self.window_ref(self.selected_window_id) {
-            selected.set_held_slot(
-                self,
-                primitives::WINDOW_USE_TIME_SLOT,
-                Value::Integer(selected_time),
-            );
+            selected.set_use_time(selected_time);
         }
         Some(bumped)
     }
@@ -992,12 +979,8 @@ impl Interpreter {
             buffer.adjust_window_count(shown);
         }
         if let Some(window) = self.window_ref(window_id) {
-            for (slot, value) in [
-                (primitives::WINDOW_END_VALID_SLOT, Value::Nil),
-                (primitives::WINDOW_BASE_LINE_SLOT, Value::Nil),
-            ] {
-                window.set_slot_if_held(self, slot, value);
-            }
+            window.set_window_end_valid(false);
+            window.set_slot_if_held(self, primitives::WINDOW_BASE_LINE_SLOT, Value::Nil);
         }
     }
 
@@ -1006,10 +989,27 @@ impl Interpreter {
     pub(crate) fn wset_buffer(&mut self, window_id: u64, value: Value) {
         self.adjust_window_count(window_id, false);
         if let Some(window) = self.window_ref(window_id) {
-            window.set_slot(self, primitives::WINDOW_BUFFER_SLOT, value);
+            window.set_contents(value);
         }
         self.adjust_window_count(window_id, true);
         self.check_window_counts();
+    }
+
+    /// window.c wset_combination: WINDOW_ID becomes an internal window
+    /// of HORFLAG's direction whose first child is CHILD, or with CHILD
+    /// nil a window without contents, a deleted one ("when an internal
+    /// window is deleted and VAL is nil, HORFLAG is meaningless": the
+    /// bit stays as it was).
+    pub(crate) fn wset_combination(&mut self, window_id: u64, horflag: bool, child: Value) {
+        // w->contents is the one field a leaf's buffer lives in too:
+        // whatever the window showed, it shows no buffer now.
+        self.wset_buffer(window_id, Value::Nil);
+        if !child.is_nil()
+            && let Some(window) = self.window_ref(window_id)
+        {
+            window.set_contents(child);
+            window.set_horizontal(horflag);
+        }
     }
 
     /// Each buffer's window count taken anew from the windows: for the
@@ -1082,7 +1082,7 @@ impl Interpreter {
         if window_id != self.selected_window_id {
             self.redisplay_other_windows();
         }
-        primitives::set_window_flag(self, window_id, primitives::WINDOW_REDISPLAY_SLOT, true);
+        primitives::set_window_flag(self, window_id, primitives::WindowRef::set_redisplay, true);
     }
 
     /// xdisp.c wset_update_mode_line: the window's mode line is
@@ -1091,7 +1091,7 @@ impl Interpreter {
         primitives::set_window_flag(
             self,
             window_id,
-            primitives::WINDOW_UPDATE_MODE_LINE_SLOT,
+            primitives::WindowRef::set_update_mode_line,
             true,
         );
         self.wset_redisplay(window_id);
@@ -1350,11 +1350,28 @@ impl Interpreter {
         Ok(())
     }
 
-    /// window.c set_window_buffer's window state: WINDOW_ID shows
-    /// BUFFER_ID from the buffer's last window start, with the buffer's
-    /// point; KEEP (KEEP-MARGINS on the buffer the window already shows)
-    /// leaves the start, point and hscroll alone.
+    /// `show_buffer_object_in_window' of the live buffer BUFFER_ID, by
+    /// its object.
     pub(crate) fn show_buffer_in_window(&mut self, window_id: u64, buffer_id: u64, keep: bool) {
+        let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
+        self.show_buffer_object_in_window(window_id, buffer_id, buffer, keep);
+    }
+
+    /// window.c set_window_buffer's window state: WINDOW_ID shows BUFFER,
+    /// the buffer of BUFFER_ID, from the buffer's last window start, with
+    /// the buffer's point; KEEP (KEEP-MARGINS on the buffer the window
+    /// already shows) leaves the start, point and hscroll alone.  BUFFER
+    /// is the object the caller was given: `wset_buffer (w, buffer)'
+    /// stores it whether or not Lisp run since its liveness was tested
+    /// (Fset_window_buffer's `record-window-buffer') has killed it, and a
+    /// window whose contents are a killed buffer is still a leaf.
+    pub(crate) fn show_buffer_object_in_window(
+        &mut self,
+        window_id: u64,
+        buffer_id: u64,
+        buffer: Value,
+        keep: bool,
+    ) {
         let (point_min, point_max, point) = if buffer_id == self.current_buffer_id {
             let buffer = self.buffer.borrow();
             (buffer.point_min(), buffer.point_max(), buffer.point())
@@ -1368,25 +1385,20 @@ impl Interpreter {
             .map(|buffer| buffer.last_window_start())
             .unwrap_or(1)
             .clamp(point_min, point_max);
-        let buffer = self.buffer_value(buffer_id).unwrap_or(Value::Nil);
         if let Some(window) = self.window_ref(window_id) {
-            window.ensure_slot(self, primitives::WINDOW_START_AT_LINE_BEG_SLOT);
+            window.ensure_slot(self, primitives::WINDOW_BASE_LINE_SLOT);
         }
         // wset_buffer: w->contents is the buffer object.
         self.wset_buffer(window_id, buffer);
         if let Some(window) = self.window_ref(window_id) {
-            window.set_held_slot(self, primitives::WINDOW_END_POS_SLOT, Value::Integer(0));
+            window.set_window_end_pos(Some(0));
             if !keep {
-                for (slot, value) in [
-                    (primitives::WINDOW_HSCROLL_SLOT, Value::Integer(0)),
-                    (primitives::WINDOW_MIN_HSCROLL_SLOT, Value::Integer(0)),
-                    (primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT, Value::Nil),
-                    (primitives::WINDOW_START_AT_LINE_BEG_SLOT, Value::Nil),
-                    (primitives::WINDOW_FORCE_START_SLOT, Value::Nil),
-                    (primitives::WINDOW_BASE_LINE_SLOT, Value::Nil),
-                ] {
-                    window.set_held_slot(self, slot, value);
-                }
+                window.set_hscroll(0);
+                window.set_min_hscroll(0);
+                window.set_suspend_auto_hscroll(false);
+                window.set_start_at_line_beg(false);
+                window.set_force_start(false);
+                window.set_held_slot(self, primitives::WINDOW_BASE_LINE_SLOT, Value::Nil);
             }
         }
         if !keep {
@@ -1811,46 +1823,47 @@ impl Interpreter {
                     .and_then(|linked| order.iter().position(|saved| *saved == linked))
                     .map_or(Value::Nil, |index| Value::Integer(index as i64))
             };
-            let kind = record.kind();
             let mut p = vec![Value::Nil; SAVED_WINDOW_SIZE];
             p[SW_WINDOW] = self.window_value(id);
-            // p->buffer: a leaf's contents.
-            let buffer = if kind.is_internal() {
-                None
-            } else {
-                match slot(primitives::WINDOW_BUFFER_SLOT).kind() {
-                    Kind::Buffer(buffer) => Some(buffer),
-                    Kind::Integer(buffer) => self.buffer_object(buffer.max(0) as u64),
-                    _ => None,
-                }
+            // p->buffer: a leaf's contents (WINDOW_LEAF_P).
+            let buffer = match record.contents().kind() {
+                Kind::Buffer(buffer) => Some(buffer),
+                Kind::Integer(buffer) => self.buffer_object(buffer.max(0) as u64),
+                _ => None,
             };
             p[SW_BUFFER] = buffer.map_or(Value::Nil, Value::Buffer);
-            for (field, index) in [
-                (SW_PIXEL_LEFT, primitives::WINDOW_PIXEL_LEFT_SLOT),
-                (SW_PIXEL_TOP, primitives::WINDOW_PIXEL_TOP_SLOT),
-                (SW_PIXEL_HEIGHT, primitives::WINDOW_PIXEL_HEIGHT_SLOT),
-                (SW_PIXEL_WIDTH, primitives::WINDOW_PIXEL_WIDTH_SLOT),
-                (SW_LEFT_COL, primitives::WINDOW_LEFT_COL_SLOT),
-                (SW_TOP_LINE, primitives::WINDOW_TOP_LINE_SLOT),
-                (SW_TOTAL_COLS, primitives::WINDOW_TOTAL_COLS_SLOT),
-                (SW_TOTAL_LINES, primitives::WINDOW_TOTAL_LINES_SLOT),
-                (SW_NORMAL_COLS, primitives::WINDOW_NORMAL_WIDTH_SLOT),
-                (SW_NORMAL_LINES, primitives::WINDOW_NORMAL_HEIGHT_SLOT),
-                (SW_HSCROLL, primitives::WINDOW_HSCROLL_SLOT),
-                (SW_MIN_HSCROLL, primitives::WINDOW_MIN_HSCROLL_SLOT),
-                (
-                    SW_SUSPEND_AUTO_HSCROLL,
-                    primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
-                ),
-                (SW_DISPLAY_TABLE, primitives::WINDOW_DISPLAY_TABLE_SLOT),
+            // The edges and sizes as fixnums, nil for one the window has
+            // not been given (its columns and lines until window.c's
+            // resizing assigns them, which then read as its pixels do).
+            for (field, value) in [
+                (SW_PIXEL_LEFT, record.pixel_left()),
+                (SW_PIXEL_TOP, record.pixel_top()),
+                (SW_PIXEL_HEIGHT, record.pixel_height()),
+                (SW_PIXEL_WIDTH, record.pixel_width()),
+                (SW_LEFT_COL, record.left_col()),
+                (SW_TOP_LINE, record.top_line()),
+                (SW_TOTAL_COLS, record.total_cols()),
+                (SW_TOTAL_LINES, record.total_lines()),
+                // The hscroll and its minimum.
+                (SW_HSCROLL, Some(record.hscroll())),
+                (SW_MIN_HSCROLL, Some(record.min_hscroll())),
+                // The margins, nil for none.
                 (
                     SW_LEFT_MARGIN_COLS,
-                    primitives::WINDOW_LEFT_MARGIN_COLS_SLOT,
+                    Some(record.left_margin_cols()).filter(|cols| *cols != 0),
                 ),
                 (
                     SW_RIGHT_MARGIN_COLS,
-                    primitives::WINDOW_RIGHT_MARGIN_COLS_SLOT,
+                    Some(record.right_margin_cols()).filter(|cols| *cols != 0),
                 ),
+            ] {
+                p[field] = value.map_or(Value::Nil, Value::Integer);
+            }
+            p[SW_SUSPEND_AUTO_HSCROLL] = Value::from_bool(record.suspend_auto_hscroll());
+            for (field, index) in [
+                (SW_NORMAL_COLS, primitives::WINDOW_NORMAL_WIDTH_SLOT),
+                (SW_NORMAL_LINES, primitives::WINDOW_NORMAL_HEIGHT_SLOT),
+                (SW_DISPLAY_TABLE, primitives::WINDOW_DISPLAY_TABLE_SLOT),
                 (SW_DEDICATED, primitives::WINDOW_DEDICATED_SLOT),
                 (
                     SW_COMBINATION_LIMIT,
@@ -1913,15 +1926,13 @@ impl Interpreter {
                     copy.set_insertion_type(insertion_type && field != SW_START);
                     p[field] = Value::Marker(copy);
                 }
-                p[SW_START_AT_LINE_BEG] =
-                    Value::from_bool(slot(primitives::WINDOW_START_AT_LINE_BEG_SLOT).is_truthy());
+                p[SW_START_AT_LINE_BEG] = Value::from_bool(record.start_at_line_beg());
             }
             p[SW_PARENT] = temslot(order, link(primitives::WINDOW_PARENT_SLOT));
             p[SW_PREV] = temslot(order, link(primitives::WINDOW_PREV_SIBLING_SLOT));
             order.push(id);
-            let child = (kind.is_internal())
-                .then(|| link(primitives::WINDOW_FIRST_CHILD_SLOT))
-                .flatten();
+            // An internal window's contents, its first child.
+            let child = record.first_child().map(primitives::WindowRef::id);
             let next = link(primitives::WINDOW_NEXT_SIBLING_SLOT);
             saved.push(Value::vector(p));
             if child.is_some() {
@@ -2177,42 +2188,20 @@ impl Interpreter {
         self.unshow_window_tree(Some(root).filter(|id| *id != 0))?;
         // Each saved window revived: its links rebuilt from the saved
         // indices, the fields save_window_save saved written back (the
-        // others, its previous and next buffers, cursor type, use time and
-        // redisplay's state, are left alone), its squirreled buffer put
-        // back, and its saved persistent parameters restored.
-        // What each saved window is, as GNU's contents and flags make it:
-        // the frame's minibuffer window, a leaf with its saved buffer, or
-        // the internal window whose first child's total_cols differ from
-        // its own when it combines horizontally (wset_combination).
+        // others, its previous and next buffers, cursor type, use time,
+        // mini bit and redisplay's state, are left alone), its squirreled
+        // buffer put back, and its saved persistent parameters restored.
+        // What each saved window is, its contents make it: a leaf with
+        // its buffer, or the internal window its first child makes it,
+        // one that combines horizontally when that child's total_cols
+        // differ from its own (wset_combination).
         let minibuffer_window = snapshot.frame_id.borrow().minibuffer_window_id();
         let total_cols = |saved: &Value| {
             Some(saved_field(saved, SW_TOTAL_COLS))
                 .filter(|value| !value.is_nil())
                 .unwrap_or_else(|| saved_field(saved, SW_PIXEL_WIDTH))
         };
-        let kinds: Vec<primitives::WindowKind> = saved_windows
-            .iter()
-            .enumerate()
-            .map(|(k, saved)| {
-                if saved_ids[k] == Some(minibuffer_window) {
-                    return primitives::WindowKind::Minibuffer;
-                }
-                if !saved_field(saved, SW_BUFFER).is_nil() {
-                    return primitives::WindowKind::Leaf;
-                }
-                match saved_windows.iter().find(|child| {
-                    saved_index(child, SW_PARENT) == Some(k)
-                        && saved_index(child, SW_PREV).is_none()
-                }) {
-                    Some(child) if total_cols(child).word() != total_cols(saved).word() => {
-                        primitives::WindowKind::InternalHorizontal
-                    }
-                    Some(_) => primitives::WindowKind::InternalVertical,
-                    None => primitives::WindowKind::Leaf,
-                }
-            })
-            .collect();
-        for (k, (saved, window)) in saved_windows.iter().zip(&saved_ids).enumerate() {
+        for (saved, window) in saved_windows.iter().zip(&saved_ids) {
             let Some(window) = *window else {
                 continue;
             };
@@ -2230,9 +2219,16 @@ impl Interpreter {
                 self.set_window_slot(prev, primitives::WINDOW_NEXT_SIBLING_SLOT, this);
             } else {
                 self.set_window_slot(window, primitives::WINDOW_PREV_SIBLING_SLOT, Value::Nil);
-                // wset_combination: the parent's contents its first child.
-                if let Some(parent) = parent {
-                    self.set_window_slot(parent, primitives::WINDOW_FIRST_CHILD_SLOT, this);
+                // wset_combination (XWINDOW (w->parent), XFIXNUM
+                // (p->total_cols) != XWINDOW (w->parent)->total_cols,
+                // window): the parent, restored before its children, has
+                // its saved total_cols.
+                if let Some(parent) = parent
+                    && let Some(saved_parent) =
+                        saved_index(saved, SW_PARENT).and_then(|index| saved_windows.get(index))
+                {
+                    let horizontal = total_cols(saved).word() != total_cols(saved_parent).word();
+                    self.wset_combination(parent, horizontal, this);
                 }
             }
             // "If we squirreled away the buffer, restore it now": whichever
@@ -2244,32 +2240,30 @@ impl Interpreter {
             if matches!(squirreled.kind(), Kind::Buffer(_)) {
                 self.wset_buffer(window, squirreled);
             }
+            if let Some(record) = self.window_ref(window) {
+                // The saved edges and sizes, one saved as nil taken back
+                // from the window; the saved margins, nil for none.
+                let integer = |field| saved_field(saved, field).integer_value();
+                record.set_pixel_left(integer(SW_PIXEL_LEFT));
+                record.set_pixel_top(integer(SW_PIXEL_TOP));
+                record.set_pixel_width(integer(SW_PIXEL_WIDTH));
+                record.set_pixel_height(integer(SW_PIXEL_HEIGHT));
+                record.set_left_col(integer(SW_LEFT_COL));
+                record.set_top_line(integer(SW_TOP_LINE));
+                record.set_total_cols(integer(SW_TOTAL_COLS));
+                record.set_total_lines(integer(SW_TOTAL_LINES));
+                record.set_left_margin_cols(integer(SW_LEFT_MARGIN_COLS).unwrap_or(0));
+                record.set_right_margin_cols(integer(SW_RIGHT_MARGIN_COLS).unwrap_or(0));
+                record.set_hscroll(integer(SW_HSCROLL).unwrap_or(0));
+                record.set_suspend_auto_hscroll(
+                    saved_field(saved, SW_SUSPEND_AUTO_HSCROLL).is_truthy(),
+                );
+                record.set_min_hscroll(integer(SW_MIN_HSCROLL).unwrap_or(0));
+            }
             for (field, index) in [
-                (SW_PIXEL_LEFT, primitives::WINDOW_PIXEL_LEFT_SLOT),
-                (SW_PIXEL_TOP, primitives::WINDOW_PIXEL_TOP_SLOT),
-                (SW_PIXEL_WIDTH, primitives::WINDOW_PIXEL_WIDTH_SLOT),
-                (SW_PIXEL_HEIGHT, primitives::WINDOW_PIXEL_HEIGHT_SLOT),
-                (SW_LEFT_COL, primitives::WINDOW_LEFT_COL_SLOT),
-                (SW_TOP_LINE, primitives::WINDOW_TOP_LINE_SLOT),
-                (SW_TOTAL_COLS, primitives::WINDOW_TOTAL_COLS_SLOT),
-                (SW_TOTAL_LINES, primitives::WINDOW_TOTAL_LINES_SLOT),
                 (SW_NORMAL_COLS, primitives::WINDOW_NORMAL_WIDTH_SLOT),
                 (SW_NORMAL_LINES, primitives::WINDOW_NORMAL_HEIGHT_SLOT),
-                (SW_HSCROLL, primitives::WINDOW_HSCROLL_SLOT),
-                (
-                    SW_SUSPEND_AUTO_HSCROLL,
-                    primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
-                ),
-                (SW_MIN_HSCROLL, primitives::WINDOW_MIN_HSCROLL_SLOT),
                 (SW_DISPLAY_TABLE, primitives::WINDOW_DISPLAY_TABLE_SLOT),
-                (
-                    SW_LEFT_MARGIN_COLS,
-                    primitives::WINDOW_LEFT_MARGIN_COLS_SLOT,
-                ),
-                (
-                    SW_RIGHT_MARGIN_COLS,
-                    primitives::WINDOW_RIGHT_MARGIN_COLS_SLOT,
-                ),
                 (SW_DEDICATED, primitives::WINDOW_DEDICATED_SLOT),
                 (
                     SW_COMBINATION_LIMIT,
@@ -2278,7 +2272,6 @@ impl Interpreter {
             ] {
                 self.set_window_slot(window, index, saved_field(saved, field));
             }
-            self.set_window_slot(window, primitives::WINDOW_KIND_SLOT, kinds[k].value());
             // Only the saved parameters: a nil one resets a non-nil
             // association and makes none, any other is set.
             let mut tail = saved_field(saved, SW_WINDOW_PARAMETERS);
@@ -2365,10 +2358,11 @@ impl Interpreter {
                 // that points nowhere unchains the window's).
                 let object = self.buffer_value(buffer).unwrap_or(Value::Nil);
                 self.wset_buffer(*window, object);
-                self.set_window_slot(
+                primitives::set_window_flag(
+                    self,
                     *window,
-                    primitives::WINDOW_START_AT_LINE_BEG_SLOT,
-                    Value::from_bool(saved_field(slots, SW_START_AT_LINE_BEG).is_truthy()),
+                    primitives::WindowRef::set_start_at_line_beg,
+                    saved_field(slots, SW_START_AT_LINE_BEG).is_truthy(),
                 );
                 for (slot, field) in [
                     (primitives::WINDOW_START_SLOT, SW_START),
@@ -2421,7 +2415,12 @@ impl Interpreter {
                         );
                     }
                 }
-                self.set_window_slot(*window, primitives::WINDOW_START_AT_LINE_BEG_SLOT, Value::T);
+                primitives::set_window_flag(
+                    self,
+                    *window,
+                    primitives::WindowRef::set_start_at_line_beg,
+                    true,
+                );
                 if restore_killed_function && !mini {
                     let entry = kept(self, true);
                     kept_windows.push(entry);
@@ -2437,7 +2436,12 @@ impl Interpreter {
                 for slot in primitives::WINDOW_MARKER_SLOTS {
                     primitives::set_window_marker_restricted(self, *window, slot, buffer, 0);
                 }
-                self.set_window_slot(*window, primitives::WINDOW_START_AT_LINE_BEG_SLOT, Value::T);
+                primitives::set_window_flag(
+                    self,
+                    *window,
+                    primitives::WindowRef::set_start_at_line_beg,
+                    true,
+                );
                 if !mini {
                     let dedicated = saved_field(slots, SW_DEDICATED);
                     if restore_killed_function {
@@ -2616,31 +2620,23 @@ impl Interpreter {
         };
         let next = link(self, primitives::WINDOW_NEXT_SIBLING_SLOT);
         self.unshow_window_tree(next)?;
-        let internal = self
-            .window_ref(window)
-            .map_or(primitives::WindowKind::Leaf, primitives::WindowRef::kind)
-            .is_internal();
-        if let Some(child) = link(self, primitives::WINDOW_FIRST_CHILD_SLOT).filter(|_| internal) {
-            self.unshow_window_tree(Some(child))?;
-            // wset_combination (w, false, Qnil): no contents.
-            self.set_window_slot(window, primitives::WINDOW_FIRST_CHILD_SLOT, Value::Nil);
+        let record = self.window_ref(window);
+        if let Some(child) = record.and_then(primitives::WindowRef::first_child) {
+            self.unshow_window_tree(Some(child.id()))?;
+            // wset_combination (w, false, Qnil): no contents, which is a
+            // window that is no valid one.
+            if let Some(record) = record {
+                record.set_contents(Value::Nil);
+            }
         } else if self.window_record_buffer_id(window).is_some() {
             self.unshow_window_buffer(window)?;
             primitives::unchain_window_markers(self, window);
             // wset_combination_limit (w, w->contents).
-            let contents = self.window_ref(window).map_or(Value::Nil, |record| {
-                record.slot(primitives::WINDOW_BUFFER_SLOT)
-            });
+            let contents = record.map_or(Value::Nil, primitives::WindowRef::contents);
             self.set_window_slot(window, primitives::WINDOW_COMBINATION_LIMIT_SLOT, contents);
-            // wset_buffer (w, Qnil).
+            // wset_buffer (w, Qnil): no contents, as above.
             self.wset_buffer(window, Value::Nil);
         }
-        // A window with no contents is no valid window.
-        self.set_window_slot(
-            window,
-            primitives::WINDOW_KIND_SLOT,
-            primitives::WindowKind::Deleted.value(),
-        );
         Ok(())
     }
 
@@ -2654,11 +2650,6 @@ impl Interpreter {
     }
 
     fn set_window_slot(&mut self, window: u64, slot: usize, value: Value) {
-        debug_assert_ne!(
-            slot,
-            primitives::WINDOW_BUFFER_SLOT,
-            "a window's contents are set by wset_buffer"
-        );
         if let Some(record) = self.window_ref(window) {
             record.set_slot(self, slot, value);
         }
@@ -2672,10 +2663,8 @@ impl Interpreter {
 
     /// WINDOW_LIVE_P: a window that shows a buffer.
     fn window_is_live_record(&self, id: u64) -> bool {
-        self.window_ref(id).is_some_and(|record| {
-            record.contents_buffer_id().is_some()
-                && record.kind() != primitives::WindowKind::Deleted
-        })
+        self.window_ref(id)
+            .is_some_and(primitives::WindowRef::is_leaf)
     }
 
     /// buffer.c:other_buffer_safely: the first live buffer that is not
@@ -3218,10 +3207,10 @@ impl Interpreter {
             window.set_held(index, value);
         }
         window.set_held(primitives::WINDOW_FRAME_SLOT, self.selected_frame_value());
-        // window.c:make_window and copy_window: `++sequence_number'.
+        // window.c:make_window and make_parent_window:
+        // `w->sequence_number = ++sequence_number'.
         self.window_sequence_number += 1;
-        let number = self.window_sequence_number;
-        self.window_sequence_numbers.insert(window.id(), number);
+        window.set_sequence_number(self.window_sequence_number);
         primitives::WindowRef::from_object(window)
     }
 
@@ -3237,11 +3226,6 @@ impl Interpreter {
             .or_default()
             .insert(id);
         window
-    }
-
-    /// The window's `sequence_number', as print.c prints it.
-    pub(crate) fn window_sequence_number(&self, id: u64) -> Option<i64> {
-        self.window_sequence_numbers.get(&id).copied()
     }
 
     /// alloc.c:Fmake_closure.  Both the ordinary primitive dispatcher and

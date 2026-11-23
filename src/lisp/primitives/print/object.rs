@@ -1830,10 +1830,8 @@ impl Printer {
             Kind::Record(id) => self.print_record_unreadable(interp, env, &obj, id, escape)?,
             // print.c PVEC_WINDOW: `#<window N' and the buffer it shows.
             Kind::Window(window) => {
-                let head = format!(
-                    "#<window {}",
-                    interp.window_sequence_number(window.id()).unwrap_or(0)
-                );
+                let window = crate::lisp::primitives::WindowRef::from_object(window);
+                let head = format!("#<window {}", window.sequence_number());
                 self.strout(interp, env, &head)?;
                 let buffer_name = |interp: &Interpreter| {
                     crate::lisp::primitives::window_buffer_id(interp, &obj)

@@ -1132,22 +1132,15 @@ impl Interpreter {
             Kind::Buffer(buffer) if !self.minibuffer_list.is_empty() => buffer.id,
             _ => crate::lisp::primitives::get_minibuffer(self, 0),
         };
-        let mut make_window = |buffer, point, kind, geometry| {
-            let slots = p::window_record_slots(self, Some(buffer), point, kind, geometry);
-            self.make_window(slots)
-        };
-        let root = make_window(
+        let root = p::make_leaf_window(
+            self,
             buffer_id,
             point,
-            Value::Nil,
+            false,
             (width, (height - margin - 1).max(1), 0, margin),
         );
-        let mini = make_window(
-            mini_buffer_id,
-            1,
-            p::WindowKind::Minibuffer.value(),
-            (width, 1, 0, height - 1),
-        );
+        // make_frame: `mw->mini = 1'.
+        let mini = p::make_leaf_window(self, mini_buffer_id, 1, true, (width, 1, 0, height - 1));
         // make_frame's set_window_buffer of each: their buffers are shown
         // in a window more.
         self.adjust_window_count(root.id(), true);
@@ -1241,13 +1234,13 @@ impl Interpreter {
                 .is_some_and(|frame| frame.word() == Value::Frame(id).word())
         });
         for window in windows {
+            // No contents, a leaf's buffer or an internal window's first
+            // child: a deleted window.
             self.wset_buffer(window.id(), Value::Nil);
-            window.set_held_slot(self, p::WINDOW_KIND_SLOT, p::WindowKind::Deleted.value());
             for slot in [
                 p::WINDOW_PARENT_SLOT,
                 p::WINDOW_PREV_SIBLING_SLOT,
                 p::WINDOW_NEXT_SIBLING_SLOT,
-                p::WINDOW_FIRST_CHILD_SLOT,
             ] {
                 window.set_held_slot(self, slot, Value::Nil);
             }

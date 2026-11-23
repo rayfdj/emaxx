@@ -2060,7 +2060,7 @@ pub(crate) fn update_menu_bar(
         frame.borrow_mut().menu_bar_items = items;
         // On a terminal screen the menu bar is an ordinary screen line,
         // which this makes redisplay update.
-        super::set_window_flag(interp, window, super::WINDOW_UPDATE_MODE_LINE_SLOT, true);
+        super::set_window_flag(interp, window, super::WindowRef::set_update_mode_line, true);
         Ok(hooks_run)
     })();
     let unbound = match &result {

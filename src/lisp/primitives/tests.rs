@@ -36630,16 +36630,15 @@ fn buffers_count_the_windows_showing_them() {
     // adjust_window_count, there and back, leaves the window's end and
     // base line to be found again.
     let selected = interp.selected_window_id();
-    for slot in [
-        crate::lisp::primitives::WINDOW_END_VALID_SLOT,
+    let window = interp.window_ref(selected).expect("the selected window");
+    // The window's end is valid, and its base line cached in a slot the
+    // window holds, as indexing the record's slots was.
+    window.set_window_end_valid(true);
+    window.set_held_slot(
+        &mut interp,
         crate::lisp::primitives::WINDOW_BASE_LINE_SLOT,
-    ] {
-        // A slot the window holds, as indexing the record's slots was.
-        interp
-            .window_ref(selected)
-            .expect("the selected window")
-            .set_held_slot(&mut interp, slot, Value::T);
-    }
+        Value::T,
+    );
     run(
         &mut interp,
         r#"(with-current-buffer "wc-a" (vertical-motion 0))"#,
@@ -36651,7 +36650,7 @@ fn buffers_count_the_windows_showing_them() {
             .slot_opt(slot)
             .expect("a slot the window holds")
     };
-    assert!(slot(&interp, crate::lisp::primitives::WINDOW_END_VALID_SLOT).is_truthy());
+    assert!(window.window_end_valid());
     run(
         &mut interp,
         r#"(setq wc-m (list (window-point)
@@ -36660,7 +36659,7 @@ fn buffers_count_the_windows_showing_them() {
                             (window-point)
                             (buffer-name (window-buffer))))"#,
     );
-    assert!(slot(&interp, crate::lisp::primitives::WINDOW_END_VALID_SLOT).is_nil());
+    assert!(!window.window_end_valid());
     assert!(slot(&interp, crate::lisp::primitives::WINDOW_BASE_LINE_SLOT).is_nil());
     assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (2, 0));
     run(
@@ -36671,6 +36670,783 @@ fn buffers_count_the_windows_showing_them() {
     assert_eq!(count(&interp, "wc-a"), 1);
     run(&mut interp, r#"(kill-buffer "wc-a")"#);
     assert_eq!(count(&interp, "wc-b"), 0);
+}
+
+#[test]
+fn a_window_keeps_the_buffer_killed_while_it_was_being_shown() {
+    // window.c:Fset_window_buffer tests the buffer's liveness, runs
+    // `record-window-buffer', whose `buffer-list-update-hook' can kill
+    // the buffer, and then calls set_window_buffer, whose `wset_buffer
+    // (w, buffer)' stores the object it was given before Fset_buffer
+    // signals for the killed buffer.  The window is left with a killed
+    // buffer as its contents: BUFFERP, so still a leaf and a valid
+    // window, the root of its frame as before.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        let value = interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"));
+        interp.check_window_counts();
+        value
+    };
+    // FORM wrapped so that its value comes back as `%S' prints it.
+    let shown = |form: &str| format!("(format \"%S\" {form})");
+    let printed = |value: Value| string_like(&value).expect("a string").text;
+
+    let window = WindowRef::from_value(&run(&mut interp, "(setq wk-w (selected-window))"))
+        .expect("a window");
+    let height = printed(run(&mut interp, &shown("(window-total-height wk-w)")));
+    let killed = run(
+        &mut interp,
+        r#"(setq wk-b (get-buffer-create "wk-killed"))"#,
+    );
+    run(
+        &mut interp,
+        "(add-hook 'buffer-list-update-hook
+                   (lambda () (when (buffer-live-p wk-b) (kill-buffer wk-b))))",
+    );
+    // The hook kills the buffer between the liveness test and the store;
+    // Fset_buffer then signals.
+    let outcome = run(
+        &mut interp,
+        &shown(
+            "(condition-case nil (progn (set-window-buffer wk-w wk-b) 'shown) (error 'signaled))",
+        ),
+    );
+    assert_eq!(printed(outcome), "signaled");
+    run(&mut interp, "(setq buffer-list-update-hook nil)");
+    assert_eq!(
+        printed(run(&mut interp, &shown("(buffer-live-p wk-b)"))),
+        "nil"
+    );
+
+    // w->contents is the killed buffer itself.
+    assert_eq!(window.contents(), killed);
+    assert!(window.is_valid() && window.is_leaf() && !window.is_internal());
+    assert_eq!(window.live_buffer_id(&interp), None);
+    // What window.c answers for a window whose contents are not nil.
+    for (form, expected) in [
+        ("(window-valid-p wk-w)", "t"),
+        ("(window-parent wk-w)", "nil"),
+        ("(eq (frame-root-window) wk-w)", "t"),
+        ("(eq (selected-window) wk-w)", "t"),
+        ("(window-minibuffer-p wk-w)", "nil"),
+        ("(length (window-tree))", "2"),
+        ("(window-total-height wk-w)", height.as_str()),
+    ] {
+        assert_eq!(printed(run(&mut interp, &shown(form))), expected, "{form}");
+    }
+}
+
+#[test]
+fn window_contents_and_bits_say_what_a_window_is() {
+    // window.h: w->contents is a leaf's buffer, an internal window's
+    // first child and nil for a deleted window (WINDOW_VALID_P,
+    // WINDOW_LEAF_P, WINDOW_INTERNAL_P), and w->mini and w->horizontal
+    // are bits of the window, which a deleted window keeps.
+    const LEAF: (bool, bool, bool) = (true, true, false);
+    const INTERNAL: (bool, bool, bool) = (true, false, true);
+    const DELETED: (bool, bool, bool) = (false, false, false);
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        let value = interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"));
+        interp.check_window_counts();
+        value
+    };
+    let handle = |value: Value| WindowRef::from_value(&value).expect("a window");
+    let shape = |window: WindowRef| (window.is_valid(), window.is_leaf(), window.is_internal());
+
+    // The frame's first windows: leaves, the minibuffer window with its
+    // bit, each naming its buffer.
+    let top = handle(interp.selected_window_value());
+    let mini = handle(interp.minibuffer_window_value());
+    assert_eq!((shape(top), top.mini()), (LEAF, false));
+    assert_eq!((shape(mini), mini.mini()), (LEAF, true));
+    assert_eq!(top.contents_buffer_id(), Some(interp.current_buffer_id()));
+    // wset_buffer stores the buffer itself.
+    run(
+        &mut interp,
+        r#"(set-window-buffer nil (get-buffer-create "wk-a"))"#,
+    );
+    let buffer = run(&mut interp, "(window-buffer)");
+    assert!(matches!(buffer.kind(), Kind::Buffer(_)));
+    assert_eq!(top.contents(), buffer);
+
+    // A split makes a parent, a vertical combination whose contents are
+    // its first child, and a leaf showing the old window's buffer.
+    let bottom = handle(run(&mut interp, "(setq wk-bottom (split-window))"));
+    let column = handle(run(&mut interp, "(setq wk-column (window-parent))"));
+    assert_eq!((shape(column), column.horizontal()), (INTERNAL, false));
+    assert_eq!(column.contents(), top.value());
+    assert_eq!(column.first_child().map(WindowRef::id), Some(top.id()));
+    assert!(!column.mini() && column.contents_buffer_id().is_none());
+    assert_eq!((shape(bottom), bottom.contents()), (LEAF, buffer));
+    // A split the other way makes a horizontal combination; a window
+    // put before the first child becomes the contents (wset_combination).
+    let right = handle(run(
+        &mut interp,
+        "(setq wk-right (split-window wk-bottom nil t))",
+    ));
+    let row = handle(run(&mut interp, "(setq wk-row (window-parent wk-bottom))"));
+    assert_eq!((shape(row), row.horizontal()), (INTERNAL, true));
+    assert_eq!(row.contents(), bottom.value());
+    let left = handle(run(
+        &mut interp,
+        "(setq wk-left (split-window wk-bottom nil 'left))",
+    ));
+    assert_eq!(row.contents(), left.value());
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (eq (window-top-child wk-column) (frame-first-window))
+                   (window-left-child wk-column)
+                   (eq (window-left-child wk-row) wk-left)
+                   (window-top-child wk-row)
+                   (window-buffer wk-row)
+                   (window-live-p wk-row) (window-valid-p wk-row))"
+        ),
+        Value::list([
+            Value::T,
+            Value::Nil,
+            Value::T,
+            Value::Nil,
+            Value::Nil,
+            Value::Nil,
+            Value::T
+        ])
+    );
+
+    // Deleted windows have no contents, and that alone says so: the
+    // leaves, and the parents left with one child.  The bits stay.
+    run(&mut interp, "(setq wk-all (current-window-configuration))");
+    run(&mut interp, "(delete-window wk-left)");
+    assert_eq!((shape(left), left.contents()), (DELETED, Value::Nil));
+    assert_eq!(row.contents(), bottom.value());
+    run(&mut interp, "(delete-window wk-right)");
+    assert_eq!(shape(right), DELETED);
+    assert_eq!((shape(row), row.horizontal()), (DELETED, true));
+    assert_eq!(shape(bottom), LEAF);
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-valid-p wk-row) (window-live-p wk-left) (window-buffer wk-left)
+                   (equal (condition-case err (window-parent wk-row) (error err))
+                          (list 'wrong-type-argument 'window-valid-p wk-row)))"
+        ),
+        Value::list([Value::Nil, Value::Nil, Value::Nil, Value::T])
+    );
+
+    // Fset_window_configuration deletes the frame's windows and revives
+    // the saved ones: a leaf by its buffer, a parent by its first child
+    // and the direction its sizes give it.
+    run(&mut interp, "(delete-other-windows)");
+    assert_eq!((shape(column), column.horizontal()), (DELETED, false));
+    run(&mut interp, "(set-window-configuration wk-all)");
+    for leaf in [top, bottom, left, right] {
+        assert_eq!((shape(leaf), leaf.contents()), (LEAF, buffer));
+    }
+    assert_eq!((shape(column), column.horizontal()), (INTERNAL, false));
+    assert_eq!(column.contents(), top.value());
+    assert_eq!((shape(row), row.horizontal()), (INTERNAL, true));
+    assert_eq!(row.contents(), left.value());
+    assert_eq!((shape(mini), mini.mini()), (LEAF, true));
+
+    // window.c:wset_buffer and wset_combination on a window of no frame:
+    // a minibuffer window keeps its bit without contents, and a window
+    // that stops being a combination keeps its direction.
+    let id = interp.current_buffer_id();
+    let shown = interp.buffer_window_count(id);
+    let lone = make_leaf_window(&mut interp, id, 1, true, (80, 1, 0, 0));
+    interp.adjust_window_count(lone.id(), true);
+    assert_eq!(interp.buffer_window_count(id), shown + 1);
+    assert_eq!((shape(lone), lone.mini()), (LEAF, true));
+    interp.wset_buffer(lone.id(), Value::Nil);
+    assert_eq!(interp.buffer_window_count(id), shown);
+    assert_eq!((shape(lone), lone.mini()), (DELETED, true));
+    interp.wset_combination(lone.id(), true, top.value());
+    assert_eq!((shape(lone), lone.horizontal()), (INTERNAL, true));
+    assert_eq!(lone.contents(), top.value());
+    interp.wset_combination(lone.id(), false, Value::Nil);
+    assert_eq!((shape(lone), lone.horizontal()), (DELETED, true));
+    interp.check_window_counts();
+}
+
+#[test]
+fn window_sequence_number_use_time_and_cursor_bit_are_the_windows_own() {
+    // window.h: sequence_number, use_time and cursor_off_p are fields of
+    // the window.  print.c prints the first, select_window and
+    // Fwindow_bump_use_time store the second, Finternal_show_cursor the
+    // third; make_parent_window's copy has the window's use time and a
+    // number of its own, and a configuration restores none of them.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"))
+    };
+    let handle = |value: Value| WindowRef::from_value(&value).expect("a window");
+    let text = |value: Value| string_like(&value).expect("a string").text;
+
+    let top = handle(interp.selected_window_value());
+    let mini = handle(interp.minibuffer_window_value());
+    // The frame's two windows are numbered as they were made.
+    assert!(top.sequence_number() > 0);
+    assert_eq!(mini.sequence_number(), top.sequence_number() + 1);
+    assert_eq!(
+        text(run(&mut interp, "(prin1-to-string (selected-window))")),
+        format!(
+            "#<window {} on {}>",
+            top.sequence_number(),
+            text(run(&mut interp, "(buffer-name)"))
+        )
+    );
+    // The selected window has the last use time given.
+    let selected_time = top.use_time();
+    assert!(selected_time > 0);
+    assert_eq!(
+        run(&mut interp, "(window-use-time)"),
+        Value::Integer(selected_time)
+    );
+
+    // A split: the parent is numbered first (make_parent_window's
+    // `++sequence_number') and has the window's use time, the new leaf
+    // is numbered next and has none.
+    let last = interp.window_sequence_number;
+    let bottom = handle(run(&mut interp, "(setq wn-bottom (split-window))"));
+    let column = handle(run(&mut interp, "(window-parent)"));
+    assert_eq!(column.sequence_number(), last + 1);
+    assert_eq!(bottom.sequence_number(), last + 2);
+    assert_eq!(interp.window_sequence_number, last + 2);
+    assert_eq!(column.use_time(), selected_time);
+    assert_eq!((top.use_time(), bottom.use_time()), (selected_time, 0));
+    assert_eq!(
+        text(run(&mut interp, "(prin1-to-string (window-parent))")),
+        format!("#<window {}>", column.sequence_number())
+    );
+
+    // Finternal_show_cursor turns one window's cursor off.
+    run(&mut interp, "(internal-show-cursor wn-bottom nil)");
+    assert!(bottom.cursor_off_p() && !top.cursor_off_p() && !column.cursor_off_p());
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (internal-show-cursor-p wn-bottom) (internal-show-cursor-p))"
+        ),
+        Value::list([Value::Nil, Value::T])
+    );
+
+    // select_window stores the next use time in the window selected;
+    // Fwindow_bump_use_time gives a window the selected one's and the
+    // selected one the next.
+    run(&mut interp, "(setq wn-all (current-window-configuration))");
+    run(&mut interp, "(select-window wn-bottom)");
+    assert_eq!(bottom.use_time(), selected_time + 1);
+    assert_eq!(top.use_time(), selected_time);
+    assert_eq!(
+        run(&mut interp, "(window-bump-use-time (frame-first-window))"),
+        Value::Integer(selected_time + 1)
+    );
+    assert_eq!(
+        (top.use_time(), bottom.use_time()),
+        (selected_time + 1, selected_time + 2)
+    );
+
+    // A copy of the image has the windows' numbers, use times and
+    // cursor bits in its own windows.
+    let copy = interp.deep_clone_image();
+    let copied = copy.window_ref(bottom.id()).expect("the copied window");
+    assert_ne!(copied.value(), bottom.value());
+    assert_eq!(
+        (
+            copied.sequence_number(),
+            copied.use_time(),
+            copied.cursor_off_p()
+        ),
+        (bottom.sequence_number(), selected_time + 2, true)
+    );
+    drop(copy);
+    interp.select_symbol_owner();
+
+    // Fset_window_configuration leaves the three alone in a window it
+    // deletes and in one it revives; the window it selects gets the next
+    // use time.
+    run(&mut interp, "(delete-other-windows wn-bottom)");
+    run(&mut interp, "(set-window-configuration wn-all)");
+    assert!(top.is_leaf() && bottom.is_leaf() && column.is_internal());
+    assert_eq!(column.sequence_number(), last + 1);
+    assert_eq!(bottom.sequence_number(), last + 2);
+    assert_eq!(column.use_time(), selected_time);
+    assert_eq!(bottom.use_time(), selected_time + 2);
+    assert_eq!(top.use_time(), selected_time + 3);
+    assert!(bottom.cursor_off_p() && !top.cursor_off_p());
+    assert_eq!(interp.window_sequence_number, last + 2);
+}
+
+#[test]
+fn window_geometry_is_the_windows_own_integers() {
+    // window.h: pixel_left, pixel_top, left_col, top_line, pixel_width,
+    // pixel_height, the four old sizes, total_cols, total_lines and the
+    // two margins are integers of the window.  A window here is made with
+    // its pixel edges and sizes and reads its columns and lines from
+    // them until window.c's resizing assigns those.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"))
+    };
+    let handle = |value: Value| WindowRef::from_value(&value).expect("a window");
+    let pixels = |window: WindowRef| {
+        (
+            window.pixel_width(),
+            window.pixel_height(),
+            window.pixel_left(),
+            window.pixel_top(),
+        )
+    };
+    let chars = |window: WindowRef| {
+        (
+            window.total_cols(),
+            window.total_lines(),
+            window.left_col(),
+            window.top_line(),
+        )
+    };
+    let old_sizes = |window: WindowRef| {
+        (
+            window.old_pixel_width(),
+            window.old_pixel_height(),
+            window.old_body_pixel_width(),
+            window.old_body_pixel_height(),
+        )
+    };
+    let margins = |window: WindowRef| (window.left_margin_cols(), window.right_margin_cols());
+    let integers = |values: &[i64]| Value::list(values.iter().copied().map(Value::Integer));
+
+    // make_window's window: the pixel edges and sizes it is made with,
+    // no columns or lines of its own, which read as the pixels do, no
+    // old sizes and no margins.
+    let id = interp.current_buffer_id();
+    let lone = make_leaf_window(&mut interp, id, 1, false, (80, 10, 3, 4));
+    interp.adjust_window_count(lone.id(), true);
+    assert_eq!(pixels(lone), (Some(80), Some(10), Some(3), Some(4)));
+    assert_eq!(chars(lone), (None, None, None, None));
+    assert_eq!(window_char_geometry(&interp, lone.id()), (80, 10, 3, 4));
+    assert_eq!((old_sizes(lone), margins(lone)), ((0, 0, 0, 0), (0, 0)));
+    assert_eq!(window_margin_cols(&interp, lone.id()), (None, None));
+    // `w->total_cols = 70' and `w->top_line = 6' are the window's own,
+    // apart from its pixels; the others still read as those.
+    set_window_total_cols(&interp, lone.id(), 70);
+    set_window_top_line(&interp, lone.id(), 6);
+    assert_eq!(chars(lone), (Some(70), None, None, Some(6)));
+    assert_eq!(pixels(lone), (Some(80), Some(10), Some(3), Some(4)));
+    assert_eq!(window_char_geometry(&interp, lone.id()), (70, 10, 3, 6));
+    set_window_left_col(&interp, lone.id(), 0);
+    set_window_total_lines(&interp, lone.id(), 0);
+    assert_eq!(window_char_geometry(&interp, lone.id()), (70, 0, 0, 6));
+    // The dead window of a dump is given nothing.
+    let dead = interp.install_dead_window(3);
+    assert_eq!(pixels(dead), (None, None, None, None));
+    assert_eq!(chars(dead), (None, None, None, None));
+    assert_eq!(window_char_geometry(&interp, dead.id()), (0, 0, 0, 0));
+    assert_eq!((old_sizes(dead), margins(dead)), ((0, 0, 0, 0), (0, 0)));
+    // Nothing holds the two from here on: the lone window shows its
+    // buffer no longer.
+    interp.wset_buffer(lone.id(), Value::Nil);
+
+    // The frame's windows: what Lisp reads is the window's integers.
+    let top = handle(interp.selected_window_value());
+    assert!(matches!(pixels(top), (Some(_), Some(_), Some(0), Some(_))));
+    let (cols, lines, left_col, top_line) = window_char_geometry(&interp, top.id());
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-pixel-width) (window-pixel-height) (window-pixel-left) (window-pixel-top)
+                   (window-total-width) (window-total-height) (window-left-column) (window-top-line))"
+        ),
+        integers(&[
+            top.pixel_width().expect("a width"),
+            top.pixel_height().expect("a height"),
+            top.pixel_left().expect("a left edge"),
+            top.pixel_top().expect("a top edge"),
+            cols,
+            lines,
+            left_col,
+            top_line
+        ])
+    );
+    // The old sizes are read from the window.
+    top.set_old_pixel_width(71);
+    top.set_old_pixel_height(72);
+    top.set_old_body_pixel_width(73);
+    top.set_old_body_pixel_height(74);
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-old-pixel-width) (window-old-pixel-height)
+                   (window-old-body-pixel-width) (window-old-body-pixel-height))"
+        ),
+        integers(&[71, 72, 73, 74])
+    );
+
+    // A split: the new parent has the old window's pixel edges and sizes
+    // and its columns and lines (replace_window), its top line the one
+    // window-resize-apply-total gives the frame's root; the old window
+    // and the new one have the lines window_resize_apply gave them, the
+    // new one starting where the old one ends.
+    let before = (pixels(top), window_char_geometry(&interp, top.id()));
+    let bottom = handle(run(&mut interp, "(setq wg-bottom (split-window))"));
+    let column = handle(run(&mut interp, "(window-parent)"));
+    assert_eq!(pixels(column), before.0);
+    let (cols, lines, left_col, _) = before.1;
+    assert_eq!(
+        (column.total_cols(), column.total_lines(), column.left_col()),
+        (Some(cols), Some(lines), Some(left_col))
+    );
+    assert!(column.top_line().is_some());
+    assert_eq!(
+        top.total_lines()
+            .zip(bottom.total_lines())
+            .map(|(a, b)| a + b),
+        Some(lines)
+    );
+    let (_, top_lines, _, top_top_line) = window_char_geometry(&interp, top.id());
+    let (_, bottom_lines, _, bottom_top_line) = window_char_geometry(&interp, bottom.id());
+    assert_eq!(bottom_top_line, top_top_line + top_lines);
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-total-height wg-bottom) (window-top-line wg-bottom)
+                   (window-pixel-height wg-bottom) (window-pixel-top wg-bottom))"
+        ),
+        integers(&[
+            bottom_lines,
+            bottom_top_line,
+            bottom.pixel_height().expect("a height"),
+            bottom.pixel_top().expect("a top edge"),
+        ])
+    );
+
+    // Fset_window_margins stores the two margins, 0 for none.
+    assert_eq!(run(&mut interp, "(set-window-margins nil 2 3)"), Value::T);
+    assert_eq!(margins(top), (2, 3));
+    assert_eq!(margins(bottom), (0, 0));
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-margins) (window-margins wg-bottom))"
+        ),
+        Value::list([
+            Value::cons(Value::Integer(2), Value::Integer(3)),
+            Value::cons(Value::Nil, Value::Nil)
+        ])
+    );
+
+    // A copy of the image has the integers, and which the window has
+    // been given, in its own windows.
+    let copy = interp.deep_clone_image();
+    for window in [top, bottom, column] {
+        let copied = copy.window_ref(window.id()).expect("the copied window");
+        assert_ne!(copied.value(), window.value());
+        assert_eq!(
+            (
+                pixels(copied),
+                chars(copied),
+                old_sizes(copied),
+                margins(copied)
+            ),
+            (
+                pixels(window),
+                chars(window),
+                old_sizes(window),
+                margins(window)
+            )
+        );
+    }
+    drop(copy);
+    interp.select_symbol_owner();
+
+    // A configuration saves the margins with the edges and sizes, and
+    // Fset_window_configuration stores them back, in a window it revives
+    // too (the frame's windows are then fitted to the frame as it is
+    // now); the old sizes are not its to restore.  What Lisp reads is
+    // again the window's integers.
+    run(&mut interp, "(setq wg-all (current-window-configuration))");
+    run(&mut interp, "(set-window-margins nil nil 1)");
+    assert_eq!(margins(top), (0, 1));
+    let split = pixels(top);
+    run(&mut interp, "(delete-other-windows)");
+    assert_ne!(pixels(top), split);
+    assert!(!bottom.is_valid() && !column.is_valid());
+    run(&mut interp, "(set-window-configuration wg-all)");
+    assert!(top.is_valid() && bottom.is_valid() && column.is_valid());
+    assert_eq!((margins(top), margins(bottom)), ((2, 3), (0, 0)));
+    assert_eq!(old_sizes(top), (71, 72, 73, 74));
+    assert_eq!(
+        run(&mut interp, "(window-margins)"),
+        Value::cons(Value::Integer(2), Value::Integer(3))
+    );
+    for (window, name) in [(top, "(selected-window)"), (bottom, "wg-bottom")] {
+        let (cols, lines, left_col, top_line) = window_char_geometry(&interp, window.id());
+        assert_eq!(
+            run(
+                &mut interp,
+                &format!(
+                    "(let ((w {name}))
+                       (list (window-pixel-width w) (window-pixel-height w)
+                             (window-pixel-left w) (window-pixel-top w)
+                             (window-total-width w) (window-total-height w)
+                             (window-left-column w) (window-top-line w)))"
+                )
+            ),
+            integers(&[
+                window.pixel_width().expect("a width"),
+                window.pixel_height().expect("a height"),
+                window.pixel_left().expect("a left edge"),
+                window.pixel_top().expect("a top edge"),
+                cols,
+                lines,
+                left_col,
+                top_line
+            ])
+        );
+    }
+}
+
+#[test]
+fn window_redisplay_bits_and_counters_are_the_windows_own() {
+    // window.h: change_stamp, hscroll, min_hscroll, last_modified,
+    // last_overlay_modified, last_point, column_number_displayed and
+    // window_end_pos are integers of the window, and update_mode_line,
+    // last_had_star, start_at_line_beg, force_start, optional_new_start,
+    // window_end_valid, redisplay and suspend_auto_hscroll its bits.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"))
+    };
+    let handle = |value: Value| WindowRef::from_value(&value).expect("a window");
+    let counters = |window: WindowRef| {
+        (
+            window.change_stamp(),
+            (window.hscroll(), window.min_hscroll()),
+            (window.last_modified(), window.last_overlay_modified()),
+            window.last_point(),
+            window.column_number_displayed(),
+            window.window_end_pos(),
+        )
+    };
+    let bits = |window: WindowRef| {
+        [
+            window.update_mode_line(),
+            window.last_had_star(),
+            window.start_at_line_beg(),
+            window.force_start(),
+            window.optional_new_start(),
+            window.window_end_valid(),
+            window.redisplay(),
+            window.suspend_auto_hscroll(),
+        ]
+    };
+    // The change stamp, hscroll and its minimum, the two modification
+    // counts, last point, column number displayed and window_end_pos.
+    type Counters = (i64, (i64, i64), (i64, i64), i64, i64, Option<i64>);
+    // A bit's store and its reader.
+    type Bit = (fn(WindowRef, bool), fn(WindowRef) -> bool);
+    const NEW: Counters = (0, (0, 0), (0, 0), 0, -1, None);
+
+    // make_window's window, and the dead window of a dump: the integers
+    // zero, no column number displayed (-1), no window_end_pos yet, the
+    // bits clear.
+    let id = interp.current_buffer_id();
+    let lone = make_leaf_window(&mut interp, id, 1, false, (80, 10, 0, 0));
+    interp.adjust_window_count(lone.id(), true);
+    let dead = interp.install_dead_window(3);
+    for window in [lone, dead] {
+        assert_eq!((counters(window), bits(window)), (NEW, [false; 8]));
+        assert_eq!(window_last_point(&interp, window.id()), None);
+        assert_eq!(window_column_number_displayed(&interp, window.id()), None);
+    }
+    // `w->last_point = 5' and `w->column_number_displayed = 0' are the
+    // window's integers; none is 0 of the one and -1 of the other.
+    set_window_last_point(&interp, lone.id(), Some(5));
+    set_window_column_number_displayed(&interp, lone.id(), Some(0));
+    assert_eq!((lone.last_point(), lone.column_number_displayed()), (5, 0));
+    assert_eq!(window_last_point(&interp, lone.id()), Some(5));
+    assert_eq!(window_column_number_displayed(&interp, lone.id()), Some(0));
+    set_window_last_point(&interp, lone.id(), None);
+    set_window_column_number_displayed(&interp, lone.id(), None);
+    assert_eq!((lone.last_point(), lone.column_number_displayed()), (0, -1));
+    // Each bit is stored and read by its own name, alone.
+    let stores: [Bit; 8] = [
+        (WindowRef::set_update_mode_line, WindowRef::update_mode_line),
+        (WindowRef::set_last_had_star, WindowRef::last_had_star),
+        (
+            WindowRef::set_start_at_line_beg,
+            WindowRef::start_at_line_beg,
+        ),
+        (WindowRef::set_force_start, WindowRef::force_start),
+        (
+            WindowRef::set_optional_new_start,
+            WindowRef::optional_new_start,
+        ),
+        (WindowRef::set_window_end_valid, WindowRef::window_end_valid),
+        (WindowRef::set_redisplay, WindowRef::redisplay),
+        (
+            WindowRef::set_suspend_auto_hscroll,
+            WindowRef::suspend_auto_hscroll,
+        ),
+    ];
+    for (index, (store, read)) in stores.into_iter().enumerate() {
+        set_window_flag(&mut interp, lone.id(), store, true);
+        let mut expected = [false; 8];
+        expected[index] = true;
+        assert_eq!(bits(lone), expected, "bit {index}");
+        assert!(window_flag(&interp, lone.id(), read));
+        set_window_flag(&mut interp, lone.id(), store, false);
+        assert!(!window_flag(&interp, lone.id(), read));
+    }
+    assert_eq!(bits(lone), [false; 8]);
+    // Nothing holds the two from here on: the lone window shows its
+    // buffer no longer.
+    interp.wset_buffer(lone.id(), Value::Nil);
+
+    // Fset_window_hscroll stores w->hscroll and suspends the automatic
+    // scrolling; Fscroll_left with SET-MINIMUM stores w->min_hscroll.
+    let top = handle(interp.selected_window_value());
+    run(
+        &mut interp,
+        r#"(progn (set-window-buffer nil (get-buffer-create "wr-a")) (set-buffer "wr-a") (insert "abcdef\nghi\n"))"#,
+    );
+    assert_eq!(
+        run(&mut interp, "(set-window-hscroll nil 7)"),
+        Value::Integer(7)
+    );
+    assert_eq!((top.hscroll(), top.min_hscroll()), (7, 0));
+    assert!(top.suspend_auto_hscroll());
+    assert_eq!(run(&mut interp, "(scroll-left 2 t)"), Value::Integer(9));
+    assert_eq!((top.hscroll(), top.min_hscroll()), (9, 9));
+    assert_eq!(run(&mut interp, "(window-hscroll)"), Value::Integer(9));
+
+    // Fset_window_start: the start is not known to begin a line, the
+    // window's end is not valid, redisplay must use the start unless
+    // NOFORCE, and the window and its mode line are to be redisplayed.
+    top.set_start_at_line_beg(true);
+    top.set_window_end_valid(true);
+    top.set_force_start(false);
+    top.set_update_mode_line(false);
+    top.set_redisplay(false);
+    run(&mut interp, "(set-window-start nil 1 t)");
+    assert_eq!(
+        (
+            top.start_at_line_beg(),
+            top.window_end_valid(),
+            top.force_start()
+        ),
+        (false, false, false)
+    );
+    assert!(top.update_mode_line() && top.redisplay());
+    run(&mut interp, "(set-window-start nil 1)");
+    assert!(top.force_start());
+    // Fwindow_end without a redisplay: Z less w->window_end_pos.
+    top.set_window_end_pos(Some(3));
+    assert_eq!(
+        run(&mut interp, "(- (1+ (buffer-size)) (window-end))"),
+        Value::Integer(3)
+    );
+
+    // A split's parent has the window's hscroll and suspension, as the
+    // memcpy gives it.
+    let bottom = handle(run(&mut interp, "(setq wr-bottom (split-window))"));
+    let column = handle(run(&mut interp, "(window-parent)"));
+    assert_eq!((column.hscroll(), column.min_hscroll()), (9, 9));
+    assert!(column.suspend_auto_hscroll());
+    assert_eq!((bottom.hscroll(), bottom.min_hscroll()), (0, 0));
+
+    // A copy of the image has the integers and the bits in its own
+    // windows.
+    top.set_change_stamp(41);
+    top.set_last_modified(42);
+    top.set_last_overlay_modified(43);
+    top.set_last_point(44);
+    top.set_column_number_displayed(45);
+    top.set_last_had_star(true);
+    top.set_optional_new_start(true);
+    let copy = interp.deep_clone_image();
+    for window in [top, bottom, column] {
+        let copied = copy.window_ref(window.id()).expect("the copied window");
+        assert_ne!(copied.value(), window.value());
+        assert_eq!(
+            (counters(copied), bits(copied)),
+            (counters(window), bits(window))
+        );
+    }
+    drop(copy);
+    interp.select_symbol_owner();
+
+    // A configuration saves hscroll, min_hscroll, the suspension and
+    // start_at_line_beg, and Fset_window_configuration stores them back;
+    // the other integers and bits are not its to restore.
+    top.set_start_at_line_beg(true);
+    run(&mut interp, "(setq wr-all (current-window-configuration))");
+    run(&mut interp, "(set-window-hscroll nil 1)");
+    top.set_min_hscroll(1);
+    top.set_start_at_line_beg(false);
+    top.set_suspend_auto_hscroll(false);
+    run(&mut interp, "(set-window-configuration wr-all)");
+    assert_eq!((top.hscroll(), top.min_hscroll()), (9, 9));
+    assert!(top.suspend_auto_hscroll() && top.start_at_line_beg());
+    assert_eq!(
+        (
+            top.change_stamp(),
+            top.last_modified(),
+            top.last_overlay_modified(),
+            top.last_point(),
+            top.column_number_displayed()
+        ),
+        (41, 42, 43, 44, 45)
+    );
+    assert!(top.last_had_star() && top.optional_new_start());
+
+    // set_window_buffer of another buffer: no hscroll, no suspension, a
+    // start not known to begin a line and not forced, and the window's
+    // end at the buffer's.
+    run(
+        &mut interp,
+        r#"(set-window-buffer nil (get-buffer-create "wr-b"))"#,
+    );
+    assert_eq!((top.hscroll(), top.min_hscroll()), (0, 0));
+    assert_eq!(top.window_end_pos(), Some(0));
+    assert!(!top.suspend_auto_hscroll() && !top.start_at_line_beg() && !top.force_start());
+    assert!(!top.window_end_valid());
 }
 
 #[test]

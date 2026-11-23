@@ -9220,7 +9220,7 @@ pub(crate) static NATIVE_SUBRS: [NativeSubr; 1445] = [
         c"char-or-string-p",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1315 as *const std::ffi::c_void,
+        super::runtime::direct_native_char_or_string_p as *const std::ffi::c_void,
         1315,
     ),
     NativeSubr::new(
@@ -9234,42 +9234,42 @@ pub(crate) static NATIVE_SUBRS: [NativeSubr; 1445] = [
         c"closurep",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1317 as *const std::ffi::c_void,
+        super::runtime::direct_native_closurep as *const std::ffi::c_void,
         1317,
     ),
     NativeSubr::new(
         c"interpreted-function-p",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1318 as *const std::ffi::c_void,
+        super::runtime::direct_native_interpreted_function_p as *const std::ffi::c_void,
         1318,
     ),
     NativeSubr::new(
         c"byte-code-function-p",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1319 as *const std::ffi::c_void,
+        super::runtime::direct_native_byte_code_function_p as *const std::ffi::c_void,
         1319,
     ),
     NativeSubr::new(
         c"subrp",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1320 as *const std::ffi::c_void,
+        super::runtime::direct_native_subrp as *const std::ffi::c_void,
         1320,
     ),
     NativeSubr::new(
         c"markerp",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1321 as *const std::ffi::c_void,
+        super::runtime::direct_native_markerp as *const std::ffi::c_void,
         1321,
     ),
     NativeSubr::new(
         c"bufferp",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1322 as *const std::ffi::c_void,
+        super::runtime::direct_native_bufferp as *const std::ffi::c_void,
         1322,
     ),
     NativeSubr::new(
@@ -9283,7 +9283,7 @@ pub(crate) static NATIVE_SUBRS: [NativeSubr; 1445] = [
         c"arrayp",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1324 as *const std::ffi::c_void,
+        super::runtime::direct_native_arrayp as *const std::ffi::c_void,
         1324,
     ),
     NativeSubr::new(
@@ -9318,7 +9318,7 @@ pub(crate) static NATIVE_SUBRS: [NativeSubr; 1445] = [
         c"vectorp",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1329 as *const std::ffi::c_void,
+        super::runtime::direct_native_vectorp as *const std::ffi::c_void,
         1329,
     ),
     NativeSubr::new(
@@ -9353,7 +9353,7 @@ pub(crate) static NATIVE_SUBRS: [NativeSubr; 1445] = [
         c"symbol-with-pos-p",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1334 as *const std::ffi::c_void,
+        super::runtime::direct_native_symbol_with_pos_p as *const std::ffi::c_void,
         1334,
     ),
     NativeSubr::new(
@@ -9367,42 +9367,42 @@ pub(crate) static NATIVE_SUBRS: [NativeSubr; 1445] = [
         c"natnump",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1336 as *const std::ffi::c_void,
+        super::runtime::direct_native_natnump as *const std::ffi::c_void,
         1336,
     ),
     NativeSubr::new(
         c"floatp",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1337 as *const std::ffi::c_void,
+        super::runtime::direct_native_floatp as *const std::ffi::c_void,
         1337,
     ),
     NativeSubr::new(
         c"number-or-marker-p",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1338 as *const std::ffi::c_void,
+        super::runtime::direct_native_number_or_marker_p as *const std::ffi::c_void,
         1338,
     ),
     NativeSubr::new(
         c"numberp",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1339 as *const std::ffi::c_void,
+        super::runtime::direct_native_numberp as *const std::ffi::c_void,
         1339,
     ),
     NativeSubr::new(
         c"integer-or-marker-p",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1340 as *const std::ffi::c_void,
+        super::runtime::direct_native_integer_or_marker_p as *const std::ffi::c_void,
         1340,
     ),
     NativeSubr::new(
         c"integerp",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1341 as *const std::ffi::c_void,
+        super::runtime::direct_native_integerp as *const std::ffi::c_void,
         1341,
     ),
     NativeSubr::new(
@@ -17601,44 +17601,12 @@ extern "C" fn native_subr_1314(arg_0: super::runtime::NativeWord) -> super::runt
     super::runtime::invoke_subr(1314, &[arg_0])
 }
 
-extern "C" fn native_subr_1315(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1315, &[arg_0])
-}
-
 extern "C" fn native_subr_1316(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
     super::runtime::invoke_subr(1316, &[arg_0])
 }
 
-extern "C" fn native_subr_1317(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1317, &[arg_0])
-}
-
-extern "C" fn native_subr_1318(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1318, &[arg_0])
-}
-
-extern "C" fn native_subr_1319(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1319, &[arg_0])
-}
-
-extern "C" fn native_subr_1320(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1320, &[arg_0])
-}
-
-extern "C" fn native_subr_1321(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1321, &[arg_0])
-}
-
-extern "C" fn native_subr_1322(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1322, &[arg_0])
-}
-
 extern "C" fn native_subr_1323(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
     super::runtime::invoke_subr(1323, &[arg_0])
-}
-
-extern "C" fn native_subr_1324(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1324, &[arg_0])
 }
 
 extern "C" fn native_subr_1325(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
@@ -17657,44 +17625,12 @@ extern "C" fn native_subr_1328(arg_0: super::runtime::NativeWord) -> super::runt
     super::runtime::invoke_subr(1328, &[arg_0])
 }
 
-extern "C" fn native_subr_1329(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1329, &[arg_0])
-}
-
 extern "C" fn native_subr_1330(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
     super::runtime::invoke_subr(1330, &[arg_0])
 }
 
 extern "C" fn native_subr_1332(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
     super::runtime::invoke_subr(1332, &[arg_0])
-}
-
-extern "C" fn native_subr_1334(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1334, &[arg_0])
-}
-
-extern "C" fn native_subr_1336(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1336, &[arg_0])
-}
-
-extern "C" fn native_subr_1337(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1337, &[arg_0])
-}
-
-extern "C" fn native_subr_1338(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1338, &[arg_0])
-}
-
-extern "C" fn native_subr_1339(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1339, &[arg_0])
-}
-
-extern "C" fn native_subr_1340(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1340, &[arg_0])
-}
-
-extern "C" fn native_subr_1341(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1341, &[arg_0])
 }
 
 extern "C" fn native_subr_1346(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {

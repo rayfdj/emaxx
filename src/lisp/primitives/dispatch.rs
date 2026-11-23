@@ -66,7 +66,7 @@ pub(crate) use lists::{
 };
 pub(crate) use misc_keymaps::restore_unicode_menu_case_table;
 mod overlays;
-mod predicates;
+pub(crate) mod predicates;
 mod search_coding;
 pub(crate) mod strings;
 mod terminals;

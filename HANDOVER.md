@@ -117,9 +117,25 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   kind (tag 11, GNU's PVEC_WINDOW) with its slots in it; six accessors
   from byte code cost 336.1 each (GNU 244.2), a native call of one
   137.7 (GNU 48.0), one `split-window-internal' counts 129 vector cells
-  (GNU 149; 27 before).  The stages that give the object window.h's
-  fields and take the ids away follow; the item closes when a window
-  is GNU's `struct window' and the counts are GNU's.
+  (GNU 149; 27 before).  Round 372 is the third: the contents are
+  GNU's one word with the `mini' and `horizontal' bits, and the
+  sequence number, use time and cursor bit are the window's own; an
+  accessor costs 324.9 (GNU 244.2), a native call of one 122.4 (GNU
+  48.0).  Round 373 is the fourth: the geometry, the scroll and
+  redisplay counters and the redisplay bits are the window's own
+  integers and bits, 21 numbered Lisp slots being left; the counts are
+  unchanged, and one `split-window-internal' counts 117 vector cells
+  (GNU 149), the count following the object's interim size.  The
+  stages that give the object window.h's offsets and size and take the
+  ids away follow; the item closes when a window is GNU's `struct
+  window' and the counts are GNU's.
+- **In progress: D4** (native code calling a primitive).  Round 374:
+  the plan (docs/plans/d4-native-subrs.md) and its first two stages;
+  sixteen type predicates of data.c are their own link-table entries,
+  `bufferp' from native code 78.1 instructions an iteration of the
+  probe's loop against GNU's 73.0 (126.1 before).  The general entry,
+  which every other subr still takes, pays about 50 more than GNU's
+  call; the plan's later stages take it down by shape.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -19398,6 +19414,264 @@ setup_process_coding_systems's check now refuses). A 13-form
   window's id), three reads of an absent slot or name as nil that are
   the code they replace, and 1,358 changed lines with six tests and 92
   assertions added.
+- **Round 372: a window's contents are GNU's one word, and its number,
+  use time and cursor bit are its own (M2, D3 and A3.5, the third
+  stage; neither is closed).**  window.h's `contents' is the window's
+  buffer (a leaf), its first child (an internal window) or nil (a
+  deleted one), and `mini' and `horizontal' are bits; WINDOW_VALID_P,
+  WINDOW_LIVE_P, WINDOW_LEAF_P and WINDOW_INTERNAL_P are tests of that
+  word.  Emaxx held the buffer in one slot, the first child in another
+  and a kind code in a third, with a kind of its own for a deleted
+  window.  The object (alloc/vectors/windows.rs) now has the one
+  `contents' word, the first it traces, and the two bits; the handle
+  answers `is_valid', `is_leaf', `is_internal', `first_child', `mini'
+  and `horizontal' from them; `wset_combination' is the one writer of
+  a combination and `make_leaf_window' of a new leaf; the kind code is
+  gone, deleted is nil contents, and a window loaded from a dump needs
+  nothing written to be one.  GNU keeps `sequence_number', `use_time'
+  and `cursor_off_p' in the window; Emaxx kept the first and the last
+  in tables of the interpreter by window id, which nothing purged of a
+  freed window (round 371's finding), and the use time in a Lisp slot.
+  All three are fields of the object, the two tables and their manifest
+  entries are gone, and the numbered slots are 51.  **What may differ,
+  each looked at**: a combination limit set to a buffer on an internal
+  window and then a configuration restored left a window that was
+  internal and live at once, which one contents word cannot say, and is
+  now a plain internal window (GNU dies of a signal there); a window
+  with no buffer and a leaf's kind was valid and is now deleted, a
+  state only windows built by hand in tests and `make_parent_window'
+  between two stores were in; `vertical-motion' on a deleted selected
+  window makes it live for the motion, as GNU's BUFFERP test of the
+  same word does; a restored configuration does not recompute kinds,
+  the minibuffer bit being left alone (a saved tree never holds the
+  minibuffer window) and a parent's direction set when its first child
+  is restored; and in a build with debug assertions
+  `check_window_counts' is reached from `wset_combination'.
+  **Counts**: six window accessors from byte code 324.9 instructions
+  each (336.1 before; GNU 244.2), a native call of one 122.4 (137.7;
+  GNU 48.0); one `split-window-internal' still counts 129 vector cells
+  (GNU 149), the object being 58 words as before; the byte-code
+  recursion (371.1), the `mapc' callback (413.7) and the interpreted
+  `(ignore i)' loop (2,762) are unchanged.  For the probes of round 371
+  (splits and deletions, configurations, a collector stress, the dump
+  with windows) the output is GNU's on both streams; a new probe of
+  kinds, numbers, use times and cursor bits reads as round 371's build
+  does.  Three tests are new (what the contents word and the bits say a
+  window is; the number, use time and cursor bit as the window's own;
+  their going with the window when it is collected); five of
+  alloc/vectors/tests.rs and pdumper/tests.rs state the same facts at
+  the new offsets and through the new fields.
+  The independent review (the one question: does the round cheat or
+  break something) read all hundred converted uses in eight files, the
+  renumbered constants one by one, the collector and the dump, the
+  sequence numbers and the seventeen changed assertions (thirteen the
+  same layout fact at a new offset, two indifferent, two stronger), and
+  found no cheat and **one regression, fixed in the round's third
+  commit**.  Fset_window_buffer tests the buffer's liveness, calls
+  `record-window-buffer', whose `buffer-list-update-hook' can kill the
+  buffer, and then stores the object it holds (`wset_buffer (w,
+  buffer)') before Fset_buffer signals.  Emaxx looked the object up
+  again by id, found none, and stored nil; with a kind slot that was a
+  valid leaf with no buffer, with GNU's one word it is a deleted window,
+  and the frame's selected root window answered `window-valid-p' nil
+  and signalled from `window-parent', `window-tree',
+  `window-total-height', `window-minibuffer-p' and
+  `delete-other-windows'.  `set-window-buffer' now passes the object it
+  tested (`set_window_buffer_object', `show_buffer_object_in_window'),
+  the window's contents are the killed buffer as GNU's are, and those
+  forms answer as before and as GNU; a test kills the buffer from the
+  hook and asserts it.  The review also confirmed by probe that GNU
+  dies of a signal in the combination-limit case, that the restore
+  sets a parent's direction as GNU's does, and that no reader takes
+  the fixnum a new leaf holds for a window or hands it to Lisp.
+  Validation of the three commits (gate profile, one test thread a
+  process): the grouped gate 3,539 passed, 0 failed, 2 ignored (four
+  library tests more); cli 30, cli_parity 174, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding; it lists the
+  seventeen assertions the review went through (the two
+  `debug_assert_ne!' guards of a buffer slot that no longer exists
+  among them), three reads of an absent buffer or slot vector as nil or
+  empty that are the code they replace, and 1,618 changed lines with
+  four tests and 121 assertions added.
+- **Round 373: a window's geometry and redisplay state are its own
+  integers and bits (M2, D3 and A3.5, the fourth stage; neither is
+  closed).**  In window.h the edges and sizes (`pixel_left',
+  `pixel_top', `left_col', `top_line', `pixel_width', `pixel_height',
+  `total_cols', `total_lines', the four old sizes), the margins,
+  `change_stamp', `hscroll', `min_hscroll', `last_modified',
+  `last_overlay_modified', `last_point', `column_number_displayed',
+  `window_end_pos' and the bits `update_mode_line', `last_had_star',
+  `start_at_line_beg', `force_start', `optional_new_start',
+  `window_end_valid', `redisplay' and `suspend_auto_hscroll' are C
+  integers and bits of the window.  Emaxx kept each as a numbered Lisp
+  slot, which could be absent, nil or a value.  They are fields of the
+  object now, in window.h's order, with handle accessors; the numbered
+  Lisp slots are 21 besides the contents, and the object is 52 words
+  with its header.  A C integer has no absent state, so each field's
+  old states were read first (the per-field table is the stage's
+  status file): where absence had an answer of its own a `given' bit
+  stands beside the integer and the accessor answers an Option (the
+  eight edges and sizes, whose unset columns and lines read the pixel
+  fields and whose unset pixel sizes read the frame's, saved as nil in
+  a configuration and unset again when a nil is restored; and
+  `window_end_pos', which the mode line reads live metrics for while it
+  is unset); the old sizes, `change_stamp', the two modification
+  counts, `hscroll' and `min_hscroll' are plain with 0, the margins
+  plain with 0 for none (a configuration still saves nil for 0),
+  `last_point' 0 for none, `column_number_displayed' GNU's -1 for
+  none, the bits false.  The base-line cache stays a Lisp slot: it is
+  a list of six (number, position, buffer, modification count and the
+  narrowing), not window.h's two integers.  The integers are 64-bit
+  where window.h has `int'; narrowing them and dropping the `given'
+  bits belong with the stage that gives the object GNU's offsets and
+  size.  **Counts**: the accessors the probe calls are not among the
+  moved fields, so six window accessors from byte code cost 324.9 each
+  as before (GNU 244.2) and a native call of one 122.4 (GNU 48.0); the
+  byte-code recursion (371.1), the `mapc' callback (413.7) and the
+  interpreted `(ignore i)' loop (2,762) are unchanged.  One
+  `split-window-internal' counts 117 vector cells where it counted 129
+  (GNU 149): the count follows the object's size, which shrank by six
+  words a window, and moves away from GNU's until the object is GNU's
+  size.  For the probes of the earlier stages (splits and deletions,
+  configurations, the collector stress, the dump with windows) and two
+  new ones (every geometry and scroll accessor Lisp has over a fresh
+  frame, a split, margins, hscroll, a resize and a configuration saved
+  and restored; the same accessors on the dead windows of a loaded
+  dump) the output is GNU's on both streams and the previous build's.
+  Two tests are new (the geometry as the window's own integers with
+  their unset states; the redisplay bits and counters as the window's
+  own); four of alloc/vectors/tests.rs and primitives/tests.rs state
+  the same facts through the new fields.
+  The independent review (the one question: does the round cheat or
+  break something) read every removed reader and writer against its
+  replacement, the `given' bits through `window_geometry', the
+  character geometry, the configuration's save and restore, the copier
+  and `make_parent_window', the collector (the thirty slots that left
+  the traced range only ever held a fixnum, t or nil), the dump (the
+  dumper writes the held count alone and a loaded window has every new
+  field unset), and the 26 changed assertions (sixteen the layout's
+  facts restated, the bit check stronger; eight the held-slot facts on
+  the one slot still past the frame's; two the same fact through a
+  bit); it drove two terminal sessions through the column and line
+  mode line, the modified star, automatic hscroll, margins, splits, a
+  second frame, a resize, isearch, narrowing, the minibuffer growing
+  and configurations, 188 screens identical between the builds, and a
+  batch probe of hscroll's extremes, margins, window states and a
+  revived window identical between the builds and GNU.  It found no
+  cheat and nothing broken.  The one difference Lisp can see is the
+  vector-cell count above, which `memory-use-counts' takes from the
+  object's real words (52 a window now, 58 before, GNU 66); the two
+  stores that are no longer conditional write false over false.
+  Validation of the two commits (gate profile, one test thread a
+  process): the grouped gate 3,541 passed, 0 failed, 2 ignored (two
+  library tests more); cli 30, cli_parity 174, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  In the gate's first run, made beside two other
+  builds, `filenotify_scenarios_match_the_oracle_through_keyboard_reads'
+  failed in its group (four events counted where two are expected, in
+  a scenario that waits a tenth of a second for each); it passed five
+  times of five alone on the same binary and its whole group passed
+  when run again, 474 of 474.  The round audit reports no hard
+  finding; it lists the 26 assertions the review went through, one
+  read of an absent slot vector as empty that is the code it replaces,
+  and 2,637 changed lines with two tests and 145 assertions added.
+  The plan of the windows work, with its inventory and stages, is now
+  in the repository as docs/plans/d3-windows.md.
+- **Round 374: native code calls sixteen type predicates themselves
+  (M2, D4, the first two stages of its plan; not closed).**  GNU's link
+  table for native code holds each subr's C function (comp.c's freloc,
+  `subr->function.a0'), so `(bufferp x)' in native-compiled Lisp is a
+  call of Fbufferp, about twelve instructions.  Emaxx's entry for all
+  but 36 subrs was a generated shell that passed the subr's index to
+  `invoke_subr': the subr found by index, its Rust entry read from a
+  word learned at the first call, the interpreter found through a
+  thread-local, the handler list compared, the body called with a
+  slice of its arguments and its `Result' tested, 40 instructions
+  around a body that checks its argument count again.  Measured before
+  the round in a native loop (instructions an iteration, the loop
+  itself 51 against GNU's 50): `bufferp' and `<' 126.1 against 73.0,
+  `vectorp' 109.1 against 58.0, `point' 110.1 against 57.0, `keywordp'
+  187.3 against 64.0, `delq' 220.1 against 151.0, `assoc' 270.1 against
+  167.0; `=', `>=', `max' and `cons' at or under GNU's (they had word
+  entries).  In a profile of byte-compiling subr-x.el (353M
+  instructions) native code called subrs 74,621 times, 237 of them
+  distinct, `cons' 31%, `nth' 14%, `=' and `+' 5.6% each: the general
+  path's excess is about 1% of such a run.  The plan
+  (docs/plans/d4-native-subrs.md, with the inventory and the stages)
+  gives a subr's table entry one of four shapes: the predicate
+  itself for a subr whose C body reads only its argument words; the
+  interpreter read alone for one that reads interpreter state and
+  cannot signal; the general path written into the wrapper with the
+  index and arity constant; the same over the caller's vector for a
+  MANY subr.  **This round**: the measurement probes (eighteen
+  `native-*' files of tools/perf/probes); a table-driven test that
+  every word-level entry of the link table answers as its primitive
+  over a sample of every kind of object, with
+  `symbols-with-pos-enabled' nil and t, each predicate shown to answer
+  both t and nil, its list of names tied to the generator's; a
+  `--reemit' mode of tools/generate_native_subrs.rs that emits a table
+  again from an existing one (the Darwin table has no GNU build here
+  to regenerate from) and a test that the two tables give each shared
+  name the same target and shape; and sixteen predicates of data.c
+  (`symbol-with-pos-p', `vectorp', `bufferp', `markerp', `subrp',
+  `closurep', `byte-code-function-p', `interpreted-function-p',
+  `floatp', `integerp', `numberp', `natnump', `integer-or-marker-p',
+  `number-or-marker-p', `char-or-string-p', `arrayp'), each dispatch
+  arm's expression moved into a function of the value that the arm and
+  a `direct_native_*' entry both call, the generator selecting them,
+  both tables regenerated (the Linux one byte for byte the output of
+  CI's own recipe on GNU's build, before and after).  `recordp' stays
+  on the general entry: Emaxx's arm collects a vector for the reader's
+  record form, so it can allocate.  src/anti_cheat.rs gains the
+  sixteen contract entries its exact fast-path inventory requires
+  (owner `data.c:Fname', the table test as contract), nothing else in
+  it changing; the round audit lists the file as changed
+  infrastructure for that.  **After**: `bufferp' and `<' 78.1 (GNU
+  73.0), `vectorp' 63.1 (58.0), `symbol-with-pos-p' 63.1 (58.0); the
+  five instructions left are `Value::kind's tag switch against
+  lisp.h's single test; every other probe, the byte-code recursion
+  (371.1), the `mapc' callback (413.7) and the window accessors are
+  unchanged.  **What is left of D4**: `recordp', `bare-symbol',
+  `keywordp' (its body 94 instructions against GNU's 14: a substring
+  search of the symbol's name) and `nth' with a variable index (157.1
+  against 101.0); the entries that read the interpreter (`point' 110.1
+  against 57.0); the thirteen kinds that still reach a cascade through
+  general wrappers (`+' 170.1 against 151.0); the general fixed and
+  MANY entries (about 17 and 27 instructions fewer each when written
+  into the wrapper); the bodies of `assoc' and `delq'.
+  The independent review (the one question: does the round cheat or
+  break something) compared each of the sixteen functions with the arm
+  it came from and with its DEFUN, read the entries' machine code (leaf
+  functions: no call, no thread-local, tag and header loads only), and
+  probed 125 objects against the sixteen predicates from native code
+  directly and through `funcall', `apply' and `mapcar', with byte-code
+  and interpreted twins, under both settings of
+  `symbols-with-pos-enabled': GNU, the build before and the build after
+  answer alike in every cell, as they do for literals of an eln's
+  constants, for handlers popped inline around the calls, signals,
+  throws, a collection, a second thread, and for `advice-add', `fset'
+  and `defalias' of four of the predicates with trampolines on and
+  off.  Both tables changed in exactly the sixteen targets and the
+  sixteen shells removed, no subr renumbered.  It found no cheat and
+  nothing broken, and noted of the round's own tests that the table
+  test proves the wiring (entry and arm now call one function, so only
+  the "answers both t and nil" assertion constrains the predicate
+  itself, whose arms keep their own tests), that a name added to the
+  test's second list would satisfy its tie to the generator without
+  being compared, and that the generator asserts no arity for a
+  runtime target.
+  Validation of the five commits (gate profile, one test thread a
+  process): the grouped gate 3,543 passed, 0 failed, 2 ignored (two
+  library tests more); cli 30, cli_parity 174, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding; it lists
+  src/anti_cheat.rs as changed infrastructure (the sixteen contract
+  entries appended to the inventory, nothing else), and 1,675 changed
+  lines with two tests and twenty assertions added, none removed.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -22641,7 +22915,91 @@ ert-tests as a whole 26,307 ms against 27,211.
   45157208861) passed: 3,542 library tests, the seven integration
   targets (217) and the binaries' tests (61), none failed.
 
+**On `66f970c`** (round 372): the frozen run (run 45174251278) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 84.6 s against 69.1 s (1.224), test bodies 304.9 s
+  against 275.5 s (1.107), in all 1.130, on a slow runner (GNU's suite
+  took 345 s, against 270 to 290 s in the three runs before it).  The
+  widest body gaps are ert-tests (42.7 s against 38.9 s), tramp-tests
+  (23.2 against 20.0), comp-tests (18.4 against 15.6),
+  semantic-utest-ia (4.41 against 3.01), mule-tests (3.23 against 2.03)
+  and package-tests (7.10 against 6.25).  The Rust gate (run
+  45174246207) passed: 3,546 library tests, the seven integration
+  targets (217) and the binaries' tests (61), none failed.
+
+**On `6376c5d`** (round 373): the frozen run's first attempt (run
+  45185894350) matched 7,927 of 7,928 outcomes: the one that differed
+  is `eglot-test-rust-completion-exit-function', which passed in GNU
+  and in Emaxx failed with `(jsonrpc-error "request id=2 failed:"
+  (jsonrpc-error-message . "Timed out"))' after 11.1 s, the language
+  server's answer not arriving in time on a slow runner (setup 1.281,
+  test bodies 1.138, in all 1.165; GNU's suite 312 s).  The one re-run
+  the rule allows (run 45193320123, on `a370032', the same source with
+  round 372's CI note) matched all 7,928 outcomes with no unsuccessful
+  execution: setup 73.6 s against 56.1 s (1.313), test bodies 266.0 s
+  against 246.1 s (1.081), in all 1.124 (GNU's suite 302 s).  The
+  widest body gaps are comp-tests (16.0 s against 12.5 s), tramp-tests
+  (18.2 against 16.0), icalendar-tests (1.87 against 0.35),
+  semantic-utest-ia (3.12 against 2.23), process-tests (2.62 against
+  1.77) and mule-tests (2.36 against 1.53).  The setup ratio of the
+  last three runs (1.224, 1.281, 1.313) is the runners': Emaxx's
+  startup executes 128.4 million instructions in the builds of rounds
+  371 to 374 alike (GNU 151.1 million).  The Rust gate (run
+  45185888428) passed: 3,548 library tests, the seven integration
+  targets (217) and the binaries' tests (61), none failed.
+
+**On `4fb2ec4`** (round 374): the frozen run (run 45198231570) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 51.3 s against 43.0 s (1.195), test bodies 228.4 s
+  against 215.6 s (1.060), in all 1.082 (GNU's suite took 259 s).  The
+  widest body gaps are comp-tests (10.7 s against 9.0 s), tramp-tests
+  (14.5 against 12.9), semantic-utest-ia (2.66 against 1.84),
+  process-tests (2.17 against 1.48), mule-tests (1.90 against 1.27) and
+  package-tests (5.78 against 5.30).  The Rust gate (run
+  45198225377) passed: 3,550 library tests, the seven integration
+  targets (217) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 374 and its review), outside the
+  round and in no milestone.**  One line each: the link-table entries
+  of `symbolp' and `bare-symbol-p' answer t for the unbound marker
+  where their primitives answer nil (no Lisp value is that marker);
+  `interpreted-function-p' is "a closure whose code is not a string"
+  where GNU requires a cons (the reader and the constructors refuse
+  the closures that would tell them apart); a pseudovector of a code
+  the allocator does not know reads as a plain vector, so `vectorp'
+  would answer t for one; `recordp' collects a vector to test the
+  reader's record form.
+- **Found after the scope lock (round 373 and its review), outside the
+  round and in no milestone.**  One line each: the parent a split makes
+  does not take the split window's old sizes, margins or redisplay
+  state, where GNU's make_parent_window copies the whole window
+  (`window-old-pixel-width' and `-height' of the parent 0 and 0, GNU 80
+  and 22); `split-window-internal' and `fringe-bitmaps-at-pos' given
+  the dead window of a loaded dump end GNU itself with a signal; the
+  terminal screens of the review's two sessions differ from GNU's on
+  39 of 188, alike before and after the round (not looked into);
+  `window_scroll' carries a `clippy::too_many_arguments' allowance
+  from before the lock.
+- **Found after the scope lock (round 372 and its review), outside the
+  round and in no milestone.**  One line each: in a window whose
+  contents are a killed buffer (a `buffer-list-update-hook' that kills
+  the buffer `set-window-buffer' is showing), `window-live-p' and
+  `window-buffer' test the buffer's liveness where GNU tests BUFFERP
+  (GNU t and the killed buffer, Emaxx nil and nil), and `window-start',
+  `window-point', `window-list', `split-window' and `switch-to-buffer'
+  answer or signal differently from GNU's, before the round as after;
+  a new leaf holds its buffer's id as a fixnum in its contents until
+  the first wset_buffer; `window_is_minibuffer' is false for a deleted
+  minibuffer window where GNU tests the bit alone; the parent a split
+  makes does not take the split window's cursor bit
+  (`internal-show-cursor-p' of the parent t, GNU nil, whose
+  make_parent_window copies the window); `make_window' gives every
+  window the selected frame, the parent's copy included, and drops the
+  four character-geometry slots `window_record_slots' fills; the two
+  `delete_all_child_windows' keep the deleted windows' buffers
+  differently; `vertical-motion' refuses a deleted selected window
+  given as nil where GNU's decode_live_window takes it.
 - **Found after the scope lock (round 371 and its review), outside the
   round and in no milestone.**  One line each:
   `lread--substitute-object-in-subtree' walks and rewrites the slots of

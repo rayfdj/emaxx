@@ -357,11 +357,11 @@ impl Interpreter {
     /// `suspended_old_point' for a change made in BUFFER_ID as the
     /// current buffer.
     pub(crate) fn suspended_old_point_in(&self, buffer_id: u64) -> Option<usize> {
-        use crate::lisp::primitives::{WINDOW_OLD_POINT_SLOT, WINDOW_SUSPEND_AUTO_HSCROLL_SLOT};
+        use crate::lisp::primitives::{WINDOW_OLD_POINT_SLOT, WindowRef};
         let window_id = self.selected_window_id();
         let suspended = self
             .window_ref(window_id)
-            .is_some_and(|window| window.slot(WINDOW_SUSPEND_AUTO_HSCROLL_SLOT).is_truthy());
+            .is_some_and(WindowRef::suspend_auto_hscroll);
         if !suspended
             || crate::lisp::primitives::window_buffer_id(self, &self.window_value(window_id))
                 != Some(buffer_id)
@@ -374,11 +374,7 @@ impl Interpreter {
     /// The selected window's w->suspend_auto_hscroll.
     pub(crate) fn auto_hscroll_suspended(&self) -> bool {
         self.window_ref(self.selected_window_id())
-            .is_some_and(|window| {
-                window
-                    .slot(crate::lisp::primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT)
-                    .is_truthy()
-            })
+            .is_some_and(crate::lisp::primitives::WindowRef::suspend_auto_hscroll)
     }
 
     /// w->suspend_auto_hscroll set again for the selected window, after
@@ -387,11 +383,7 @@ impl Interpreter {
     pub(crate) fn suspend_auto_hscroll_again(&mut self) {
         let window_id = self.selected_window_id();
         if let Some(window) = self.window_ref(window_id) {
-            window.set_slot_if_held(
-                self,
-                crate::lisp::primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
-                Value::T,
-            );
+            window.set_suspend_auto_hscroll(true);
         }
     }
 
@@ -399,11 +391,7 @@ impl Interpreter {
     pub(crate) fn resume_auto_hscroll(&mut self) {
         let window_id = self.selected_window_id();
         if let Some(window) = self.window_ref(window_id) {
-            window.set_slot_if_held(
-                self,
-                crate::lisp::primitives::WINDOW_SUSPEND_AUTO_HSCROLL_SLOT,
-                Value::Nil,
-            );
+            window.set_suspend_auto_hscroll(false);
         }
     }
 

@@ -21,6 +21,14 @@ The counts used for HANDOVER's tables:
     mapc-bc:200:600 mapc-interp:200:600 interp-ignore:200000:600000
     princ-interp:50000:150000 windows:100000:300000 ucs-names:1:3
     read-file:2:6 mapc-bc-bc:200:600
+
+and for a subr called from native code, each at 100000:300000
+(native-base is the loop they share, with no call in it):
+
+    native-base native-vectorp native-symbol-with-pos-p native-recordp
+    native-bare-symbol native-keywordp native-nth native-nth-var
+    native-point native-plus native-max native-symbol-name native-delq
+    native-assoc native-logand native-cons native-eqlsign native-geq
 """
 import concurrent.futures
 import os
