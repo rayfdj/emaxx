@@ -583,10 +583,9 @@ fn bytecode_call(
         Kind::Symbol(name) => Some(name),
         _ => None,
     };
-    interp.capture_current_backtrace_context(
-        callee_name.as_ref().map(|name| name.as_str()),
+    interp.capture_call_backtrace_context(
+        || callee_name.is_some_and(|name| name.is_named(crate::lisp::eval::BACKTRACE_EVAL)),
         env,
-        None,
     );
     crate::lisp::native_comp::maybe_gc(interp, env);
     // `if (debug_on_next_call) do_debug_on_call (Qlambda, count1)': a
@@ -1081,9 +1080,7 @@ fn plain_dynamic_bindings(
         let symbol = cell.car.get().symbol_cell()?;
         // Only a name that starts with `&' can be either keyword, and
         // neither is a symbol of `make-symbol' no text was built for.
-        let keyword = symbol
-            .host_text_if_built()
-            .is_some_and(|text| text.starts_with('&'));
+        let keyword = symbol.host_text_starts_with(b'&');
         if keyword && cached_symbol!("&rest").with(|key| *key == symbol) {
             if rest || previous_rest {
                 return None;
@@ -4501,9 +4498,7 @@ fn bind_dynamic_arguments(
         };
         // Only a name that starts with `&' can be either keyword, and
         // neither is a symbol of `make-symbol' no text was built for.
-        let keyword = symbol
-            .host_text_if_built()
-            .is_some_and(|text| text.starts_with('&'));
+        let keyword = symbol.host_text_starts_with(b'&');
         if keyword && cached_symbol!("&rest").with(|key| *key == symbol) {
             if rest || previous_rest {
                 return Err(invalid());

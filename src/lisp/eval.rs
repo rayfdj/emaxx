@@ -60,6 +60,7 @@ pub(crate) use threads::{ChannelOutcome, WaitChannel};
 mod treesit;
 mod variables;
 use bootstrap::*;
+pub(crate) use core::BACKTRACE_EVAL;
 pub(crate) use core::NativeForm;
 pub(crate) use core::is_special_form_name;
 mod ert;

@@ -3098,6 +3098,21 @@ impl Interpreter {
         self.capture_backtrace_context(env, activation_frame);
     }
 
+    /// `capture_current_backtrace_context' of a call, whose function is
+    /// `backtrace-eval' when BACKTRACE_EVAL answers so: it is asked only
+    /// when Edebug is not entered, and reads the function's name in place.
+    #[inline(always)]
+    pub(crate) fn capture_call_backtrace_context(
+        &mut self,
+        backtrace_eval: impl FnOnce() -> bool,
+        env: &Env,
+    ) {
+        if !self.edebug_entered_active(env) && !backtrace_eval() {
+            return;
+        }
+        self.capture_backtrace_context(env, None);
+    }
+
     #[cold]
     fn capture_backtrace_context(&mut self, env: &Env, activation_frame: Option<&EnvFrame>) {
         let mut context = env.clone();

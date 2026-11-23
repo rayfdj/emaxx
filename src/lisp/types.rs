@@ -722,7 +722,17 @@ impl SymbolName {
     /// which would be built with the marker, is not built to say so.)
     #[inline]
     pub fn is_named(&self, text: &str) -> bool {
-        self.0.internal.get() == Some(text)
+        self.0.internal.is(text)
+    }
+
+    /// Whether the host text starts with BYTE, a byte no marker is.  A
+    /// pending text is not built for this and answers false, so the test
+    /// is for a caller that goes on to compare the symbol with one a
+    /// symbol of `make_symbol' never is (the walks' `&rest' and
+    /// `&optional').
+    #[inline(always)]
+    pub(crate) fn host_text_starts_with(&self, byte: u8) -> bool {
+        self.0.internal.first_byte() == Some(byte)
     }
 
     pub(crate) fn identity_ptr(&self) -> usize {

@@ -25,9 +25,16 @@ use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 /// never changed after: a box the cell owns and frees with it, text of
 /// the permanent image, which lives as long as the process, or none yet
 /// (`pending': a symbol of Fmake_symbol, whose text is built when a
-/// reader first asks for one).  Two words: the text's address, null
-/// while the text is pending, and its length with the top bit set when
-/// the box is the cell's.
+/// reader first asks for one).  Two words: the text's address, and its
+/// length with the top bit set when the box is the cell's.
+///
+/// A pending text's length word has `PENDING_TEXT' set, which no text's
+/// length has (no text that long fits in the address space), so a
+/// comparison of lengths (`is') finds it equal to no text without a test
+/// of its own; its address word is that of `PENDING_BYTE', the
+/// uninterned marker, so that the read of a first byte (`first_byte')
+/// reads a byte there, the marker, not one of the text it would be
+/// built as.
 ///
 /// The words are cells, so the one write of a pending text goes through
 /// a shared reference: symbols are read and written by the one Lisp
@@ -41,6 +48,8 @@ pub(crate) struct SymbolText {
 }
 
 const OWNED_TEXT: usize = 1 << (usize::BITS - 1);
+const PENDING_TEXT: usize = 1 << (usize::BITS - 2);
+const PENDING_BYTE: &str = "\u{1F}";
 
 impl SymbolText {
     pub(crate) fn owned(text: String) -> Self {
@@ -69,68 +78,90 @@ impl SymbolText {
     /// No text yet: `install' writes it.
     pub(crate) const fn pending() -> Self {
         Self {
-            text: Cell::new(std::ptr::null()),
-            len: Cell::new(0),
+            text: Cell::new(PENDING_BYTE.as_ptr()),
+            len: Cell::new(PENDING_TEXT),
         }
     }
 
     /// No text yet, for a symbol of the private obarray OBARRAY, whose
-    /// text the builder makes with the obarray's id: the length word of
-    /// a pending text holds the id plus one, zero for no obarray.
+    /// text the builder makes with the obarray's id: beside
+    /// `PENDING_TEXT', the length word holds the id plus one, zero for no
+    /// obarray.
     pub(crate) fn pending_private(obarray: u64) -> Self {
         let len = usize::try_from(obarray)
             .ok()
             .and_then(|id| id.checked_add(1))
+            .filter(|len| len & (OWNED_TEXT | PENDING_TEXT) == 0)
             .expect("an obarray's id");
         Self {
-            text: Cell::new(std::ptr::null()),
-            len: Cell::new(len),
+            text: Cell::new(PENDING_BYTE.as_ptr()),
+            len: Cell::new(PENDING_TEXT | len),
         }
     }
 
     /// The private obarray a pending text was made for
-    /// (`pending_private'), or None for a built text or an uninterned
+    /// (`pending_private'), or None for a written text or an uninterned
     /// symbol's.
     pub(crate) fn pending_obarray(&self) -> Option<u64> {
         let len = self.len.get();
-        (self.text.get().is_null() && len != 0).then(|| (len - 1) as u64)
+        (len & PENDING_TEXT != 0 && len != PENDING_TEXT).then(|| (len - PENDING_TEXT - 1) as u64)
     }
 
     /// The text, or None while it is pending.
     #[inline(always)]
     pub(crate) fn get(&self) -> Option<&str> {
-        let text = self.text.get();
-        if text.is_null() {
+        let len = self.len.get();
+        if len & PENDING_TEXT != 0 {
             return None;
         }
         // SAFETY: a written text was a `str' and is never written again;
         // a box is freed only with the cell.
         Some(unsafe {
             std::str::from_utf8_unchecked(std::slice::from_raw_parts(
-                text,
-                self.len.get() & !OWNED_TEXT,
+                self.text.get(),
+                len & !OWNED_TEXT,
             ))
         })
+    }
+
+    /// Whether the text is TEXT: never while it is pending.
+    #[inline(always)]
+    pub(crate) fn is(&self, text: &str) -> bool {
+        let len = self.len.get() & !OWNED_TEXT;
+        // SAFETY: equal lengths are a written text's, LEN bytes at its
+        // address (see the type).
+        len == text.len()
+            && unsafe { std::slice::from_raw_parts(self.text.get(), len) } == text.as_bytes()
+    }
+
+    /// The text's first byte, or None for an empty text; for a pending
+    /// text, the uninterned marker (see the type).
+    #[inline(always)]
+    pub(crate) fn first_byte(&self) -> Option<u8> {
+        // SAFETY: a nonempty text, or a pending one, has a byte at its
+        // address (see the type).
+        (self.len.get() & !OWNED_TEXT != 0).then(|| unsafe { *self.text.get() })
     }
 
     /// Write TEXT as the text of a pending symbol, once (see the type).
     pub(crate) fn install(&self, text: String) -> &str {
         assert!(
-            self.text.get().is_null(),
+            self.len.get() & PENDING_TEXT != 0,
             "a symbol's host text written twice"
         );
         let (text, len) = Self::boxed(text);
-        self.len.set(len);
         self.text.set(text);
+        self.len.set(len);
         self.get().expect("the text just written")
     }
 }
 
 impl Drop for SymbolText {
     fn drop(&mut self) {
-        let (text, len) = (self.text.get(), self.len.get());
-        if !text.is_null() && len & OWNED_TEXT != 0 {
-            let text = std::ptr::slice_from_raw_parts_mut(text.cast_mut(), len & !OWNED_TEXT);
+        let len = self.len.get();
+        if len & (OWNED_TEXT | PENDING_TEXT) == OWNED_TEXT {
+            let text =
+                std::ptr::slice_from_raw_parts_mut(self.text.get().cast_mut(), len & !OWNED_TEXT);
             // SAFETY: the owned text is the box `boxed' made.
             drop(unsafe { Box::from_raw(text as *mut str) });
         }

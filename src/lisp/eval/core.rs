@@ -81,6 +81,15 @@ impl<'a> CallName<'a> {
         }
     }
 
+    /// Whether the callee is `backtrace-eval' (`is_backtrace_eval_name'),
+    /// a symbol's text read with no text built for it.
+    fn is_backtrace_eval(self) -> bool {
+        match self {
+            Self::Symbol(name) => name.is_named(BACKTRACE_EVAL),
+            Self::Text(name) => is_backtrace_eval_name(name),
+        }
+    }
+
     fn original_symbol_value(self) -> Value {
         match self {
             Self::Symbol(name) => Value::Symbol(*name),
@@ -687,7 +696,7 @@ impl Interpreter {
             unsafe { std::slice::from_raw_parts(argvals.as_ptr().cast::<Value>(), maximum) };
         // The callee's symbol has a function, so it is no built-in nil or t.
         self.set_backtrace_args(Value::symbol_of_cell(name), &argvals[..nargs]);
-        self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+        self.capture_call_backtrace_context(|| name.is_named(BACKTRACE_EVAL), env);
         let args = argvals;
         let result = match subr.descriptor().direct_entry() {
             Some(direct) => direct(self, args, env),
@@ -765,7 +774,7 @@ impl Interpreter {
             unsafe { std::slice::from_raw_parts(argvals.as_ptr().cast::<Value>(), maximum) };
         // The callee's symbol has a function, so it is no built-in nil or t.
         self.set_backtrace_args(Value::symbol_of_cell(name), &argvals[..nargs]);
-        self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+        self.capture_call_backtrace_context(|| name.is_named(BACKTRACE_EVAL), env);
         let result = crate::lisp::native_comp::call_function_inline(self, env, native, argvals);
         let result = self.settle_call_result(depth, result, env);
         self.truncate_backtrace_frames(depth);
@@ -834,7 +843,7 @@ impl Interpreter {
             unsafe { std::slice::from_raw_parts(argvals.as_ptr().cast::<Value>(), argnum) };
         // The callee's symbol has a function, so it is no built-in nil or t.
         self.set_backtrace_args(Value::symbol_of_cell(name), args);
-        self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+        self.capture_call_backtrace_context(|| name.is_named(BACKTRACE_EVAL), env);
         let result = match subr.descriptor().direct_entry() {
             Some(direct) => direct(self, args, env),
             None => primitives::call_with_facts_arity_checked(
@@ -913,7 +922,7 @@ impl Interpreter {
         let args: &[Value] = unsafe { std::slice::from_raw_parts(vals, argnum) };
         // The callee's symbol has a function, so it is no built-in nil or t.
         self.set_backtrace_args(Value::symbol_of_cell(name), args);
-        self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+        self.capture_call_backtrace_context(|| name.is_named(BACKTRACE_EVAL), env);
         // SAFETY: VALS is this frame's array, its first ARGNUM slots
         // written, and ARGS is not used again; the backtrace frame keeps
         // the array's address, as GNU's does, and reads through it only.
@@ -1288,7 +1297,7 @@ impl Interpreter {
         env: &mut Env,
     ) -> Result<Value, LispError> {
         self.set_backtrace_args(Value::symbol_of_cell(*name), args);
-        self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+        self.capture_call_backtrace_context(|| name.is_named(BACKTRACE_EVAL), env);
         // A native callee is tested first: the closure's test is not made
         // for it, and its usual call is made here.
         let result = if let Some(native) = func.native_function_ref() {
@@ -1458,7 +1467,7 @@ impl Interpreter {
                     && !profiling() =>
             {
                 self.set_backtrace_args(Value::symbol_of_cell(*name), args);
-                self.capture_current_backtrace_context(Some(name.as_str()), env, None);
+                self.capture_call_backtrace_context(|| name.is_named(BACKTRACE_EVAL), env);
                 let result =
                     self.funcall_interpreted_lambda(func, Some(CallName::Symbol(name)), args, env);
                 let result = self.settle_call_result(depth, result, env);
@@ -1938,7 +1947,10 @@ impl Interpreter {
         // The frame is written and popped in place, as eval_sub's is.
         let depth = self.backtrace_frames.len();
         self.push_backtrace_frame_borrowed(backtrace_function, args);
-        self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
+        self.capture_call_backtrace_context(
+            || original_name.is_some_and(CallName::is_backtrace_eval),
+            env,
+        );
         if marked {
             self.set_frame_debug_on_exit(depth, true);
         }
@@ -2585,7 +2597,10 @@ impl Interpreter {
                 env.push(EnvFrame::from_alist(lexical_environment));
                 self.install_frame_environment(lexical_environment);
             }
-            self.capture_current_backtrace_context(original_name.map(CallName::as_str), env, None);
+            self.capture_call_backtrace_context(
+                || original_name.is_some_and(CallName::is_backtrace_eval),
+                env,
+            );
             let body = match function.kind() {
                 Kind::Closure(lambda) => lambda.body(),
                 _ => function.cdr()?.cdr()?,
@@ -2663,7 +2678,7 @@ impl InterpreterState {
         (self.lisp_eval_depth as i64) < self.call_depth_gate
             && !primitives::atimer::signals_pending()
             && !self.edebug_may_be_entered()
-            && name.is_none_or(|name| !is_backtrace_eval_name(name.as_str()))
+            && name.is_none_or(|name| !name.is_named(BACKTRACE_EVAL))
     }
 
     /// Whether a call may have to record its frame's lexical context for
@@ -2766,6 +2781,9 @@ impl Interpreter {
         LispError::Terminate(termination)
     }
 }
+
+/// The function whose calls keep their lexical context for Edebug.
+pub(crate) const BACKTRACE_EVAL: &str = "backtrace-eval";
 
 /// Whether NAME is `backtrace-eval': its fourteen bytes compared as an
 /// array of known size, two loads rather than a call to memcmp.
