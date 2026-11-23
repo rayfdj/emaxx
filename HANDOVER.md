@@ -34,6 +34,57 @@ A round's review answers whether the round cheats or breaks something; it does
 not survey the neighbourhood of the change. Current user instructions take
 precedence over this plan as over everything here.
 
+### M2: structure and performance — 1 of 30 done
+
+**Baseline of 23 November 2026**, on `394d57de` (round 366's source) under
+Rust 1.100.0, with GNU 30.2 on this host as the oracle.
+
+- **The locked suite** (the build of `tools/pgo-build.sh`; `prepare`,
+  `calibrate` and `run` of `tools/core_runtime_perf.py`, all
+  `--diagnostic`, nine rounds). Emaxx/GNU, the median and its 95%
+  interval: interpreted-lexical 0.646 [0.599, 0.693], interpreted-dynamic
+  0.705 [0.688, 0.720], interpreted-calls 0.717 [0.688, 0.780],
+  **bytecode-calls 0.986 [0.956, 1.081]**, native-execution 0.492 [0.470,
+  0.518], interpreted-to-native 0.826 [0.682, 0.842], bytecode-to-native
+  0.869 [0.848, 0.903], native-to-interpreted 0.715 [0.662, 0.737],
+  native-to-bytecode 0.760 [0.722, 0.816], cons-allocation 1.000 [0.937,
+  1.026], list-traversal 0.806 [0.784, 0.834], mapcar 0.858 [0.765,
+  0.929], explicit-gc 0.758 [0.752, 1.007], upstream-sort 0.696 [0.633,
+  0.790], **upstream-undo 1.018 [0.994, 1.218]**, upstream-bindat 0.660
+  [0.627, 0.684]; geometric mean 0.770. Fourteen bounds are at or under
+  1.03. Byte-code calls (B4) and undo (B15) are over, and cons allocation
+  (B10) is under by 0.004, which is no margin. The calibration run just
+  before it (GNU against itself) resolved no workload: its intervals ran
+  from native-execution's [0.953, 1.020] to list-traversal's [0.954,
+  1.337] and cons-allocation's [0.688, 1.229], GNU's own samples of one
+  workload ranging from 0.30 s to 0.65 s. The host carried other load
+  then and less during the comparison. A run on this host therefore
+  shows where the medians are; whether a bound near 1.03 holds is decided
+  only when GNU against itself resolves in the same session.
+- **Instructions a unit** (`tools/perf/cg-table.py`, the probes of
+  `tools/perf/probes`; the release build, Emaxx against GNU): a
+  one-argument recursion in byte code 367 against 315 lexical and 693
+  against 636 dynamic (D9); `looking-at` at a failing position 1,387
+  against 1,147 and `string-match` 1,377 against 1,148 (D13);
+  `make-symbol` 2,251 against 1,966 with its collections (D14); a
+  byte-compiled callback of `mapatoms` 447 against 299, of `maphash` 460
+  against 291 and of `mapc` 458 against 289 (D17), a byte-compiled
+  closure in `mapatoms` 548 against 459 (D25); six window accessors from
+  byte code 339 against 244 each (D3); an interpreted loop of four
+  `(ignore i)` forms 4,486 against 2,218 an iteration (D125); the first
+  `char-from-name`, which builds `ucs-names`, 935M against 829M, and each
+  later build of the table 423M against 463M (D22). Where Emaxx runs
+  fewer: an interpreted closure called by `mapc` 1,452 against 2,436, a
+  character printed to an interpreted function 2,292 against 3,332,
+  `insert-file-contents' of NormalizationTest.txt 60.0M against 67.2M.
+- **Done: D23** (reading a large file). The 85M instructions against
+  GNU's 67M of rounds 161 and 175 are 60.0M against 67.2M, on the first
+  read as on the later ones.
+- **Not done by the baseline: D22.** Rebuilding `ucs-names` costs less
+  than GNU's, but the first `char-from-name` still costs 106M more: the
+  excess is in what the first call does once (the character-name
+  property table's load and decoding), not in the table's loop.
+
 ## Where things stand — 15 October 2026
 
 | State | Contents |
@@ -19023,6 +19074,13 @@ setup_process_coding_systems's check now refuses). A 13-form
   that unwraps the result Fmemq's walk now has), dropped results that
   are an unset variable read as nil, and src/anti_cheat.rs for two
   renamed calls and an import.
+- **Round 368 is unfinished: its draft is packaged in `wip/r368/`, and
+  `src/` is round 366's.**  The subject is the first of M2's call paths
+  (D125): a native-compiled function that takes its arguments as a
+  vector (MANY, a lexical function with `&rest') called as funcall_subr
+  calls it.  `wip/r368/impl.patch` is the change as a diff against round
+  366 and `wip/r368/README.md` its state.  Nothing under `wip/` is built
+  or tested by the gate.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change

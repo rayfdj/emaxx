@@ -41,7 +41,7 @@ unfinished work pushed as a packaged draft (wip/r367).
 
 This document.
 
-## M2. Structure and performance (30 items)
+## M2. Structure and performance (30 items; 1 done)
 
 Exit test: the remaining representation, collector and ownership engineering
 is done, the recorded per-call excesses are removed where GNU does less, and
@@ -103,7 +103,7 @@ a diagnostic run of the locked suite on the profile-guided build.
 - D17: Rust-to-byte-code call ~120 instructions over GNU (rounds 167, 297)
 - D22: Building ucs-names costs 1,024M vs 818M instructions (round 162)
 - D23: Reading a large file still costs 85M vs 67M instructions (rounds 161,
-  175)
+  175). **Done** (baseline of 23 November 2026: 60.0M against 67.2M).
 - D25: Closure entry from Rust 807 vs 639 instructions per mapatoms callback
   (rounds 159, 160)
 - D43: Library tests share one process heap and are not thread-safe (parallel
@@ -328,6 +328,15 @@ six roll-up items (A6.1, A9.6a to A9.6e) close with their groups.
 Exit test: macOS validation of the final source on a hosted runner (build,
 lint, gate, frozen run, terminal scenarios) and the certified performance run
 on a quiet locked host.
+
+The first hosted macOS build check (frozen-run.yml's `macos-build`, run
+45096909115 on `394d57de`, macos-15 on Apple silicon, Rust 1.100.0):
+formatting passes; `cargo check` stops at 13 errors in the library (15 with
+its tests): `libc::getrandom`, `mkostemp` (two sites), `pipe2` (a test),
+`O_PATH`, `ESTRPIPE` and `SI_TKILL`, which only Linux has; `MaybeUninit` and
+`ManuallyDrop` in native_comp/runtime.rs, imported for Linux only; and a
+mismatched type at primitives/file_io.rs:1466. More may follow once these
+compile. They are this milestone's work.
 
 - A7.7: Authoritative timing: repeated interleaved runs on one host under
   controlled load, every sample retained,
