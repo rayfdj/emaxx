@@ -22816,6 +22816,18 @@ ert-tests as a whole 26,307 ms against 27,211.
   45157208861) passed: 3,542 library tests, the seven integration
   targets (217) and the binaries' tests (61), none failed.
 
+**On `66f970c`** (round 372): the frozen run (run 45174251278) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 84.6 s against 69.1 s (1.224), test bodies 304.9 s
+  against 275.5 s (1.107), in all 1.130, on a slow runner (GNU's suite
+  took 345 s, against 270 to 290 s in the three runs before it).  The
+  widest body gaps are ert-tests (42.7 s against 38.9 s), tramp-tests
+  (23.2 against 20.0), comp-tests (18.4 against 15.6),
+  semantic-utest-ia (4.41 against 3.01), mule-tests (3.23 against 2.03)
+  and package-tests (7.10 against 6.25).  The Rust gate (run
+  45174246207) passed: 3,546 library tests, the seven integration
+  targets (217) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 373 and its review), outside the
   round and in no milestone.**  One line each: the parent a split makes
