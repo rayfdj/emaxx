@@ -1912,7 +1912,7 @@ fn frame_window_tree_leaf_ids(
 
 /// window.c:window_list: the live windows of every live frame in
 /// canonical order, each frame's minibuffer window after its tree's.
-pub(crate) fn frames_window_list(interp: &Interpreter) -> Vec<u64> {
+pub(crate) fn frames_window_list(interp: &Interpreter) -> Vec<WindowRef> {
     let mut windows = Vec::new();
     for frame in interp
         .frame_states
@@ -1923,13 +1923,17 @@ pub(crate) fn frames_window_list(interp: &Interpreter) -> Vec<u64> {
         windows.extend(
             frame_window_tree_leaf_ids(interp, frame)
                 .into_iter()
-                .filter(|id| is_live_ordinary_window(interp, *id)),
+                .filter(|id| is_live_ordinary_window(interp, *id))
+                .filter_map(|id| interp.window_ref(id)),
         );
         let (root, mini) = {
             let state = frame.borrow();
-            (state.root_window_id(), state.minibuffer_window_id())
+            (state.root_window, state.minibuffer_window)
         };
-        if mini != 0 && mini != root && interp.window_frame_id(mini) == Some(frame) {
+        if let Some(mini) = mini
+            && Some(mini) != root
+            && interp.window_frame_id(mini.id()) == Some(frame)
+        {
             windows.push(mini);
         }
     }
@@ -1959,7 +1963,7 @@ pub(crate) fn live_ordinary_window_ids(interp: &Interpreter) -> WindowIds {
 /// the frame's right edge spends its last column on the vertical border.
 #[derive(Clone, Copy)]
 pub(crate) struct WindowRenderInfo {
-    pub(crate) window_id: u64,
+    pub(crate) window: WindowRef,
     pub(crate) buffer_id: u64,
     pub(crate) left: usize,
     pub(crate) top: usize,
@@ -1975,8 +1979,12 @@ pub(crate) struct WindowRenderInfo {
 }
 
 /// The frame's live windows in paint order (the tree walk), with the
-/// geometry and content anchors redisplay needs.
-pub(crate) fn window_render_layout(interp: &Interpreter) -> Vec<WindowRenderInfo> {
+/// geometry and content anchors redisplay needs.  The list holds the
+/// windows across the Lisp that redisplay runs, so the collector scans
+/// it.
+pub(crate) fn window_render_layout(
+    interp: &Interpreter,
+) -> crate::lisp::alloc::RootedVec<WindowRenderInfo> {
     let selected_id = interp.selected_window_id();
     live_ordinary_window_ids(interp)
         .into_iter()
@@ -2003,7 +2011,7 @@ pub(crate) fn window_render_layout(interp: &Interpreter) -> Vec<WindowRenderInfo
                     .unwrap_or(live_point)
             };
             Some(WindowRenderInfo {
-                window_id,
+                window: interp.window_ref(window_id)?,
                 buffer_id,
                 left: left.max(0) as usize,
                 top: top.max(0) as usize,
@@ -3713,7 +3721,7 @@ fn apply_window_adjustment(interp: &mut Interpreter, window_id: u64) {
     let showing_margins = crate::lisp::primitives::frames_window_list(interp)
         .into_iter()
         .any(|window| {
-            let (left, right) = interp.window_margins(window);
+            let (left, right) = interp.window_margins(window.id());
             left.unwrap_or(0) > 0 || right.unwrap_or(0) > 0
         });
     if showing_margins {

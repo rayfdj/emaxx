@@ -849,6 +849,11 @@ impl Interpreter {
         self.selected_frame_id.borrow().minibuffer_window_id()
     }
 
+    /// FRAME_MINIBUF_WINDOW of the selected frame.
+    pub(crate) fn minibuffer_window(&self) -> Option<primitives::WindowRef> {
+        self.selected_frame_id.borrow().minibuffer_window
+    }
+
     pub(crate) fn minibuffer_window_value(&self) -> Value {
         self.selected_frame_id
             .borrow()

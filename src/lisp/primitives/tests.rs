@@ -30849,7 +30849,7 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
         (bottom.left, bottom.top, bottom.width, bottom.height),
         (0, 12, 80, 11)
     );
-    assert_eq!(bottom.window_id, lower_id.id());
+    assert_eq!(bottom.window, WindowRef::from_object(lower_id));
     assert!(!bottom.selected);
     assert_eq!(
         top.buffer_id, bottom.buffer_id,

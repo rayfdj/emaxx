@@ -381,6 +381,13 @@ impl PartialEq for WindowRef {
 
 impl Eq for WindowRef {}
 
+impl std::hash::Hash for WindowRef {
+    #[inline]
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.identity().hash(state);
+    }
+}
+
 impl WindowRef {
     /// decode_any_window's WINDOWP: the window VALUE is, live, internal
     /// or deleted.
