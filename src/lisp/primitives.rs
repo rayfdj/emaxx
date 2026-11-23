@@ -313,6 +313,7 @@ pub(crate) use dispatch::has_dispatch_handler;
 pub(crate) use dispatch::mark_thread_local_roots;
 pub(crate) use dispatch::name_facts;
 pub(crate) use dispatch::native_elisp_load;
+pub(crate) use dispatch::predicates;
 #[cfg(test)]
 pub(crate) use dispatch::render_mode_line_glass;
 pub(crate) use dispatch::replace_buffer_in_windows_safely;

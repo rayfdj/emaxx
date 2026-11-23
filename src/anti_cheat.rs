@@ -664,6 +664,86 @@ const EXACT_NATIVE_C_FAST_PATHS: &[NativeCFastPathContract] = &[
         owner: "fns.c:Fmember",
         contract_test: "native_member_follows_the_fns_c_walks",
     },
+    NativeCFastPathContract {
+        primitive: "symbol-with-pos-p",
+        owner: "data.c:Fsymbol_with_pos_p",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "vectorp",
+        owner: "data.c:Fvectorp",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "bufferp",
+        owner: "data.c:Fbufferp",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "markerp",
+        owner: "data.c:Fmarkerp",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "subrp",
+        owner: "data.c:Fsubrp",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "closurep",
+        owner: "data.c:Fclosurep",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "byte-code-function-p",
+        owner: "data.c:Fbyte_code_function_p",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "interpreted-function-p",
+        owner: "data.c:Finterpreted_function_p",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "floatp",
+        owner: "data.c:Ffloatp",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "integerp",
+        owner: "data.c:Fintegerp",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "numberp",
+        owner: "data.c:Fnumberp",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "natnump",
+        owner: "data.c:Fnatnump",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "integer-or-marker-p",
+        owner: "data.c:Finteger_or_marker_p",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "number-or-marker-p",
+        owner: "data.c:Fnumber_or_marker_p",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "char-or-string-p",
+        owner: "data.c:Fchar_or_string_p",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
+    NativeCFastPathContract {
+        primitive: "arrayp",
+        owner: "data.c:Farrayp",
+        contract_test: "word_level_entries_agree_with_their_primitives",
+    },
 ];
 
 /// Deliberate semantic differences from GNU C require Ray's explicit approval

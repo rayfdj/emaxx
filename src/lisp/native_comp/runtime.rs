@@ -13,7 +13,7 @@ use super::abi::{
     THREAD_HANDLERLIST_OFFSET, THREAD_STATE_SIZE,
 };
 use crate::lisp::eval::UnwindAction;
-use crate::lisp::primitives::wrong_type_argument;
+use crate::lisp::primitives::{predicates, wrong_type_argument};
 #[cfg(test)]
 use crate::lisp::types::SharedCons;
 use crate::lisp::types::{ConsCell, Kind, LispErrorKind, SymbolName, Value};
@@ -3349,6 +3349,97 @@ pub(super) extern "C" fn direct_native_identity(value: NativeWord) -> NativeWord
 pub(super) extern "C" fn direct_native_stringp(value: NativeWord) -> NativeWord {
     // data.c:Fstringp / lisp.h:STRINGP never reads the pointed-to payload.
     native_boolean(value & TAG_MASK == TAG_STRING)
+}
+
+/// A type predicate of data.c asked of a native caller's argument word, as
+/// its DEFUN is called through the freloc table: the word is the value, and
+/// PREDICATE the test the dispatch arm makes of it.  The predicates below
+/// read the object alone and neither signal nor allocate, so their entries
+/// take no active call and leave the handlers as native code left them.
+#[inline(always)]
+fn native_type_predicate(predicate: impl Fn(&Value) -> bool, word: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    native_boolean(predicate(&unsafe { Value::from_word(word) }))
+}
+
+/// data.c:Fsymbol_with_pos_p.
+pub(super) extern "C" fn direct_native_symbol_with_pos_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::symbol_with_pos_p, value)
+}
+
+/// data.c:Fvectorp.
+pub(super) extern "C" fn direct_native_vectorp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::vectorp, value)
+}
+
+/// data.c:Fbufferp.
+pub(super) extern "C" fn direct_native_bufferp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::bufferp, value)
+}
+
+/// data.c:Fmarkerp.
+pub(super) extern "C" fn direct_native_markerp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::markerp, value)
+}
+
+/// data.c:Fsubrp.
+pub(super) extern "C" fn direct_native_subrp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::subrp, value)
+}
+
+/// data.c:Fclosurep.
+pub(super) extern "C" fn direct_native_closurep(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::closurep, value)
+}
+
+/// data.c:Fbyte_code_function_p.
+pub(super) extern "C" fn direct_native_byte_code_function_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::byte_code_function_p, value)
+}
+
+/// data.c:Finterpreted_function_p.
+pub(super) extern "C" fn direct_native_interpreted_function_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::interpreted_function_p, value)
+}
+
+/// data.c:Ffloatp.
+pub(super) extern "C" fn direct_native_floatp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::floatp, value)
+}
+
+/// data.c:Fintegerp.
+pub(super) extern "C" fn direct_native_integerp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::integerp, value)
+}
+
+/// data.c:Fnumberp.
+pub(super) extern "C" fn direct_native_numberp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::numberp, value)
+}
+
+/// data.c:Fnatnump.
+pub(super) extern "C" fn direct_native_natnump(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::natnump, value)
+}
+
+/// data.c:Finteger_or_marker_p.
+pub(super) extern "C" fn direct_native_integer_or_marker_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::integer_or_marker_p, value)
+}
+
+/// data.c:Fnumber_or_marker_p.
+pub(super) extern "C" fn direct_native_number_or_marker_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::number_or_marker_p, value)
+}
+
+/// data.c:Fchar_or_string_p.
+pub(super) extern "C" fn direct_native_char_or_string_p(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::char_or_string_p, value)
+}
+
+/// data.c:Farrayp.
+pub(super) extern "C" fn direct_native_arrayp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::arrayp, value)
 }
 
 pub(super) extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWord {
@@ -7699,6 +7790,22 @@ mod tests {
         word_entry("car-safe", 1, false),
         word_entry("cdr", 1, false),
         word_entry("cdr-safe", 1, false),
+        word_entry("symbol-with-pos-p", 1, true),
+        word_entry("vectorp", 1, true),
+        word_entry("bufferp", 1, true),
+        word_entry("markerp", 1, true),
+        word_entry("subrp", 1, true),
+        word_entry("closurep", 1, true),
+        word_entry("byte-code-function-p", 1, true),
+        word_entry("interpreted-function-p", 1, true),
+        word_entry("floatp", 1, true),
+        word_entry("integerp", 1, true),
+        word_entry("numberp", 1, true),
+        word_entry("natnump", 1, true),
+        word_entry("integer-or-marker-p", 1, true),
+        word_entry("number-or-marker-p", 1, true),
+        word_entry("char-or-string-p", 1, true),
+        word_entry("arrayp", 1, true),
     ];
 
     /// The generator's other targets, which read the interpreter, walk or
