@@ -869,9 +869,7 @@ define_dispatch!(
                 // data.c Fremove_pos_from_symbol: any non-symbol-with-pos
                 // argument comes back unchanged, no type check.
                 need_args(name, args, 1)?;
-                Ok(symbol_with_pos_parts(interp, &args[0])
-                    .map(|(symbol, _)| symbol)
-                    .unwrap_or_else(|| args[0]))
+                Ok(remove_pos_from_symbol(&args[0]))
             }
             "bare-symbol" => {
                 // data.c Fbare_symbol: unlike remove-pos-from-symbol, a

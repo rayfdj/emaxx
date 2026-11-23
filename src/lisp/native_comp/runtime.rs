@@ -3442,6 +3442,14 @@ pub(super) extern "C" fn direct_native_arrayp(value: NativeWord) -> NativeWord {
     native_type_predicate(predicates::arrayp, value)
 }
 
+/// data.c:Fremove_pos_from_symbol: the symbol of a symbol with position,
+/// any other word as it came.  The object alone answers, as it answers
+/// the type predicates above, so this entry takes no active call either.
+pub(super) extern "C" fn direct_native_remove_pos_from_symbol(value: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    crate::lisp::primitives::remove_pos_from_symbol(&unsafe { Value::from_word(value) }).word()
+}
+
 pub(super) extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWord {
     if left == right {
         return native_boolean(true);
@@ -7806,6 +7814,7 @@ mod tests {
         word_entry("number-or-marker-p", 1, true),
         word_entry("char-or-string-p", 1, true),
         word_entry("arrayp", 1, true),
+        word_entry("remove-pos-from-symbol", 1, false),
     ];
 
     /// The generator's other targets, which read the interpreter, walk or
@@ -7948,6 +7957,126 @@ mod tests {
                     &mut environment,
                 )
                 .expect("delete the sample process");
+            }
+        }
+    }
+
+    /// The value of the Lisp form SOURCE.
+    fn eval_form(interpreter: &mut Interpreter, environment: &mut Env, source: &str) -> Value {
+        let form = crate::lisp::reader::Reader::new(source)
+            .read()
+            .unwrap_or_else(|error| panic!("{source} parses: {error:?}"))
+            .unwrap_or_else(|| panic!("{source} is a form"));
+        interpreter
+            .eval(&form, environment)
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    }
+
+    /// VALUE as `prin1-to-string' prints it.
+    fn printed(interpreter: &mut Interpreter, environment: &mut Env, value: Value) -> String {
+        crate::lisp::primitives::call(interpreter, "prin1-to-string", &[value], environment)
+            .and_then(|text| text.as_string())
+            .unwrap_or_else(|error| panic!("print {value:?}: {error:?}"))
+    }
+
+    /// NAME given the arguments the form ARGUMENTS lists, called with
+    /// `symbols-with-pos-enabled' ENABLED: its entry and its primitive
+    /// answer alike (`assert_entry_agrees'), and their answer is
+    /// EXPECTED: a value as it prints, or "signal: " and the condition
+    /// signalled as it prints.  The arguments are made and the answer is
+    /// printed with the variable nil.
+    fn assert_printed_answer(
+        interpreter: &mut Interpreter,
+        runtime: &mut NativeRuntime,
+        environment: &mut Env,
+        name: &str,
+        arguments: &str,
+        enabled: bool,
+        expected: &str,
+    ) {
+        let flag = |interpreter: &mut Interpreter, enabled: bool| {
+            let value = if enabled { Value::T } else { Value::Nil };
+            interpreter.set_symbol_value_cell("symbols-with-pos-enabled", value);
+        };
+        flag(interpreter, false);
+        // The collector scans the vector.
+        let mut rooted = crate::lisp::alloc::RootedVec::new();
+        rooted.push(eval_form(interpreter, environment, arguments));
+        let values = rooted[0].to_vec().expect("a list of arguments");
+        flag(interpreter, enabled);
+        let answer = assert_entry_agrees(interpreter, runtime, environment, name, &values);
+        flag(interpreter, false);
+        let (prefix, answer) = match answer {
+            Ok(value) => ("", value),
+            Err(condition) => ("signal: ", condition),
+        };
+        rooted.push(answer);
+        assert_eq!(
+            format!("{prefix}{}", printed(interpreter, environment, answer)),
+            expected,
+            "{name} of {arguments} with symbols-with-pos-enabled {enabled}"
+        );
+    }
+
+    /// GNU Emacs 30.2's answers of the subrs below: each row is a subr,
+    /// the form whose value is the list of its arguments, and what it
+    /// answers of them with `symbols-with-pos-enabled' nil and then t:
+    /// the value as `prin1-to-string' prints it, or "signal: " and the
+    /// condition it signals printed the same way.  The answers are GNU's
+    /// own output: its batch run applied each subr to these forms' values
+    /// and printed the rows.  Every form uses C primitives alone.
+    const GNU_WORD_ENTRY_ANSWERS: &[(&str, &str, &str, &str)] = &[
+        ("remove-pos-from-symbol", "(list 'foo)", "foo", "foo"),
+        (
+            "remove-pos-from-symbol",
+            "(list (position-symbol 'foo 7))",
+            "foo",
+            "foo",
+        ),
+        ("remove-pos-from-symbol", "(list nil)", "nil", "nil"),
+        ("remove-pos-from-symbol", "(list t)", "t", "t"),
+        (
+            "remove-pos-from-symbol",
+            "(list (position-symbol nil 3))",
+            "nil",
+            "nil",
+        ),
+        ("remove-pos-from-symbol", "(list :key)", ":key", ":key"),
+        (
+            "remove-pos-from-symbol",
+            "(list (position-symbol :key 9))",
+            ":key",
+            ":key",
+        ),
+        ("remove-pos-from-symbol", "(list 5)", "5", "5"),
+        ("remove-pos-from-symbol", "(list \"s\")", "\"s\"", "\"s\""),
+        (
+            "remove-pos-from-symbol",
+            "(list '(a . b))",
+            "(a . b)",
+            "(a . b)",
+        ),
+        ("remove-pos-from-symbol", "(list [a])", "[a]", "[a]"),
+    ];
+
+    /// The agreement of an entry with its primitive shows one function
+    /// behind both; these rows show that the function is GNU's.
+    #[test]
+    fn word_level_entries_answer_as_gnu_does() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        for (name, arguments, disabled, enabled) in GNU_WORD_ENTRY_ANSWERS {
+            for (flag, expected) in [(false, disabled), (true, enabled)] {
+                assert_printed_answer(
+                    &mut interpreter,
+                    &mut runtime,
+                    &mut environment,
+                    name,
+                    arguments,
+                    flag,
+                    expected,
+                );
             }
         }
     }

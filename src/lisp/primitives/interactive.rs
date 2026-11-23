@@ -972,10 +972,31 @@ pub(crate) fn is_cons_value(_interp: &Interpreter, value: &Value) -> bool {
 }
 
 pub(crate) fn symbol_with_pos_parts(_interp: &Interpreter, value: &Value) -> Option<(Value, i64)> {
+    let (symbol, position) = symbol_with_pos_words(value)?;
+    Some((symbol, position.fixnum()?))
+}
+
+/// lisp.h:XSYMBOL_WITH_POS_SYM and XSYMBOL_WITH_POS_POS: the two words of
+/// VALUE, a symbol with position, read from the object.  The position is
+/// a fixnum, as Fposition_symbol and the reader store it; None of any
+/// other object.  Nothing here signals or allocates.
+#[inline]
+pub(crate) fn symbol_with_pos_words(value: &Value) -> Option<(Value, Value)> {
     let Kind::SymbolWithPos(object) = value.kind() else {
         return None;
     };
-    Some((object.symbol(), object.position().as_fixnum().ok()?))
+    let position = object.position();
+    position.is_fixnum().then(|| (object.symbol(), position))
+}
+
+/// data.c:Fremove_pos_from_symbol: a symbol with position without its
+/// position, any other object as it is, whatever
+/// `symbols-with-pos-enabled' is.  A function of the object alone, with
+/// no signal and no allocation, so that the dispatch arm and the entry
+/// native code calls (native_comp/runtime.rs) are one function.
+#[inline]
+pub(crate) fn remove_pos_from_symbol(value: &Value) -> Value {
+    symbol_with_pos_words(value).map_or(*value, |(symbol, _)| symbol)
 }
 
 #[cfg(test)]

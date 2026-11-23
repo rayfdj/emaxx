@@ -9108,7 +9108,7 @@ pub(crate) static NATIVE_SUBRS: [NativeSubr; 1445] = [
         c"remove-pos-from-symbol",
         1,
         NativeMaxArgs::Fixed(1),
-        native_subr_1299 as *const std::ffi::c_void,
+        super::runtime::direct_native_remove_pos_from_symbol as *const std::ffi::c_void,
         1299,
     ),
     NativeSubr::new(
@@ -17546,10 +17546,6 @@ extern "C" fn native_subr_1298(
     arg_1: super::runtime::NativeWord,
 ) -> super::runtime::NativeWord {
     super::runtime::invoke_subr(1298, &[arg_0, arg_1])
-}
-
-extern "C" fn native_subr_1299(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
-    super::runtime::invoke_subr(1299, &[arg_0])
 }
 
 extern "C" fn native_subr_1300(arg_0: super::runtime::NativeWord) -> super::runtime::NativeWord {
