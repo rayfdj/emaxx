@@ -788,6 +788,19 @@ impl Interpreter {
         self.windows.get(id).map(primitives::WindowRef::from_object)
     }
 
+    /// The selected window, as an object: its holder holds a live
+    /// window, so a missing one is a bug (`window_value').
+    #[inline]
+    pub(crate) fn selected_window_ref(&self) -> primitives::WindowRef {
+        match self.window_ref(self.selected_window_id) {
+            Some(window) => window,
+            None => panic!(
+                "record {} is not in this state's registry",
+                self.selected_window_id
+            ),
+        }
+    }
+
     /// The window ID names, as a value.  A holder of a window's id holds
     /// a live window, so a missing one is a bug (`record_value').
     pub(crate) fn window_value(&self, id: u64) -> Value {

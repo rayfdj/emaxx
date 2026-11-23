@@ -1448,10 +1448,13 @@ fn window_parameter_entry(
     window_id: u64,
     parameter: &Value,
 ) -> Option<Value> {
+    window_parameter_entry_of(interp.window_ref(window_id)?, parameter)
+}
+
+/// PARAMETER's `assq' entry in WINDOW's own parameters.
+fn window_parameter_entry_of(window: WindowRef, parameter: &Value) -> Option<Value> {
     // Fassq (parameter, w->window_parameters), walking the alist in place.
-    let mut params = interp
-        .window_ref(window_id)
-        .and_then(|window| window.slot_opt(WINDOW_PARAMETERS_SLOT))?;
+    let mut params = window.slot_opt(WINDOW_PARAMETERS_SLOT)?;
     while let Some((item, rest)) = params.cons_values() {
         if item
             .car()
@@ -7736,16 +7739,16 @@ define_dispatch!(
             }
             "window-buffer" => {
                 need_arg_range(name, args, 0, 1)?;
-                let window = args
-                    .first()
-                    .filter(|window| !window.is_nil())
-                    .cloned()
-                    .unwrap_or_else(|| interp.selected_window_value());
-                if WindowRef::from_value(&window).is_none() {
-                    return Err(LispError::WrongTypeArgument("windowp".into(), window));
-                }
-                // A live buffer by window_buffer_id's own test.
-                Ok(window_buffer_id(interp, &window)
+                // decode_any_window: nil is the selected window.
+                let window = match args.first().filter(|window| !window.is_nil()) {
+                    Some(value) => WindowRef::from_value(value)
+                        .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), *value))?,
+                    None => interp.selected_window_ref(),
+                };
+                // w->contents where it is a live buffer, read from the
+                // window itself.
+                Ok(window
+                    .live_buffer_id(interp)
                     .map(|buffer_id| interp.buffer_value(buffer_id).expect("live buffer object"))
                     .unwrap_or(Value::Nil))
             }
@@ -7957,8 +7960,20 @@ define_dispatch!(
             }
             "window-parameter" => {
                 need_args(name, args, 2)?;
-                let window_id = window_id_or_selected(interp, &args[0])?;
-                Ok(window_parameter_value(interp, window_id, &args[1]))
+                // decode_any_window, then Fassq in the window's own
+                // parameters.
+                let window =
+                    if args[0].is_nil() {
+                        interp.window_ref(interp.selected_window_id())
+                    } else {
+                        Some(WindowRef::from_value(&args[0]).ok_or_else(|| {
+                            LispError::WrongTypeArgument("windowp".into(), args[0])
+                        })?)
+                    };
+                Ok(window
+                    .and_then(|window| window_parameter_entry_of(window, &args[1]))
+                    .and_then(|entry| entry.cdr().ok())
+                    .unwrap_or(Value::Nil))
             }
             "set-window-parameter" => {
                 need_args(name, args, 3)?;
@@ -7998,9 +8013,10 @@ define_dispatch!(
             "window-live-p" => {
                 need_args(name, args, 1)?;
                 Ok(Value::from_bool(
-                    WindowRef::from_value(&args[0])
-                        .is_some_and(|window| window.kind() != WindowKind::Deleted)
-                        && window_buffer_id(interp, &args[0]).is_some(),
+                    WindowRef::from_value(&args[0]).is_some_and(|window| {
+                        window.kind() != WindowKind::Deleted
+                            && window.live_buffer_id(interp).is_some()
+                    }),
                 ))
             }
             "window-parent" => window_link_value(interp, name, args, WINDOW_PARENT_SLOT),
