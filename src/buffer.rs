@@ -6044,9 +6044,10 @@ mod tests {
             check(&buf, "new");
             buf.goto_char(4);
             check(&buf, "goto");
-            let _ = buf.forward_char(2);
+            assert_eq!(buf.forward_char(2).ok(), Some(6));
             check(&buf, "forward");
-            let _ = buf.forward_char(100);
+            assert!(buf.forward_char(100).is_err());
+            assert_eq!(buf.point(), buf.point_max());
             check(&buf, "forward past the end");
             buf.goto_char(3);
             buf.insert("\u{e9}\u{4e2d}");
