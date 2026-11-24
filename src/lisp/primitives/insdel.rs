@@ -127,7 +127,7 @@ pub(crate) fn update_change_compositions(
     let Some(update) = change.compositions else {
         return Ok(());
     };
-    let to = update.to.unwrap_or_else(|| interp.buffer.borrow().point());
+    let to = update.to.unwrap_or_else(|| interp.current_buffer().pt());
     update_compositions(interp, update.from, to, update.check_mask, env)
 }
 
@@ -511,7 +511,7 @@ fn defer_after_change(
     {
         flush_combined_after_change(interp, env)?;
     }
-    let z = interp.buffer.borrow().size_total() as i64 + 1;
+    let z = interp.current_buffer().z() as i64;
     let AfterChange {
         charpos,
         lendel,

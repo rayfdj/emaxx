@@ -551,7 +551,7 @@ fn menu_bar_items_1(
         if !otlm.is_nil() && menu_flag {
             maps.push(otlm);
         }
-        let pt = interp.buffer.borrow().point() as i64;
+        let pt = interp.current_buffer().pt() as i64;
         let tem = super::get_local_map(interp, pt, "keymap")?;
         if !tem.is_nil() {
             maps.push(tem);

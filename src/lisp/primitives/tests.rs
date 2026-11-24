@@ -12730,10 +12730,7 @@ fn insert_file_contents_replace_collapses_point_in_the_differing_middle() {
     .expect("replace buffer contents");
 
     assert_eq!(interp.buffer.borrow().buffer_string(), "alpha beta\n");
-    assert_eq!(
-        interp.buffer.borrow().point(),
-        interp.buffer.borrow().point_min()
-    );
+    assert_eq!(interp.current_buffer().pt(), interp.current_buffer().begv());
     let _ = std::fs::remove_file(path);
 }
 
@@ -14434,14 +14431,11 @@ fn indent_rigidly_shifts_each_line_in_region() {
         interp
             .buffer
             .borrow()
-            .buffer_substring(
-                interp.buffer.borrow().point_min(),
-                interp.buffer.borrow().point_max()
-            )
+            .buffer_substring(interp.current_buffer().begv(), interp.current_buffer().zv())
             .expect("buffer contents"),
         "  a\n  b\n"
     );
-    assert_eq!(interp.buffer.borrow().point(), 9);
+    assert_eq!(interp.current_buffer().pt(), 9);
 }
 
 #[test]
@@ -14462,10 +14456,7 @@ fn inhibit_read_only_allows_buffer_read_only_edits() {
         interp
             .buffer
             .borrow()
-            .buffer_substring(
-                interp.buffer.borrow().point_min(),
-                interp.buffer.borrow().point_max()
-            )
+            .buffer_substring(interp.current_buffer().begv(), interp.current_buffer().zv())
             .expect("buffer contents"),
         "bc"
     );
@@ -14501,10 +14492,7 @@ fn insert_signals_buffer_read_only_unless_inhibited() {
         interp
             .buffer
             .borrow()
-            .buffer_substring(
-                interp.buffer.borrow().point_min(),
-                interp.buffer.borrow().point_max()
-            )
+            .buffer_substring(interp.current_buffer().begv(), interp.current_buffer().zv())
             .expect("buffer contents"),
         "x"
     );
@@ -14533,7 +14521,7 @@ fn failed_search_with_move_noerror_moves_to_bound() {
         .expect("search-forward should return nil when noerror is move"),
         Value::Nil
     );
-    assert_eq!(interp.buffer.borrow().point(), 5);
+    assert_eq!(interp.current_buffer().pt(), 5);
 
     interp.buffer.borrow_mut().goto_char(1);
     assert_eq!(
@@ -14550,7 +14538,7 @@ fn failed_search_with_move_noerror_moves_to_bound() {
         .expect("re-search-forward should return nil when noerror is move"),
         Value::Nil
     );
-    assert_eq!(interp.buffer.borrow().point(), 6);
+    assert_eq!(interp.current_buffer().pt(), 6);
 }
 
 #[test]
@@ -14571,10 +14559,7 @@ fn delete_line_removes_the_current_line() {
         interp
             .buffer
             .borrow()
-            .buffer_substring(
-                interp.buffer.borrow().point_min(),
-                interp.buffer.borrow().point_max()
-            )
+            .buffer_substring(interp.current_buffer().begv(), interp.current_buffer().zv())
             .expect("buffer contents"),
         "one\nthree\n"
     );
@@ -22209,10 +22194,7 @@ fn delete_and_extract_region_preserves_text_properties() {
         interp
             .buffer
             .borrow()
-            .buffer_substring(
-                interp.buffer.borrow().point_min(),
-                interp.buffer.borrow().point_max()
-            )
+            .buffer_substring(interp.current_buffer().begv(), interp.current_buffer().zv())
             .expect("remaining buffer text"),
         "aef"
     );
@@ -24575,7 +24557,7 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
         ])
     );
 
-    let point = interp.buffer.borrow().point_max() as i64;
+    let point = interp.current_buffer().zv() as i64;
     let marker = interp
         .copy_marker_value(&Value::Integer(point), false)
         .expect("copy marker at process output boundary");
@@ -24599,7 +24581,7 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
         .expect("pipe process id");
     let process_mark = interp.process_mark_id(process_id).expect("process mark");
     assert_eq!(interp.buffer.borrow().buffer_string(), "headout");
-    assert_eq!(interp.buffer.borrow().point(), 1);
+    assert_eq!(interp.current_buffer().pt(), 1);
     assert_eq!(interp.marker_position(marker_id), Some(8));
     assert_eq!(interp.marker_position(process_mark), Some(8));
 
@@ -24628,7 +24610,7 @@ fn native_process_callbacks_types_and_coding_flags_share_one_gnu_state_model() {
         interp.buffer.borrow().buffer_string(),
         "headout\nProcess audit finished\n"
     );
-    assert_eq!(interp.buffer.borrow().point(), 1);
+    assert_eq!(interp.current_buffer().pt(), 1);
     assert_eq!(interp.marker_position(marker_id), Some(8));
     assert_eq!(interp.marker_position(process_mark), Some(32));
 }
@@ -29615,7 +29597,7 @@ fn minibuffer_prompt_carries_its_face_through_the_read() {
         let face = interp
             .buffer
             .borrow()
-            .text_property_at(interp.buffer.borrow().point_min(), "face")
+            .text_property_at(interp.current_buffer().begv(), "face")
             .unwrap_or(Value::Nil);
         sink.borrow_mut().push((active, face));
     })));
@@ -30174,7 +30156,7 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
         )
         .expect("insert seeds the buffer");
     }
-    let point_max = interp.buffer.borrow().point_max();
+    let point_max = interp.current_buffer().zv();
 
     // Batch sessions answer like GNU --batch: the whole buffer shows, and
     // pos_visible_p, which posn-at-point asks, sees the initial frame.
@@ -30188,7 +30170,7 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
     set_interactive_window_metrics(Some(InteractiveWindowMetrics { window_end: 199 }));
     let window = interp.selected_window_ref();
     let buffer_id = interp.current_buffer_id();
-    let point = interp.buffer.borrow().point();
+    let point = interp.current_buffer().pt();
     super::window::record_window_display(&mut interp, window, buffer_id, point, 199);
     let end = call(&mut interp, "window-end", &[], &mut env).expect("window-end");
     assert_eq!(end, Value::Integer(199), "window-end reads the glass state");
@@ -30275,7 +30257,7 @@ fn interactive_recenter_uses_the_live_shrunken_window_height() {
     // Model the stale pre-minibuffer glyph publication that used to win over
     // the live 15-row body while Consult temporarily selected this window.
     set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        window_end: interp.buffer.borrow().point_max(),
+        window_end: interp.current_buffer().zv(),
     }));
     call(&mut interp, "goto-char", &[Value::Integer(161)], &mut env).expect("line 21");
     call(&mut interp, "recenter", &[], &mut env).expect("recenter");
@@ -30300,7 +30282,7 @@ fn insert_prefixed_lines(
     long: impl Fn(usize) -> bool,
 ) {
     for i in 0..lines {
-        let start = interp.buffer.borrow().point() as i64;
+        let start = interp.current_buffer().pt() as i64;
         call(
             interp,
             "insert",
@@ -30308,7 +30290,7 @@ fn insert_prefixed_lines(
             env,
         )
         .expect("insert the prefix");
-        let end = interp.buffer.borrow().point() as i64;
+        let end = interp.current_buffer().pt() as i64;
         let (holder, name, value) = prefix(i);
         let (start, end) = (Value::Integer(start), Value::Integer(end));
         if holder == "overlay" {
@@ -30364,7 +30346,7 @@ fn interactive_vertical_motion_and_recenter_reseat_past_what_a_line_start_hides(
             call(interp, "goto-char", &[Value::Integer(from)], env).expect("goto-char");
             let moved = call(interp, "vertical-motion", &[Value::Integer(n)], env)
                 .expect("vertical-motion");
-            (moved, interp.buffer.borrow().point() as i64)
+            (moved, interp.current_buffer().pt() as i64)
         };
     // Line 31 (invisible prefix) ends at 854, line 32 ("X") at 881, line
     // 33 ("") at 908; lines 30, 31 and 32 begin at 801, 828 and 855.
@@ -30397,7 +30379,7 @@ fn interactive_vertical_motion_and_recenter_reseat_past_what_a_line_start_hides(
     );
 
     set_interactive_window_metrics(Some(InteractiveWindowMetrics {
-        window_end: interp.buffer.borrow().point_max(),
+        window_end: interp.current_buffer().zv(),
     }));
     let recentered =
         |interp: &mut Interpreter, env: &mut crate::lisp::types::Env, at: i64, n: i64| {
@@ -30475,7 +30457,7 @@ fn interactive_vertical_motion_walks_a_display_string_spanning_two_lines() {
         .expect("vertical-motion")
         .as_integer()
         .expect("lines moved");
-        results.push((from, n, moved, interp.buffer.borrow().point()));
+        results.push((from, n, moved, interp.current_buffer().pt()));
     }
     assert_eq!(
         results,
@@ -30525,7 +30507,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     )
     .expect("vertical-motion");
     assert_eq!(
-        interp.buffer.borrow().point(),
+        interp.current_buffer().pt(),
         84,
         "batch lands at the row start"
     );
@@ -30537,7 +30519,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     call(&mut interp, "goto-char", &[Value::Integer(5)], &mut env).expect("goto-char");
     call(&mut interp, "vertical-motion", &[goal], &mut env).expect("vertical-motion");
     assert_eq!(
-        interp.buffer.borrow().point(),
+        interp.current_buffer().pt(),
         87,
         "goal column 3 within the row"
     );
@@ -30545,7 +30527,7 @@ fn interactive_vertical_motion_honors_the_cons_goal_column() {
     let float_goal = Value::cons(Value::float(3.0), Value::Integer(-1));
     call(&mut interp, "vertical-motion", &[float_goal], &mut env).expect("vertical-motion");
     assert_eq!(
-        interp.buffer.borrow().point(),
+        interp.current_buffer().pt(),
         8,
         "float goal moves back up to column 3"
     );
@@ -30737,7 +30719,7 @@ fn mode_line_line_number_is_relative_to_the_accessible_region() {
         &mut env,
     )
     .expect("insert narrowed mode-line sample");
-    let point_max = interp.buffer.borrow().point_max();
+    let point_max = interp.current_buffer().zv();
     call(
         &mut interp,
         "narrow-to-region",
@@ -31067,7 +31049,7 @@ fn interactive_undo_restores_the_unmodified_state() {
     let text = interp
         .buffer
         .borrow()
-        .buffer_substring(1, interp.buffer.borrow().point_max())
+        .buffer_substring(1, interp.current_buffer().zv())
         .expect("buffer text");
     let modified = interp.buffer.borrow().is_modified();
     let _ = std::fs::remove_dir_all(&directory);
@@ -31412,7 +31394,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
 
     let selected_before = interp.selected_window_ref();
     let buffer_before = interp.current_buffer_id();
-    let point_before = interp.buffer.borrow().point();
+    let point_before = interp.current_buffer().pt();
     let metrics = crate::lisp::primitives::InteractiveWindowMetrics { window_end: 14 };
     let measure =
         crate::tty::ModeLineMeasure::for_window(&interp, WindowRef::from_object(lower_id));
@@ -31444,11 +31426,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         buffer_before,
         "current buffer restored"
     );
-    assert_eq!(
-        interp.buffer.borrow().point(),
-        point_before,
-        "point restored"
-    );
+    assert_eq!(interp.current_buffer().pt(), point_before, "point restored");
     assert_eq!(
         call(
             &mut interp,
@@ -31667,7 +31645,7 @@ fn tty_ambiguous_tab_pops_the_completions_window_and_submit_dismisses_it() {
     let text = interp
         .buffer
         .borrow()
-        .buffer_substring(1, interp.buffer.borrow().point_max())
+        .buffer_substring(1, interp.current_buffer().zv())
         .expect("contents");
     let _ = interp.set_current_buffer_id(saved);
     // minibuffer.el's completion--insert-strings separates candidates
@@ -31797,7 +31775,7 @@ fn minibuffer_reads_select_the_minibuffer_window_and_restore_the_entry_window() 
         "finishing the read restores the entry window"
     );
     assert_eq!(
-        interp.buffer.borrow().point(),
+        interp.current_buffer().pt(),
         7,
         "the entry buffer's point survives"
     );
@@ -32902,7 +32880,7 @@ fn backward_regexp_search_takes_the_latest_start_as_gnu_does() {
         &mut env,
     )
     .expect("insert");
-    let end = interp.buffer.borrow().point_max() as i64;
+    let end = interp.current_buffer().zv() as i64;
     for (pattern, bound, expected) in [
         ("a+", Value::Nil, Some((300, 300, 301))),
         ("a+b", Value::Nil, Some((300, 300, 302))),

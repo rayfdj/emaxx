@@ -1059,7 +1059,7 @@ fn choose_write_coding(
     let mut force_raw = false;
     if coding.is_nil() || !local {
         coding = Value::Nil;
-        force_raw = !interp.buffer.borrow().is_multibyte();
+        force_raw = !interp.current_buffer().multibyte();
     }
     if coding.is_nil() {
         let selected = interp.call_function_value(
@@ -1265,8 +1265,8 @@ fn encode_region_for_write(
         Value::Nil,
     ];
     if start.is_nil() {
-        args[0] = Value::Integer(interp.buffer.borrow().point_min() as i64);
-        args[1] = Value::Integer(interp.buffer.borrow().point_max() as i64);
+        args[0] = Value::Integer(interp.current_buffer().begv() as i64);
+        args[1] = Value::Integer(interp.current_buffer().zv() as i64);
     }
     let coding = choose_write_coding(interp, &args, env)?;
     let coding_name = &crate::lisp::primitives::coding::coding_text_of(interp, &coding)?;
@@ -1340,8 +1340,8 @@ fn write_region_with_coding(
     // FILENAME as given: the expanded name whose text is PATH.
     let mut selected_args = *args;
     if args[0].is_nil() {
-        selected_args[0] = Value::Integer(interp.buffer.borrow().point_min() as i64);
-        selected_args[1] = Value::Integer(interp.buffer.borrow().point_max() as i64);
+        selected_args[0] = Value::Integer(interp.current_buffer().begv() as i64);
+        selected_args[1] = Value::Integer(interp.current_buffer().zv() as i64);
     }
     if selected_args[5].is_nil() {
         selected_args[5] = if string_like(&selected_args[4]).is_some() {
@@ -1768,7 +1768,7 @@ fn print_prepared<T>(
             }
             return body(interp, env, sink).map(|value| (value, None));
         }
-        let multibyte = interp.buffer.borrow().is_multibyte();
+        let multibyte = interp.current_buffer().multibyte();
         with_printer_buffer_escape(interp, env, Some(multibyte), |interp, env| {
             // print_finish runs before the unwinding that gives
             // print_buffer back.
@@ -1802,7 +1802,7 @@ fn print_finish_insertion(
         .as_ref()
         .map_or((0, false), |text| (text.len(), text.is_multibyte()));
     if nbytes == 0 {
-        let point = interp.buffer.borrow().point();
+        let point = interp.current_buffer().pt();
         super::insdel::signal_after_change(
             interp,
             super::insdel::AfterChange::new(point, 0, 0),
@@ -1815,7 +1815,7 @@ fn print_finish_insertion(
     // copy_text makes the text unibyte in a block of its own before
     // insert_1_both is called, which no print its hooks run writes over.
     let unibyte_copy = {
-        let multibyte = interp.buffer.borrow().is_multibyte();
+        let multibyte = interp.current_buffer().multibyte();
         interp
             .print_globals
             .buffer
@@ -1843,7 +1843,7 @@ fn print_finish_insertion(
     };
     let mut waiting = true;
     let inserted = insert_print_buffer(interp, env, |interp| {
-        let multibyte = interp.buffer.borrow().is_multibyte();
+        let multibyte = interp.current_buffer().multibyte();
         let text = crate::lisp::primitives::print::print_finish_text(
             interp,
             nbytes,
@@ -1954,7 +1954,7 @@ fn select_printer_destination<T>(
         // PT_BYTE)' and SET_PT_BOTH, in the buffer current now: the
         // one the insertion's hooks left, or where a destination
         // killed meanwhile left the print.
-        let end = interp.buffer.borrow().point();
+        let end = interp.current_buffer().pt();
         let current = interp.current_buffer_id();
         interp.set_marker(marker, Some(end), Some(current))?;
         let restored_point = if old_point >= start {
@@ -2234,7 +2234,7 @@ fn auto_coding_for_file(
     else {
         return Ok(None);
     };
-    let coding = if interp.buffer.borrow().size_total() == 0 {
+    let coding = if interp.current_buffer().z() == 1 {
         if bytes.is_empty() {
             return Ok(None);
         }
@@ -2498,7 +2498,7 @@ pub(crate) fn decide_file_coding(
             None => None,
         }
     };
-    let buffer_was_empty = interp.buffer.borrow().size_total() == 0;
+    let buffer_was_empty = interp.current_buffer().z() == 1;
     let mut decided_bytes = None;
     if coding.is_none() {
         // FILENAME, insert-file-contents' first argument, names a read
@@ -2528,7 +2528,7 @@ pub(crate) fn decide_file_coding(
         coding = checked_coding_given(interp, &decoding)?;
     }
     let mut coding = coding.unwrap_or_else(|| "undecided".into());
-    if !interp.buffer.borrow().is_multibyte() {
+    if !interp.current_buffer().multibyte() {
         coding = raw_text_coding_system(interp, &coding);
     }
     Ok((coding, decided_bytes))
@@ -2543,7 +2543,7 @@ pub(crate) fn decode_file_bytes(
     coding: String,
     make_unibyte: bool,
 ) -> Result<FileDecode, LispError> {
-    let multibyte = interp.buffer.borrow().is_multibyte();
+    let multibyte = interp.current_buffer().multibyte();
     let canonical = interp
         .coding_system_canonical_name(&coding)
         .unwrap_or_else(|| coding.clone());
@@ -2689,7 +2689,7 @@ pub(crate) fn insert_file_contents(
                 "Attempt to visit less than an entire file".into(),
             ));
         }
-        if interp.buffer.borrow().size_total() > 0 && replace_arg.is_none() {
+        if interp.current_buffer().z() > 1 && replace_arg.is_none() {
             return Err(LispError::Signal(
                 "Cannot do file visiting in a non-empty buffer".into(),
             ));
@@ -2782,7 +2782,7 @@ pub(crate) fn insert_file_contents(
     // moves and restore_window_points places, and point goes there at the
     // end (restore_point_unwind).
     let point_marker = replace_arg.is_some().then(|| {
-        let point = interp.buffer.borrow().point();
+        let point = interp.current_buffer().pt();
         let marker = interp.make_marker();
         if let Kind::Marker(handle) = marker.kind() {
             let buffer_id = interp.current_buffer_id();
@@ -2906,7 +2906,7 @@ fn insert_file_bytes(
     // Prevent redisplay optimizations.
     let current = interp.current_buffer_id();
     interp.set_clip_changed(current);
-    let buffer_was_empty = interp.buffer.borrow().size_total() == 0;
+    let buffer_was_empty = interp.current_buffer().z() == 1;
     let mut decision = if buffer_was_empty {
         None
     } else {
@@ -2993,7 +2993,7 @@ fn insert_file_bytes(
             interp.buffer.borrow_mut().set_multibyte(false);
         }
         let mut inserted_chars = decoded.char_count();
-        let start = interp.buffer.borrow().point();
+        let start = interp.current_buffer().pt();
         if !decoded.text.is_empty() {
             // decode_coding_gap's decode_coding: the text before point,
             // produce_charset's `charset' runs put through
@@ -3053,7 +3053,7 @@ fn insert_file_bytes(
                 &overlay_calls,
                 env,
             )?;
-            let point = interp.buffer.borrow().point();
+            let point = interp.current_buffer().pt();
             update_compositions(interp, point, point, CHECK_BORDER, env)?;
         }
         // restore_window_points over the erased accessible portion.
@@ -3099,7 +3099,7 @@ fn replace_file_contents(
     // the generic stale-file edit guard cannot interrupt the operation in
     // the middle and leave an empty buffer.
     let file_name_restore = interp.bind_special_dynamic("buffer-file-name", Value::Nil, env)?;
-    let original_point = interp.buffer.borrow().point();
+    let original_point = interp.current_buffer().pt();
     let edit_result: Result<(), LispError> = (|| {
         // The texts compare by character code, those beyond Unicode
         // included.
@@ -3248,14 +3248,14 @@ fn call_insert_format_function(
             buffer.chars_modified_tick(),
         )
     };
-    let begv = interp.buffer.borrow().point_min();
+    let begv = interp.current_buffer().begv();
     interp.buffer.borrow_mut().goto_char(begv);
     let insval = call(interp, env, oinserted)?;
     if nil_keeps && insval.is_nil() {
         return Ok(());
     }
     let count = inserted_chars_value(interp, insval)?;
-    if ochars_modiff == interp.buffer.borrow().chars_modified_tick() {
+    if ochars_modiff == interp.current_buffer().chars_modiff() {
         interp.buffer.borrow_mut().goto_char(opoint);
     } else {
         *inserted = count;
@@ -3353,7 +3353,7 @@ pub(crate) fn finish_insert_file_contents(
             interp.buffer.borrow_mut().set_undo_list(old_undo);
             // The last undo record fitted to the size the format
             // conversion left.
-            let point = interp.buffer.borrow().point();
+            let point = interp.current_buffer().pt();
             if inserted != old_inserted
                 && let Some((record, _)) = old_undo.cons_values()
                 && let Some((beg, end)) = record.cons_values()
@@ -3475,7 +3475,7 @@ fn auto_save_error(interp: &mut Interpreter, env: &mut Env, error: &LispError) {
     AUTO_SAVE_ERROR_OCCURRED.set(true);
     let _ = super::dispatch::display::ring_bell(interp, env);
     let condition = crate::lisp::eval::error_condition_value(error);
-    let name = interp.buffer.borrow().name();
+    let name = interp.current_buffer().name();
     let message = call(interp, "error-message-string", &[condition], env).and_then(|text| {
         call(
             interp,

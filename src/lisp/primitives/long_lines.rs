@@ -95,7 +95,7 @@ pub(crate) fn small_narrowing_begv(
     pos: usize,
 ) -> usize {
     let len = narrowed_width(interp, env, window);
-    let begv = interp.buffer.borrow().point_min() as i64;
+    let begv = interp.current_buffer().begv() as i64;
     let bol_pos = nearby_bol_pos(interp, pos).max(begv);
     (bol_pos + ((pos as i64 - bol_pos) / len - 1) * len).max(begv) as usize
 }

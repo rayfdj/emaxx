@@ -190,7 +190,7 @@ fn decode_coding_region_reports_the_detected_eol_variant() {
         *interp.buffer.borrow_mut() =
             crate::buffer::Buffer::from_text("*encoded*", &decode_raw_text_bytes(&bytes));
         interp.buffer.borrow_mut().set_multibyte(false);
-        let end = interp.buffer.borrow().point_max();
+        let end = interp.current_buffer().zv();
 
         call(
             &mut interp,
@@ -710,7 +710,7 @@ fn revert_buffer_reloads_non_utf8_file_as_raw_text() {
         interp.buffer.borrow().buffer_string(),
         decode_raw_text_bytes(&bytes)
     );
-    assert!(!interp.buffer.borrow().is_multibyte());
+    assert!(!interp.current_buffer().multibyte());
 
     std::fs::remove_file(path).expect("cleanup raw file");
 }
@@ -1057,12 +1057,12 @@ fn set_buffer_multibyte_reinterprets_the_unchanged_utf8_bytes() {
     call(&mut interp, "set-buffer-multibyte", &[Value::T], &mut env)
         .expect("reinterpret valid UTF-8 bytes");
     assert_eq!(interp.buffer.borrow().buffer_string(), "З");
-    assert!(interp.buffer.borrow().is_multibyte());
+    assert!(interp.current_buffer().multibyte());
 
     call(&mut interp, "set-buffer-multibyte", &[Value::Nil], &mut env)
         .expect("expose the same UTF-8 byte sequence");
     assert_eq!(interp.buffer.borrow().buffer_string(), "\u{00d0}\u{0097}");
-    assert!(!interp.buffer.borrow().is_multibyte());
+    assert!(!interp.current_buffer().multibyte());
 }
 
 /// `(call-process "sh" nil DESTINATION nil "-c" SCRIPT)' from Rust.

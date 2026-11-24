@@ -2690,7 +2690,7 @@ pub(crate) fn connection_coding_systems(
             .and_then(|id| interp.get_buffer_by_id(id))
             .is_some_and(|buffer| !buffer.is_multibyte()),
     };
-    let current_unibyte = !interp.buffer.borrow().is_multibyte();
+    let current_unibyte = !interp.current_buffer().multibyte();
     // Vdefault_process_coding_system as each fallback reads it, after
     // the find-operation-coding-system call before it.
     let default = |interp: &Interpreter| {
@@ -3082,7 +3082,7 @@ pub(crate) fn internal_default_process_filter(
     if switched {
         interp.set_current_buffer_id(buffer_id)?;
     }
-    let old_point = interp.buffer.borrow().point();
+    let old_point = interp.current_buffer().pt();
     let insert_at = interp
         .marker_position(mark_id)
         .unwrap_or_else(|| interp.current_buffer().zv());
@@ -3090,7 +3090,7 @@ pub(crate) fn internal_default_process_filter(
     // The text's multibyteness made the buffer's (string-as-unibyte or
     // string-to-multibyte), then insert_from_string_before_markers, its
     // properties with it, with the buffer's read-only flag cleared.
-    let multibyte_buffer = interp.buffer.borrow().is_multibyte();
+    let multibyte_buffer = interp.current_buffer().multibyte();
     let output = match string_like(&output) {
         Some(text) if text.multibyte && !multibyte_buffer => {
             call(interp, "string-as-unibyte", &[output], env)?
@@ -3113,7 +3113,7 @@ pub(crate) fn internal_default_process_filter(
             env,
         )
     });
-    let new_pos = interp.buffer.borrow().point();
+    let new_pos = interp.current_buffer().pt();
     let result = inserted.and_then(|()| interp.set_marker(mark_id, Some(new_pos), Some(buffer_id)));
     // read_process_output_after_insert.
     interp.update_mode_lines = 23;
@@ -3184,7 +3184,7 @@ pub(crate) fn internal_default_process_sentinel(
     if switched {
         interp.set_current_buffer_id(buffer_id)?;
     }
-    let old_point = interp.buffer.borrow().point();
+    let old_point = interp.current_buffer().pt();
     let insert_at = interp
         .marker_position(mark_id)
         .unwrap_or_else(|| interp.current_buffer().zv());
@@ -3207,7 +3207,7 @@ pub(crate) fn internal_default_process_sentinel(
         crate::lisp::primitives::hash_insert::insert_impl(interp, &[message], env, false, false)
             .map(|_| ())
     });
-    let new_pos = interp.buffer.borrow().point();
+    let new_pos = interp.current_buffer().pt();
     let result = inserted.and_then(|()| interp.set_marker(mark_id, Some(new_pos), Some(buffer_id)));
     // read_process_output_after_insert.
     interp.update_mode_lines = 23;
@@ -3431,7 +3431,7 @@ pub(crate) fn append_process_bytes_to_buffer(
             },
         };
     }
-    let multibyte = interp.buffer.borrow().is_multibyte();
+    let multibyte = interp.current_buffer().multibyte();
     let coding = match coding {
         Some(coding) if !multibyte => raw_text_coding_system(interp, &coding),
         Some(coding) => coding,
@@ -3507,10 +3507,10 @@ fn insert_process_output(
         }
         let block = &bytes[start..offset];
         if nread > 0 {
-            let point = interp.buffer.borrow().point();
+            let point = interp.current_buffer().pt();
             coding_used =
                 modify_current_buffer(interp, point, point, false, env, |interp, _, env| {
-                    let start = interp.buffer.borrow().point();
+                    let start = interp.current_buffer().pt();
                     if !multibyte && !requires_decoding {
                         interp.insert_current_buffer(&decode_raw_text_bytes(block));
                         return Ok((
@@ -3534,7 +3534,7 @@ fn insert_process_output(
                     // Point moves over the characters produced from where
                     // the decoding (a post-read conversion included) left
                     // it.
-                    let point = interp.buffer.borrow().point();
+                    let point = interp.current_buffer().pt();
                     interp.buffer.borrow_mut().goto_char(point + produced);
                     Ok((Some(AfterChange::new(point, 0, produced)), settled))
                 })?;

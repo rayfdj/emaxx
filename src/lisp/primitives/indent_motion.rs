@@ -260,8 +260,8 @@ fn overlay_strings_width(interp: &Interpreter, pos: usize, win: MotionWindow) ->
 /// nonempty line before an empty one there, is indented COLUMN columns
 /// or more.
 fn indented_beyond_p(interp: &mut Interpreter, mut pos: usize, column: i64) -> bool {
-    let begv = interp.buffer.borrow().point_min();
-    while pos > begv && interp.buffer.borrow().char_at(pos) == Some('\n') {
+    let begv = interp.current_buffer().begv();
+    while pos > begv && interp.current_buffer().char_at(pos) == Some('\n') {
         pos = interp.buffer.borrow().line_start_at(pos - 1);
     }
     position_indentation(interp, pos) as i64 >= column
@@ -330,8 +330,8 @@ pub(crate) fn compute_motion(
     let truncate_partial = interp
         .symbol_value_key(cached_symbol!("truncate-partial-width-windows"))
         .unwrap_or(Value::Nil);
-    let multibyte = interp.buffer.borrow().is_multibyte();
-    let zv = interp.buffer.borrow().point_max();
+    let multibyte = interp.current_buffer().multibyte();
+    let zv = interp.current_buffer().zv();
     let window = text_prop_window(interp, win);
 
     // Negative width means use all available text columns, less one for
@@ -613,7 +613,7 @@ pub(crate) fn vmotion(
     let lmargin = if hscroll > 0 { 1 - hscroll } else { 0 };
     let selective = selective_display(interp).max(-1);
     let window = text_prop_window(interp, win);
-    let begv = interp.buffer.borrow().point_min();
+    let begv = interp.current_buffer().begv();
     let mut vpos = 0i64;
     // A line start PREVLINE that moving by screen lines skips: one hidden
     // by selective display, or whose newline (NEWLINE) is invisible.
@@ -664,7 +664,7 @@ pub(crate) fn vmotion(
     }
     // Moving down: the column of FROM, counted from its line's start.
     let (hpos, did_motion) =
-        if from > begv && interp.buffer.borrow().char_at(from - 1) != Some('\n') {
+        if from > begv && interp.current_buffer().char_at(from - 1) != Some('\n') {
             let mut prevline = interp.buffer.borrow().line_start_at(from);
             // When moving downward, check the newline after.
             while prevline > begv && hidden(interp, prevline, prevline) {
@@ -689,7 +689,7 @@ pub(crate) fn vmotion(
         } else {
             (lmargin, false)
         };
-    let zv = interp.buffer.borrow().point_max();
+    let zv = interp.current_buffer().zv();
     compute_motion(
         interp,
         env,

@@ -217,7 +217,7 @@ pub(crate) fn buffer_line_statistics_value(
         }
         _ => (
             interp.buffer.borrow().buffer_string(),
-            interp.buffer.borrow().is_multibyte(),
+            interp.current_buffer().multibyte(),
         ),
     };
 

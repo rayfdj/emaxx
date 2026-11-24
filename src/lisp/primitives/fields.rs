@@ -29,13 +29,13 @@ pub(crate) fn find_field(
     want_end: bool,
 ) -> Result<(i64, i64), LispError> {
     let pos = if pos.is_nil() {
-        interp.buffer.borrow().point() as i64
+        interp.current_buffer().pt() as i64
     } else {
         fixnum_coerce_marker(interp, pos)?
     };
     let field = field_name();
     let after_field = get_char_property(interp, &Value::Integer(pos), field, Value::Nil)?;
-    let begv = interp.buffer.borrow().point_min() as i64;
+    let begv = interp.current_buffer().begv() as i64;
     // Using nil before the start would fail when the buffer starts with
     // a non-sticky field.
     let before_field = if pos > begv {
@@ -80,7 +80,7 @@ pub(crate) fn find_field(
                 beg_limit,
             )?;
             if p.is_nil() {
-                interp.buffer.borrow().point_min() as i64
+                interp.current_buffer().begv() as i64
             } else {
                 p.as_integer()?
             }
@@ -103,7 +103,7 @@ pub(crate) fn find_field(
             }
             p = next_single_char_property_change(interp, &p, field_symbol, Value::Nil, end_limit)?;
             if p.is_nil() {
-                interp.buffer.borrow().point_max() as i64
+                interp.current_buffer().zv() as i64
             } else {
                 p.as_integer()?
             }
@@ -166,7 +166,7 @@ pub(crate) fn constrain_to_field(
 ) -> Result<i64, LispError> {
     let mut orig_point = None;
     let mut new_pos = if new_pos.is_nil() {
-        let point = interp.buffer.borrow().point() as i64;
+        let point = interp.current_buffer().pt() as i64;
         orig_point = Some(point);
         point
     } else {
@@ -175,7 +175,7 @@ pub(crate) fn constrain_to_field(
     let old_pos = fixnum_coerce_marker(interp, old_pos)?;
     let fwd = new_pos > old_pos;
     let field = field_name();
-    let begv = interp.buffer.borrow().point_min() as i64;
+    let begv = interp.current_buffer().begv() as i64;
     let has = |interp: &Interpreter, pos: i64, prop: PropertyName| {
         get_char_property(interp, &Value::Integer(pos), prop, Value::Nil).map(|v| !v.is_nil())
     };

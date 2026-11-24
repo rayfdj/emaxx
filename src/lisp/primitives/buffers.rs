@@ -377,7 +377,7 @@ pub(crate) fn translate_region_internal(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let (from, to) = if from <= to { (from, to) } else { (to, from) };
-    let multibyte = interp.buffer.borrow().is_multibyte();
+    let multibyte = interp.current_buffer().multibyte();
     // A string table: its bytes bound the translatable codes, and a unibyte
     // buffer reads it as unibyte (string_make_unibyte).
     let string_table = match &table {
@@ -422,7 +422,7 @@ pub(crate) fn translate_region_internal(
         let mut pos = from;
         let mut end_pos = to;
         let mut changed = 0_i64;
-        while pos < end_pos.min(interp.buffer.borrow().point_max()) {
+        while pos < end_pos.min(interp.current_buffer().zv()) {
             let oc = public_buffer_char_code_at(interp, pos)
                 .and_then(|code| u32::try_from(code).ok())
                 .unwrap_or_default();
@@ -538,7 +538,7 @@ fn replace_character_in_place(
     pos: usize,
     nc: u32,
 ) -> Result<(), LispError> {
-    let multibyte = interp.buffer.borrow().is_multibyte();
+    let multibyte = interp.current_buffer().multibyte();
     let (mut text, mut extended) = (String::new(), Vec::new());
     push_buffer_character(&mut text, &mut extended, 0, nc, multibyte);
     let mut buffer = interp.buffer.borrow_mut();
@@ -562,15 +562,13 @@ pub(crate) fn replace_range_with_hooks(
 ) -> Result<(), LispError> {
     let length = to - from;
     modify_current_buffer(interp, from, to, true, env, |interp, from, env| {
-        let to = (from + length)
-            .min(interp.buffer.borrow().point_max())
-            .max(from);
+        let to = (from + length).min(interp.current_buffer().zv()).max(from);
         // replace_range's make_buffer_string_both of the old text.
         crate::lisp::primitives::textprop::update_deleted_text_properties(
             interp, from, to, false, env,
         )?;
-        let to = to.min(interp.buffer.borrow().point_max()).max(from);
-        let multibyte = interp.buffer.borrow().is_multibyte();
+        let to = to.min(interp.current_buffer().zv()).max(from);
+        let multibyte = interp.current_buffer().multibyte();
         let (mut text, mut extended) = (String::new(), Vec::new());
         for (index, &character) in replacement.iter().enumerate() {
             push_buffer_character(&mut text, &mut extended, index, character, multibyte);
@@ -1068,7 +1066,7 @@ pub(crate) fn position_indentation(interp: &mut Interpreter, pos: usize) -> usiz
         .and_then(|value| value.integer_value())
         .filter(|width| (1..=1000).contains(width))
         .unwrap_or(8) as usize;
-    let zv = interp.buffer.borrow().point_max();
+    let zv = interp.current_buffer().zv();
     // The blanks as they stand bound the text whose invisibility can
     // matter: with none of it invisible they are the answer.
     let (column, end) = indentation_scan(interp, pos, zv, tab_width, None);
@@ -1101,7 +1099,7 @@ fn indentation_scan(
     tab_width: usize,
     spec: Option<&InvisibilitySpec>,
 ) -> (usize, usize) {
-    let multibyte = interp.buffer.borrow().is_multibyte();
+    let multibyte = interp.current_buffer().multibyte();
     let mut categories = None;
     let mut column = 0;
     loop {
@@ -1175,9 +1173,9 @@ pub(crate) fn scan_for_column(
     let selective_display = interp
         .symbol_value_key(cached_symbol!("selective-display"))
         .is_some_and(|value| matches!(value.kind(), Kind::T));
-    let multibyte = interp.buffer.borrow().is_multibyte();
+    let multibyte = interp.current_buffer().multibyte();
     let display_table = buffer_display_table(interp);
-    let end = end.min(interp.buffer.borrow().point_max());
+    let end = end.min(interp.current_buffer().zv());
     let spec = {
         let buffer = interp.buffer.borrow();
         crate::lisp::primitives::resolve_buffer_invisibility_in(
@@ -1247,7 +1245,7 @@ pub(crate) fn scan_for_column(
             cmp_it.advance(interp, scan, end);
             continue;
         }
-        let Some(ch) = interp.buffer.borrow().char_at(scan) else {
+        let Some(ch) = interp.current_buffer().char_at(scan) else {
             break;
         };
         let glyphs = display_table
@@ -1493,9 +1491,9 @@ fn check_display_width(
         None => text_property_range_end(&interp.buffer.borrow(), pos, "display"),
     };
     let mut width = width as usize;
-    if !plist_get(plist, ":relative-width").is_nil() && interp.buffer.borrow().is_multibyte() {
+    if !plist_get(plist, ":relative-width").is_nil() && interp.current_buffer().multibyte() {
         // The column width of the character at POS, when above one.
-        if let Some(ch) = interp.buffer.borrow().char_at(pos) {
+        if let Some(ch) = interp.current_buffer().char_at(pos) {
             let char_width = if ch > '\u{7f}' {
                 let table = buffer_display_table(interp);
                 let code = crate::lisp::primitives::public_buffer_char_code_at(interp, pos)

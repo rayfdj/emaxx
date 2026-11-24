@@ -535,7 +535,7 @@ pub(crate) fn code_conversion_restore(
 /// insert_from_string of SOURCE, its text properties included and none
 /// inherited, at point in the current buffer.
 fn insert_conversion_source(interp: &mut Interpreter, source: &StringLike) {
-    let at = interp.buffer.borrow().point();
+    let at = interp.current_buffer().pt();
     let props = match &source.props {
         Some(intervals) => crate::buffer::InsertedProperties::Intervals {
             source: intervals,
@@ -579,7 +579,7 @@ pub(crate) fn pre_write_convert(
     let converted = (|| -> Result<(StringLike, u64), LispError> {
         interp.set_current_buffer_id(work.id)?;
         insert_conversion_source(interp, source);
-        let z = interp.buffer.borrow().size_total() as i64 + 1;
+        let z = interp.current_buffer().z() as i64;
         interp.safe_funcall(function, &[Value::Integer(1), Value::Integer(z)], env)?;
         Ok((whole_buffer_text(interp), interp.current_buffer_id()))
     })();
@@ -647,7 +647,7 @@ pub(crate) fn decode_into_work_buffer(
             // decode_coding's insert_from_gap a call at a time into the
             // work buffer, then decode_eol's change there.
             Some(layout) => {
-                let start = interp.buffer.borrow().point();
+                let start = interp.current_buffer().pt();
                 crate::lisp::primitives::insert_converted_text_at(
                     interp,
                     start,
@@ -1162,7 +1162,7 @@ pub(crate) fn base64_encode_region_value(
     let lo = start.min(end);
     let hi = start.max(end);
     let codes = buffer_region_codes(interp, lo, hi);
-    let multibyte = interp.buffer.borrow().is_multibyte();
+    let multibyte = interp.current_buffer().multibyte();
     let bytes = encode_base64_source_bytes(codes.into_iter().map(i64::from), multibyte)?;
     let encoded = encode_base64_bytes(&bytes, line_break, pad, base64url);
     let inserted = insert_then_delete_region(interp, lo, hi, &encoded, env)?;
@@ -1180,7 +1180,7 @@ fn insert_then_delete_region(
     text: &str,
     env: &mut Env,
 ) -> Result<usize, LispError> {
-    let old_pos = interp.buffer.borrow().point();
+    let old_pos = interp.current_buffer().pt();
     interp.buffer.borrow_mut().goto_char(lo);
     insert_text_with_hooks(interp, text, None, &[], false, false, env)?;
     let inserted = text.chars().count();
@@ -1192,7 +1192,7 @@ fn insert_then_delete_region(
     } else {
         old_pos
     };
-    let zv = interp.buffer.borrow().point_max();
+    let zv = interp.current_buffer().zv();
     interp.buffer.borrow_mut().goto_char(pos.min(zv));
     Ok(inserted)
 }
@@ -3021,7 +3021,7 @@ pub(crate) fn unencodable_char_position_value(
     let (codes, from) = match string {
         None => {
             let (start, end) = validate_region(interp, &args[0], &args[1])?;
-            if !interp.buffer.borrow().is_multibyte() {
+            if !interp.current_buffer().multibyte() {
                 return Ok(Value::Nil);
             }
             (buffer_character_codes(interp, start, end), start)
@@ -3229,7 +3229,7 @@ pub(crate) fn detect_coding_region_value(
         .buffer_substring(start, end)
         .map_err(|error| LispError::Signal(error.to_string()))?;
     let highest = highest.is_some_and(Value::is_truthy);
-    let src = DetectSource::from_text(&text, interp.buffer.borrow().is_multibyte());
+    let src = DetectSource::from_text(&text, interp.current_buffer().multibyte());
     Ok(detected_names_value(
         detect::detect_coding_system(interp, &src, highest, None),
         highest,
