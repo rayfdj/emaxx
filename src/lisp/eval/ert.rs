@@ -157,9 +157,6 @@ impl Interpreter {
             if std::env::var("EMAXX_DEBUG_ERT").is_ok() {
                 crate::errprintln!("ERT running: {}", test.name);
             }
-            // Timers a test scheduled but never reached firing conditions
-            // for must not leak into later tests.
-            self.pending_timers.clear();
             let previous =
                 std::mem::replace(&mut self.ert_test_source_file, test.source_file.clone());
             let previous_name = self.current_ert_test_name.replace(test.name.clone());

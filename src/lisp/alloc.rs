@@ -1674,6 +1674,7 @@ pub struct WeakConsRef {
 }
 
 impl WeakConsRef {
+    #[cfg(test)]
     pub(crate) fn identity(&self) -> usize {
         self.cell.as_ptr() as usize
     }

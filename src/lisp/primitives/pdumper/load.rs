@@ -841,7 +841,7 @@ impl Loader<'_> {
                 DumpType::Cons => {
                     self.objects[number] = self.conses.cons_at(self.starts.offset(number))?;
                 }
-                DumpType::String | DumpType::StringObject => {
+                DumpType::String => {
                     return Err(LoadError::Error(format!(
                         "object {number} is a string outside the string blocks"
                     )));

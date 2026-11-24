@@ -368,7 +368,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "network_connect_counter",
         "the running process's connections",
     ),
-    ("function_binding_generation", "a cache generation"),
     ("current_load_file", "nil at top level, where the dump runs"),
     (
         "load_source_provenance_remap",
@@ -808,23 +807,6 @@ impl Interpreter {
                         Value::Marker(restriction.end_marker_id),
                     ])
                 })
-            })),
-        ));
-        // keyboard.c: Vtimer_list's timer vectors; a due time as the
-        // seconds still to wait at dump time.
-        let now = std::time::Instant::now();
-        groups.push((
-            RootSlot::TimerList,
-            Value::list(self.pending_timers.iter().map(|timer| {
-                Value::vector([
-                    timer.function,
-                    Value::list(timer.args.iter().cloned()),
-                    timer.due.map_or(Value::Nil, |due| {
-                        Value::float(due.saturating_duration_since(now).as_secs_f64())
-                    }),
-                    timer.repeat.map_or(Value::Nil, Value::float),
-                    opt_symbol(timer.original_name.as_deref()),
-                ])
             })),
         ));
         // thread.c: last_thread_error.
@@ -1321,32 +1303,6 @@ mod install {
                         });
                     }
                     self.labeled_restrictions = restrictions;
-                }
-                RootSlot::TimerList => {
-                    let now = std::time::Instant::now();
-                    let mut timers = Vec::new();
-                    for entry in expect_list(value, "timer list")? {
-                        let fields = expect_vector(&entry, "timer")?;
-                        if fields.len() != 5 {
-                            return Err("timer: five fields expected".into());
-                        }
-                        let due = opt_of(&fields[2], |v| {
-                            v.as_float()
-                                .map_err(|_| "timer due: not a float".to_owned())
-                        })?
-                        .map(|seconds| now + std::time::Duration::from_secs_f64(seconds.max(0.0)));
-                        timers.push(ScheduledTimer {
-                            function: fields[0],
-                            args: expect_list(&fields[1], "timer args")?,
-                            due,
-                            repeat: opt_of(&fields[3], |v| {
-                                v.as_float()
-                                    .map_err(|_| "timer repeat: not a float".to_owned())
-                            })?,
-                            original_name: opt_of(&fields[4], |v| expect_symbol(v, "timer name"))?,
-                        });
-                    }
-                    self.pending_timers = timers;
                 }
                 RootSlot::LastThreadError => {
                     self.last_thread_error = opt_of(value, |v| Ok(*v))?;

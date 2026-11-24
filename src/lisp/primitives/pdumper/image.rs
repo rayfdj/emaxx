@@ -267,10 +267,9 @@ impl DumpHeader {
 #[repr(u8)]
 pub(crate) enum DumpType {
     Cons = 1,
-    /// The common string header (also reads the former host-string wire type).
+    /// The common string header.
     String = 2,
-    /// Legacy mutable-string wire type; restored by the common string loader.
-    StringObject = 3,
+    // Former string wire type 3 is unsupported: every string is type 2.
     /// One of alloc.c's two static empty-string roots, identified by its flag.
     EmptyString = 30,
     Symbol = 4,
@@ -340,7 +339,6 @@ impl DumpType {
         Some(match value {
             1 => Self::Cons,
             2 => Self::String,
-            3 => Self::StringObject,
             30 => Self::EmptyString,
             4 => Self::Symbol,
             5 => Self::Vector,
@@ -564,7 +562,8 @@ pub(crate) enum RootSlot {
     Compositions = 47,
     ErtTests = 48,
     LabeledRestrictions = 49,
-    TimerList = 50,
+    // Former native timer root code 50 is unsupported: GNU's timers are
+    // timer.el's `timer-list'.
     LastThreadError = 51,
     FontSelectionOrder = 52,
     /// PDUMPER_REMEMBER_SCALAR: the native state a loaded session starts
@@ -643,7 +642,6 @@ impl RootSlot {
             47 => Self::Compositions,
             48 => Self::ErtTests,
             49 => Self::LabeledRestrictions,
-            50 => Self::TimerList,
             51 => Self::LastThreadError,
             52 => Self::FontSelectionOrder,
             54 => Self::RememberedScalars,

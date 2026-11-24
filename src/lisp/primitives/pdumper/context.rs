@@ -2620,9 +2620,7 @@ impl DumpContext {
                         let reloc = match kind {
                             DumpType::Symbol => RelocType::DumpToDumpSymbol,
                             DumpType::Cons => RelocType::DumpToDumpCons,
-                            DumpType::String | DumpType::StringObject => {
-                                RelocType::DumpToDumpString
-                            }
+                            DumpType::String => RelocType::DumpToDumpString,
                             DumpType::Vector
                             | DumpType::Closure
                             | DumpType::LispRecord

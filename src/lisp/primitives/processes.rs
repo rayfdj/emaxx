@@ -5880,13 +5880,7 @@ fn wait_reading_process_output_1(
                     break;
                 }
             }
-            let native = interp
-                .next_timer_due()
-                .map(|due| due.saturating_duration_since(std::time::Instant::now()));
-            timer_delay = match (interp.timer_check_delay, native) {
-                (Some(lisp), Some(native)) => Some(lisp.min(native)),
-                (lisp, native) => lisp.or(native),
-            };
+            timer_delay = interp.timer_check_delay;
             // If there is unread keyboard input, also return.
             if read_kbd != 0 && crate::lisp::primitives::unread_command_events_pending(interp) {
                 break;

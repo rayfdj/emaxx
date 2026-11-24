@@ -947,6 +947,34 @@ fn load_refuses_what_pdumper_load_refuses() {
 }
 
 #[test]
+fn an_image_naming_a_removed_root_slot_is_refused() {
+    // Root code 50 was the native timer list; GNU's timers are timer.el's
+    // `timer-list', which the obarray carries.  Another build's image is
+    // refused by its fingerprint first; one that names the code anyway is
+    // refused too, not read into another slot.
+    assert_eq!(RootSlot::from_u32(50), None);
+    let mut interp = Interpreter::new();
+    let bytes = dump(&mut interp, vec![(RootSlot::QuitFlag, Value::T)]);
+    let header = validate_header(&bytes).expect("a valid header");
+    let quit_flag = (RootSlot::QuitFlag as u32).to_le_bytes();
+    let at = (0..header.emacs_relocs.nr_entries)
+        .map(|index| (header.emacs_relocs.offset + index * EMACS_RELOC_LEN as u32) as usize)
+        .find(|at| bytes[at + 4..at + 8] == quit_flag)
+        .expect("the quit-flag root's relocation");
+    let mut renamed = bytes.clone();
+    renamed[at + 4..at + 8].copy_from_slice(&50_u32.to_le_bytes());
+    match load_image(&renamed, &mut Interpreter::new()) {
+        Err(LoadError::Error(message)) => {
+            assert!(message.starts_with("unknown root slot"), "{message}");
+        }
+        Err(other) => panic!("refused for another reason: {other:?}"),
+        Ok(image) => panic!("an unknown root slot was read: {:?}", image.roots),
+    }
+    let image = load_image(&bytes, &mut Interpreter::new()).expect("the image as written loads");
+    assert_eq!(image.roots, vec![(RootSlot::QuitFlag, Value::T)]);
+}
+
+#[test]
 fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
     use std::os::unix::fs::DirBuilderExt;
     // A supported C-state image, not ordinary loadup or a native image.
@@ -2255,7 +2283,7 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
     }
     // A bare interpreter with state in the groups a fresh one leaves
     // empty: a second buffer, keys, a detached forwarded variable, a
-    // charset with an alias, a timer, an ert test, a labeled restriction
+    // charset with an alias, an ert test, a labeled restriction
     // in the current buffer, a fringe bitmap, a composition, a face.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
@@ -2285,7 +2313,6 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
         SymbolName::intern_str("zz-detached"),
         Value::list([Value::Integer(1)]),
     );
-    interp.schedule_timer_after(Value::symbol("car"), vec![Value::Nil], 1000.0, Some(5.0));
     interp.ert_tests.push(crate::lisp::eval::ErtTestDefinition {
         name: "zz-test".into(),
         body: Value::list([Value::symbol("should"), Value::T]),
@@ -2329,11 +2356,6 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             .iter()
             .any(|(slot, text)| *slot == RootSlot::BufferAlist && text.contains("zz-second"))
     );
-    assert!(
-        source_printed
-            .iter()
-            .any(|(slot, text)| *slot == RootSlot::TimerList && text.contains("car"))
-    );
     let mut target = Interpreter::new();
     let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     for (slot, _) in &source_groups {
@@ -2342,19 +2364,13 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             "root group {slot:?} is in the image"
         );
     }
-    // Every group prints the same from the restored interpreter (the
-    // timer's due time is the seconds still to wait, which passed).
+    // Every group prints the same from the restored interpreter.
     let target_groups = target.dump_root_groups();
     for ((slot, source_text), (target_slot, target_value)) in
         source_printed.iter().zip(&target_groups)
     {
         assert_eq!(slot, target_slot);
         let target_text = printed(&mut target, target_value);
-        if *slot == RootSlot::TimerList {
-            assert!(target_text.starts_with("([car (nil) "), "{target_text}");
-            assert!(target_text.ends_with(" 5.0 car])"), "{target_text}");
-            continue;
-        }
         assert_eq!(&target_text, source_text, "root group {slot:?}");
     }
     // The buffers behind the alist are live in the target, in order.

@@ -6970,7 +6970,7 @@ mod tests {
 
     #[test]
     fn cons_weak_snapshots_reject_reused_slots_with_identical_fields() {
-        use crate::lisp::types::{ConsMutationSnapshot, WeakConsRef};
+        use crate::lisp::types::{WeakConsRef, tests::ConsMutationSnapshot};
         #[inline(never)]
         fn make_objects() -> (Value, usize, u64, ConsMutationSnapshot) {
             // Find two slots in the same block even when the old free list
@@ -12429,7 +12429,7 @@ mod tests {
         heap.encode(&value).expect("watched value");
         let word = heap.encode(&unrelated).expect("unrelated constant");
         heap.finish_call().expect("initial return");
-        let snapshot = crate::lisp::types::ConsMutationSnapshot::list_spine(&value);
+        let snapshot = crate::lisp::types::tests::ConsMutationSnapshot::list_spine(&value);
         let native = word.wrapping_sub(TAG_CONS) as *mut NativeCons;
         unsafe {
             (*native).set_car(((9_i64 << FIXNUM_BITS) + TAG_FIXNUM_LOW as i64) as NativeWord);

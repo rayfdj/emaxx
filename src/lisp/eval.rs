@@ -3853,18 +3853,6 @@ struct PendingFileNotification {
 }
 
 #[derive(Clone, Debug)]
-struct ScheduledTimer {
-    function: Value,
-    original_name: Option<String>,
-    args: Vec<Value>,
-    /// Earliest wall-clock instant the timer may fire; GNU never runs a
-    /// timer before its scheduled time.  `None` means due immediately.
-    due: Option<std::time::Instant>,
-    /// Reschedule interval in seconds for repeating timers.
-    repeat: Option<f64>,
-}
-
-#[derive(Clone, Debug)]
 /// fringe.c's fringe_bitmaps[ID] and fringe_faces[ID]: a bitmap is found
 /// by the number its symbol's `fringe' property holds.
 pub(crate) struct FringeBitmapState {
@@ -5863,12 +5851,6 @@ impl Interpreter {
         if let Some(value) = &self.last_thread_error {
             mark(value);
         }
-        for timer in &self.pending_timers {
-            mark(&timer.function);
-            for argument in &timer.args {
-                mark(argument);
-            }
-        }
         for hooks in &self.interval_insert_hooks {
             mark(hooks);
         }
@@ -6394,12 +6376,6 @@ impl Interpreter {
             if let Some(error) = &clone.last_thread_error {
                 clone.last_thread_error = Some(c.copy(error));
             }
-            for timer in &mut clone.pending_timers {
-                timer.function = c.copy(&timer.function.clone());
-                for arg in &mut timer.args {
-                    *arg = c.copy(arg);
-                }
-            }
             for hooks in &mut clone.interval_insert_hooks {
                 *hooks = c.copy(hooks);
             }
@@ -6809,9 +6785,6 @@ pub struct InterpreterState {
     /// What keyboard.c:timer_check last returned: how long until the first
     /// timer of its copied lists still waiting is ripe, None with none.
     pub(crate) timer_check_delay: Option<std::time::Duration>,
-    /// Variable aliases keyed by alias name.
-    /// Names ever declared locally special via a non-top-level one-arg
-    /// `defvar`; lets of other names skip the env marker scan entirely.
     pub(crate) lisp_eval_depth: usize,
     /// alloc.c's nesting counter.  Hash-table user tests enter this section
     /// so arbitrary callback Lisp cannot collect the table being probed.
@@ -6852,11 +6825,6 @@ pub struct InterpreterState {
     known_symbols_cache: RefCell<Option<KnownSymbolsCache>>,
     /// Membership removal/reinsertion can leave the same symbol count.
     obarray_epoch: u64,
-    /// Names removed from the standard obarray while their old symbol cells
-    /// remain live.  GNU keeps those cells on the detached symbol object;
-    /// this tombstone prevents function/value indexes from accidentally
-    /// making the name look interned again until a reader or `intern' creates
-    /// the new canonical name.
     /// Runtime record representing GNU's preloaded standard `obarray'.  Its
     /// symbol view is synthesized from the interpreter's canonical namespace
     /// indexes rather than duplicated in the record's storage slot.
@@ -6883,8 +6851,6 @@ pub struct InterpreterState {
     /// window.c's old_selected_window: the window selected when the last
     /// window-change cycle completed.
     pub(crate) old_selected_window: Option<primitives::WindowRef>,
-    /// Per-frame old selected window.  GNU's initial batch frame leaves this
-    /// unset until the first completed window-change cycle.
     /// Monotonic selection stamp used by `window-use-time'.
     window_select_count: i64,
     /// xdisp.c's windows_or_buffers_changed: nonzero when the next
@@ -7021,10 +6987,6 @@ pub struct InterpreterState {
     /// census of the obarrays. Generic Lisp records do not enter this
     /// registry and type-slot stores maintain no index.
     record_ids_by_type_index: RecordIdsByType,
-    /// Record mark bits from the most recent real reachability pass.  Dense
-    /// host storage keeps IDs stable, but dead records must not contribute to
-    /// GNU's post-sweep live-byte census.  IDs at or above the high-water mark
-    /// were allocated after that collection and remain live until the next.
     /// alloc.c's private `gc_elapsed' timespec: the total the Lisp
     /// variable is recomputed from after every collection.
     gc_elapsed_total: f64,
@@ -7072,9 +7034,6 @@ pub struct InterpreterState {
     /// pdumper.c's `dump_private': the image this process loaded, if any
     /// (`dump_loaded_p'), with what `pdumper-stats' reports of it.
     pdumper_loaded: Option<PdumperLoadRecord>,
-    /// Next generated symbol ID used by built-in macro expansion helpers.
-    /// Buffer-local hook lists grouped by buffer, in per-buffer insertion
-    /// order.  This is the sole backing store for local hook metadata.
     /// Buffer-local variable cells grouped by buffer, in per-buffer insertion
     /// order.  GNU's buffer slot lookup is constant-time; mode-heavy code must
     /// not scan every other live buffer's locals on each variable read.
@@ -7090,15 +7049,6 @@ pub struct InterpreterState {
     /// GNU connect_counter: numbers accepted server-child connections
     /// (unix children are named "NAME <N>" from it).
     pub(crate) network_connect_counter: u64,
-    /// Bumped only when a function cell is bound, rebound or voided: what
-    /// the funcall resolutions below depend on.  A cons mutation cannot
-    /// change a resolution (the cached value shares the cell's object), so
-    /// it does not invalidate them.
-    function_binding_generation: u64,
-    /// Immutable lambda code keyed by the source form's car-cell identity.
-    /// The weak source witness prevents a recycled allocator address from
-    /// aliasing an unrelated form whose older closure is still alive.
-    /// Forms waiting for a feature to be provided.
     /// File currently being loaded, if any.
     current_load_file: Option<String>,
     /// Physical standard-Lisp source prefix and the build-tree prefix GNU's
@@ -7261,7 +7211,6 @@ pub struct InterpreterState {
     /// process.c's update_tick: process_tick when status_notify last
     /// began, which its callers compare process_tick with.
     process_update_tick: u64,
-    pending_timers: Vec<ScheduledTimer>,
     /// Source-loaded callbacks stand in for GNU's byte-compiled Lisp.  Keep
     /// defsubst definitions removed by loadhist alive until the active timer
     /// returns, matching calls that GNU compiled inline into the callback.
@@ -7849,7 +7798,6 @@ impl Interpreter {
             specpdl: Vec::new(),
             labeled_restrictions: Vec::new(),
             network_connect_counter: 0,
-            function_binding_generation: 0,
             current_load_file: None,
             load_source_provenance_remap: None,
             #[cfg(test)]
@@ -7928,7 +7876,6 @@ impl Interpreter {
             fundamental_mode_name: Value::Nil,
             process_states: Vec::new(),
             process_update_tick: 0,
-            pending_timers: Vec::new(),
             timer_callback_depth: 0,
             deferred_defsubst_unbindings: Vec::new(),
             pending_file_notifications: Vec::new(),

@@ -7172,6 +7172,9 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
              (setq purify-flag 'zz-pure
                    post-gc-hook '(zz-post-gc)
                    process-environment '("ZZ=1"))
+             ;; A timer is timer.el's: the image carries it in
+             ;; `timer-list', its time absolute.
+             (run-at-time 1000 5 'car nil)
              (let ((processed command-line-processed))
                (list (condition-case error-data {dump_form}
                        (error (list (car error-data) (cadr error-data))))
@@ -7202,8 +7205,7 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         interp.known_symbol_names().into_iter().collect();
     let dumped_symbol_count = source_names.len();
     // Every root group of the loadup state prints the same from the
-    // restored interpreter (the timer list's due times are relative); taken
-    // before the programs below, which update lexical cells. Capture these
+    // restored interpreter; taken before the programs below, which update lexical cells. Capture these
     // before printing even the context result: print.c:print_prepare binds
     // print-escape-nonascii for prin1-to-string's buffer, advancing the
     // writer's binding counter after the image has already been written.
@@ -7250,6 +7252,11 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
                  (sort contracts (lambda (a b) \
                                    (string-lessp (car a) (car b))))))",
         "(pdumper-stats)",
+        "(let (found) \
+           (dolist (timer timer-list) \
+             (when (eq (timer--function timer) 'car) (push timer found))) \
+           (list (length found) (timer--args (car found)) \
+                 (timer--repeat-delay (car found)) (car found)))",
     ];
     let mut expected = Vec::new();
     for program in programs {
@@ -7263,6 +7270,11 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         let printed = call(&mut interp, "prin1-to-string", &[value], &mut env).expect("print");
         expected.push(string_like(&printed).expect("printed").text);
     }
+    // The timer `run-at-time' made, once, with its function's arguments
+    // and repeat; the restored one prints the same (the loop below).
+    let scheduled = expected.last().expect("the timer program");
+    assert!(scheduled.starts_with("(1 (nil) 5 [nil "), "{scheduled}");
+    assert!(scheduled.contains(" 5 car (nil) nil "), "{scheduled}");
     let writer_loaded_a_dump = interp.dump_loaded_p();
     drop(interp);
 
@@ -7320,9 +7332,6 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         source_groups.iter().zip(&target_groups)
     {
         assert_eq!(slot, target_slot);
-        if *slot == RootSlot::TimerList {
-            continue;
-        }
         let target_text = call(
             &mut restored,
             "prin1-to-string",

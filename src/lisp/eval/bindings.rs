@@ -1095,12 +1095,6 @@ impl Interpreter {
             )
     }
 
-    /// A function cell was bound, rebound or voided: cached funcall
-    /// resolutions must be checked again.
-    pub(crate) fn note_function_binding_changed(&mut self) {
-        self.function_binding_generation = self.function_binding_generation.wrapping_add(1);
-    }
-
     /// A store C code makes into the variable KEY names (a DEFVAR's
     /// assignment, `Fset (Qname, value)'): data.c:set_internal's store
     /// into the alias chain's end, in the buffer-local or the global cell.
@@ -1263,7 +1257,6 @@ impl Interpreter {
         function: Option<Value>,
     ) {
         self.globals.set_function(symbol, function);
-        self.note_function_binding_changed();
     }
 
     /// data.c:Ffset's native-comp hook followed by the actual function-cell

@@ -68,111 +68,6 @@ impl Hasher for IdentityHasher {
 
 pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
 
-/// Temporary derived-cache validation for keymap and syntax views. Snapshot
-/// actual words: native code and the interpreter can mutate any cons directly,
-/// without a mutation epoch, watcher registration or store barrier. These weak
-/// snapshots never retain an otherwise unreachable Lisp graph. Their scan cost
-/// belongs to the remaining derived views, not to ordinary cons operations.
-#[derive(Debug, Clone, Default)]
-pub(crate) struct ConsMutationSnapshot {
-    cells: Vec<(WeakConsRef, [usize; 2])>,
-}
-
-impl ConsMutationSnapshot {
-    pub(crate) fn cell(cell: &SharedCons) -> Self {
-        Self::cells(std::iter::once(cell))
-    }
-
-    pub(crate) fn cells<'a>(cells: impl IntoIterator<Item = &'a SharedCons>) -> Self {
-        let mut snapshot = Self {
-            cells: cells
-                .into_iter()
-                .map(|cell| {
-                    (
-                        cell.downgrade(),
-                        [cell.car.get().word(), cell.cdr.get().word()],
-                    )
-                })
-                .collect(),
-        };
-        snapshot
-            .cells
-            .sort_unstable_by_key(|(cell, _)| cell.identity());
-        snapshot.cells.dedup_by_key(|(cell, _)| cell.identity());
-        snapshot
-    }
-
-    pub(crate) fn list_spine(value: &Value) -> Self {
-        let mut cells = Vec::new();
-        let mut seen = HashSet::new();
-        let mut value = *value;
-        while let Kind::Cons(cell) = value.kind() {
-            if !seen.insert(ConsCell::identity(&cell)) {
-                break;
-            }
-            cells.push(cell);
-            value = cell.cdr.get();
-        }
-        Self::cells(&cells)
-    }
-
-    pub(crate) fn tree(value: &Value) -> Self {
-        let mut snapshot = Self::default();
-        snapshot.include_tree(value);
-        snapshot
-    }
-
-    pub(crate) fn include_cell(&mut self, cell: &SharedCons) {
-        if let Err(index) = self
-            .cells
-            .binary_search_by_key(&ConsCell::identity(cell), |(cell, _)| cell.identity())
-        {
-            self.cells.insert(
-                index,
-                (
-                    cell.downgrade(),
-                    [cell.car.get().word(), cell.cdr.get().word()],
-                ),
-            );
-        }
-    }
-
-    pub(crate) fn include_tree(&mut self, value: &Value) {
-        let existing_len = self.cells.len();
-        let mut seen = HashSet::new();
-        let mut pending = vec![*value];
-        while let Some(value) = pending.pop() {
-            let Kind::Cons(cell) = value.kind() else {
-                continue;
-            };
-            let id = ConsCell::identity(&cell);
-            if !seen.insert(id) {
-                continue;
-            }
-            if self.cells[..existing_len]
-                .binary_search_by_key(&id, |(cell, _)| cell.identity())
-                .is_err()
-            {
-                self.cells.push((
-                    cell.downgrade(),
-                    [cell.car.get().word(), cell.cdr.get().word()],
-                ));
-            }
-            pending.push(cell.car.get());
-            pending.push(cell.cdr.get());
-        }
-        self.cells.sort_unstable_by_key(|(cell, _)| cell.identity());
-        self.cells.dedup_by_key(|(cell, _)| cell.identity());
-    }
-
-    pub(crate) fn is_current(&self) -> bool {
-        self.cells.iter().all(|(cell, words)| {
-            cell.upgrade()
-                .is_some_and(|cell| [cell.car.get().word(), cell.cdr.get().word()] == *words)
-        })
-    }
-}
-
 /// The current collection's number; see `MarkBit'.  The process's, as
 /// the mark bits and `gc_in_progress' are alloc.c's globals: the objects
 /// carry it, whichever thread marked them.
@@ -4275,12 +4170,117 @@ pub fn eq_symbol_named(value: impl std::borrow::Borrow<Value>, name: &str) -> bo
 }
 
 #[cfg(test)]
-mod tests {
+pub(crate) mod tests {
     use super::{
-        EnvFrame, Kind, LispError, SharedCons, StringObjectRef, SymbolName, Value, assq_binding,
-        census_live_conses, census_live_floats, census_live_uninterned_symbols,
-        census_live_vectors, environment_declares_special,
+        ConsCell, EnvFrame, Kind, LispError, SharedCons, StringObjectRef, SymbolName, Value,
+        WeakConsRef, assq_binding, census_live_conses, census_live_floats,
+        census_live_uninterned_symbols, census_live_vectors, environment_declares_special,
     };
+    use std::collections::HashSet;
+
+    /// The words of weakly held conses, to tell whether any changed: native
+    /// code and the interpreter store into a cons directly, without a
+    /// mutation epoch, watcher or store barrier.  The weak references never
+    /// retain an otherwise unreachable graph.  Only tests use it.
+    #[derive(Debug, Clone, Default)]
+    pub(crate) struct ConsMutationSnapshot {
+        cells: Vec<(WeakConsRef, [usize; 2])>,
+    }
+
+    impl ConsMutationSnapshot {
+        pub(crate) fn cell(cell: &SharedCons) -> Self {
+            Self::cells(std::iter::once(cell))
+        }
+
+        pub(crate) fn cells<'a>(cells: impl IntoIterator<Item = &'a SharedCons>) -> Self {
+            let mut snapshot = Self {
+                cells: cells
+                    .into_iter()
+                    .map(|cell| {
+                        (
+                            cell.downgrade(),
+                            [cell.car.get().word(), cell.cdr.get().word()],
+                        )
+                    })
+                    .collect(),
+            };
+            snapshot
+                .cells
+                .sort_unstable_by_key(|(cell, _)| cell.identity());
+            snapshot.cells.dedup_by_key(|(cell, _)| cell.identity());
+            snapshot
+        }
+
+        pub(crate) fn list_spine(value: &Value) -> Self {
+            let mut cells = Vec::new();
+            let mut seen = HashSet::new();
+            let mut value = *value;
+            while let Kind::Cons(cell) = value.kind() {
+                if !seen.insert(ConsCell::identity(&cell)) {
+                    break;
+                }
+                cells.push(cell);
+                value = cell.cdr.get();
+            }
+            Self::cells(&cells)
+        }
+
+        pub(crate) fn tree(value: &Value) -> Self {
+            let mut snapshot = Self::default();
+            snapshot.include_tree(value);
+            snapshot
+        }
+
+        pub(crate) fn include_cell(&mut self, cell: &SharedCons) {
+            if let Err(index) = self
+                .cells
+                .binary_search_by_key(&ConsCell::identity(cell), |(cell, _)| cell.identity())
+            {
+                self.cells.insert(
+                    index,
+                    (
+                        cell.downgrade(),
+                        [cell.car.get().word(), cell.cdr.get().word()],
+                    ),
+                );
+            }
+        }
+
+        pub(crate) fn include_tree(&mut self, value: &Value) {
+            let existing_len = self.cells.len();
+            let mut seen = HashSet::new();
+            let mut pending = vec![*value];
+            while let Some(value) = pending.pop() {
+                let Kind::Cons(cell) = value.kind() else {
+                    continue;
+                };
+                let id = ConsCell::identity(&cell);
+                if !seen.insert(id) {
+                    continue;
+                }
+                if self.cells[..existing_len]
+                    .binary_search_by_key(&id, |(cell, _)| cell.identity())
+                    .is_err()
+                {
+                    self.cells.push((
+                        cell.downgrade(),
+                        [cell.car.get().word(), cell.cdr.get().word()],
+                    ));
+                }
+                pending.push(cell.car.get());
+                pending.push(cell.cdr.get());
+            }
+            self.cells.sort_unstable_by_key(|(cell, _)| cell.identity());
+            self.cells.dedup_by_key(|(cell, _)| cell.identity());
+        }
+
+        pub(crate) fn is_current(&self) -> bool {
+            self.cells.iter().all(|(cell, words)| {
+                cell.upgrade()
+                    .is_some_and(|cell| [cell.car.get().word(), cell.cdr.get().word()] == *words)
+            })
+        }
+    }
 
     #[test]
     fn result_of_value_is_two_machine_words() {
@@ -5128,10 +5128,10 @@ mod tests {
         // Historical selector retained: current words, not a write epoch,
         // now validate each field's derived dependencies.
         let pair = Value::cons(Value::Integer(1), Value::Integer(2));
-        let before_car = super::ConsMutationSnapshot::list_spine(&pair);
+        let before_car = ConsMutationSnapshot::list_spine(&pair);
         pair.set_car(Value::Integer(3)).expect("set car");
         assert!(!before_car.is_current());
-        let before_cdr = super::ConsMutationSnapshot::list_spine(&pair);
+        let before_cdr = ConsMutationSnapshot::list_spine(&pair);
         let (_, cdr) = pair.cons_cells().expect("cons");
         cdr.set(Value::Integer(4));
         assert!(!before_cdr.is_current());
@@ -5141,7 +5141,7 @@ mod tests {
     fn cons_mutation_snapshot_ignores_unrelated_cells_and_tracks_dependencies() {
         let source = Value::list([Value::symbol("+"), Value::Integer(1)]);
         let unrelated = Value::list([Value::symbol("data"), Value::Integer(2)]);
-        let snapshot = super::ConsMutationSnapshot::list_spine(&source);
+        let snapshot = ConsMutationSnapshot::list_spine(&source);
 
         unrelated
             .set_cdr(Value::list([Value::Integer(3)]))
@@ -5161,11 +5161,11 @@ mod tests {
         // Historical selector: dropping another snapshot must not discard
         // a live dependency. There is no longer a global watcher table.
         let source = Value::cons(Value::Integer(1), Value::Nil);
-        let snapshot = super::ConsMutationSnapshot::list_spine(&source);
+        let snapshot = ConsMutationSnapshot::list_spine(&source);
         let other = snapshot.clone();
         drop(snapshot);
         for _ in 0..1_024 {
-            drop(super::ConsMutationSnapshot::list_spine(&source));
+            drop(ConsMutationSnapshot::list_spine(&source));
         }
         assert!(other.is_current());
         source
@@ -5180,7 +5180,7 @@ mod tests {
         // filter. Native stores need no prior crossing or notification.
         let source = Value::cons(Value::Integer(1), Value::Nil);
         let other = Value::cons(Value::Integer(3), Value::Nil);
-        let snapshot = super::ConsMutationSnapshot::list_spine(&source);
+        let snapshot = ConsMutationSnapshot::list_spine(&source);
         unsafe {
             *((other.word() & !7) as *mut usize) = Value::Integer(7).word();
         }
@@ -5196,11 +5196,11 @@ mod tests {
         // Historical selector: snapshot disposal leaves no registration on
         // a cell, and a fresh snapshot describes the current fields.
         let source = Value::cons(Value::Integer(1), Value::Integer(2));
-        let snapshot = super::ConsMutationSnapshot::list_spine(&source);
+        let snapshot = ConsMutationSnapshot::list_spine(&source);
         drop(snapshot);
         source.set_car(Value::Integer(3)).expect("cons car");
         source.set_cdr(Value::Integer(4)).expect("cons cdr");
-        let fresh = super::ConsMutationSnapshot::list_spine(&source);
+        let fresh = ConsMutationSnapshot::list_spine(&source);
         assert!(fresh.is_current());
         source.set_cdr(Value::Nil).expect("later store");
         assert!(!fresh.is_current());
@@ -5210,8 +5210,8 @@ mod tests {
     fn tree_mutation_snapshot_tracks_nested_cons_fields() {
         let nested = Value::list([Value::symbol("inner"), Value::Integer(1)]);
         let source = Value::list([Value::symbol("outer"), nested]);
-        let spine_snapshot = super::ConsMutationSnapshot::list_spine(&source);
-        let tree_snapshot = super::ConsMutationSnapshot::tree(&source);
+        let spine_snapshot = ConsMutationSnapshot::list_spine(&source);
+        let tree_snapshot = ConsMutationSnapshot::tree(&source);
 
         nested
             .set_car(Value::symbol("changed"))
