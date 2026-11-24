@@ -403,6 +403,42 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
         }
     }
 
+    /// `setup_syntax' with a gl_state to release or to make: the one left
+    /// released, then, for a buffer or a string with intervals when
+    /// `parse-sexp-lookup-properties' is set, update_syntax_table's at AT.
+    #[inline(never)]
+    fn setup_syntax_properties(&mut self, at: usize) {
+        use super::syntax_scan::{GlObject, GlState};
+        if let Some(gl) = self.gl.take() {
+            GlState::release(gl);
+        }
+        let object = match &self.object {
+            Object::Buffer { .. } => GlObject::Buffer,
+            Object::String {
+                string: Some(string),
+                ..
+            } if matches!(string.kind(), Kind::StringObject(state)
+                    if state.borrow().props.has_intervals()) =>
+            {
+                GlObject::String(*string)
+            }
+            // Text without intervals has no `syntax-table' property:
+            // update_syntax_table's interval_of finds none and returns,
+            // leaving the buffer's table, which the matcher reads without
+            // gl_state too.
+            Object::String { .. } | Object::None => return,
+        };
+        if !self.interp.parse_sexp_lookup_properties() {
+            return;
+        }
+        self.keep_text();
+        let (gl, error) = GlState::for_regexp(self.interp, object, || self.charpos(at));
+        if let Some(error) = error {
+            self.error.get_or_insert(error);
+        }
+        self.gl = Some(gl);
+    }
+
     fn category_table(&mut self) -> CharTableRef {
         if let Some(table) = self.categories {
             return table;
@@ -593,36 +629,15 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
         }
     }
 
+    /// RE_SETUP_SYNTAX_TABLE_FOR_OBJECT: the buffer's syntax table, which
+    /// the environment read as it began, and gl_state for the object only
+    /// when `parse-sexp-lookup-properties' is set (update_syntax_table),
+    /// or to release the one an earlier match of this environment left.
+    #[inline]
     fn setup_syntax(&mut self, at: usize) {
-        use super::syntax_scan::{GlObject, GlState};
-        if let Some(gl) = self.gl.take() {
-            GlState::release(gl);
+        if self.gl.is_some() || self.interp.parse_sexp_lookup_properties() {
+            self.setup_syntax_properties(at);
         }
-        let object = match &self.object {
-            Object::Buffer { .. } => GlObject::Buffer,
-            Object::String {
-                string: Some(string),
-                ..
-            } if matches!(string.kind(), Kind::StringObject(state)
-                    if state.borrow().props.has_intervals()) =>
-            {
-                GlObject::String(*string)
-            }
-            // Text without intervals has no `syntax-table' property:
-            // update_syntax_table's interval_of finds none and returns,
-            // leaving the buffer's table, which the matcher reads without
-            // gl_state too.
-            Object::String { .. } | Object::None => return,
-        };
-        if !self.interp.parse_sexp_lookup_properties() {
-            return;
-        }
-        self.keep_text();
-        let (gl, error) = GlState::for_regexp(self.interp, object, || self.charpos(at));
-        if let Some(error) = error {
-            self.error.get_or_insert(error);
-        }
-        self.gl = Some(gl);
     }
 
     fn syntax(&mut self, c: u32, at: usize) -> u8 {

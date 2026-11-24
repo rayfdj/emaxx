@@ -1646,6 +1646,61 @@ fn the_matcher_calls_syntax_propertize_as_gnu() {
 }
 
 #[test]
+fn matches_read_syntax_classes_from_the_buffer_s_table_and_properties_as_gnu() {
+    // RE_SETUP_SYNTAX_TABLE_FOR_OBJECT: \sw, \s-, \s(, \s), \s_, \s.
+    // and the word and symbol boundaries read the buffer's syntax table
+    // (the standard one, a buffer-local one, one with-syntax-table puts
+    // in place) and, only with `parse-sexp-lookup-properties' set, the
+    // `syntax-table' text properties, in re-search-forward, looking-at
+    // and string-match.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil))
+          (with-temp-buffer
+            (insert "foo_bar (baz) qu-ux été_x\n")
+            (let ((rec (lambda (tag)
+                         (push (list tag
+                                     (progn (goto-char 1) (re-search-forward "\\sw+" nil t)) (match-data t)
+                                     (progn (goto-char 1) (re-search-forward "\\s-+\\s(" nil t)) (match-data t)
+                                     (progn (goto-char 1) (re-search-forward "\\s_\\sw" nil t)) (match-data t)
+                                     (progn (goto-char 1) (re-search-forward "\\bba" nil t))
+                                     (progn (goto-char 1) (re-search-forward "\\<qu\\w*\\>" nil t))
+                                     (progn (goto-char 1) (re-search-forward "\\_<qu-ux\\_>" nil t))
+                                     (progn (goto-char 1) (re-search-forward "\\Bar\\b" nil t))
+                                     (progn (goto-char 10) (looking-at "\\sw+\\s)"))
+                                     (progn (goto-char 16) (looking-at "\\sw+\\s.\\sw"))
+                                     (string-match "\\s_\\sw+\\'" "a_b") (string-match "\\<b" "a b_b")
+                                     (progn (goto-char 1) (re-search-forward "é\\sw*\\_>" nil t)))
+                               r))))
+              (funcall rec 'standard)
+              ;; A buffer-local syntax table: `_' a word constituent, `-' a symbol one.
+              (let ((table (make-syntax-table)))
+                (modify-syntax-entry ?_ "w" table)
+                (modify-syntax-entry ?- "_" table)
+                (modify-syntax-entry ?\( "." table)
+                (set-syntax-table table)
+                (funcall rec 'local)
+                ;; with-syntax-table over it, then back.
+                (with-syntax-table (let ((other (make-syntax-table)))
+                                     (modify-syntax-entry ?u "." other)
+                                     (modify-syntax-entry ?\s "w" other)
+                                     other)
+                  (funcall rec 'with))
+                (funcall rec 'local-again)
+                ;; syntax-table text properties read when parse-sexp-lookup-properties.
+                (put-text-property 4 5 'syntax-table (string-to-syntax "."))
+                (put-text-property 17 18 'syntax-table (string-to-syntax "w"))
+                (funcall rec 'props-ignored)
+                (setq-local parse-sexp-lookup-properties t)
+                (funcall rec 'props)
+                (set-syntax-table (standard-syntax-table))
+                (funcall rec 'props-standard))))
+          (nreverse r))"#,
+        r##"((standard 4 (1 4 #<killed buffer>) 10 (8 10 #<killed buffer>) 6 (4 6 #<killed buffer>) 7 17 20 8 t nil 1 2 nil) (local 8 (1 8 #<killed buffer>) nil (1 8 #<killed buffer>) 19 (17 19 #<killed buffer>) 12 17 20 8 t nil nil 2 26) (with 4 (1 4 #<killed buffer>) nil (1 4 #<killed buffer>) 6 (4 6 #<killed buffer>) 7 nil nil nil t nil 1 4 nil) (local-again 8 (1 8 #<killed buffer>) nil (1 8 #<killed buffer>) 19 (17 19 #<killed buffer>) 12 17 20 8 t nil nil 2 26) (props-ignored 8 (1 8 #<killed buffer>) nil (1 8 #<killed buffer>) 19 (17 19 #<killed buffer>) 12 17 20 8 t nil nil 2 26) (props 4 (1 4 #<killed buffer>) nil (1 4 #<killed buffer>) nil (1 4 #<killed buffer>) 7 20 20 8 t nil nil 2 26) (props-standard 4 (1 4 #<killed buffer>) 10 (8 10 #<killed buffer>) 26 (24 26 #<killed buffer>) 7 20 20 8 t nil 1 2 nil))"##,
+        "syntax classes in matches",
+    );
+}
+
+#[test]
 fn case_folding_reads_the_canon_table_and_the_registers_keep_search_regs_as_gnu() {
     // char_table_translate through the case_canon_table itself: case
     // folding of non-ASCII letters in re-search-forward, search-forward,
