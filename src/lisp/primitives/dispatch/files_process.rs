@@ -3447,32 +3447,31 @@ define_dispatch!(
                 // they ask questions or their hooks fail: `if
                 // (!b->base_buffer && b->indirections > 0)'.
                 if object.base_buffer().is_none() && object.indirections() > 0 {
-                    let indirect: Vec<u64> = interp
-                        .buffer_list
-                        .iter()
-                        .map(|(other, _)| *other)
-                        .filter(|other| interp.buffer_base_id(*other) == Some(id))
-                        .collect();
-                    if !indirect.is_empty() {
-                        for other in indirect {
-                            let Some(value) = interp.buffer_value(other) else {
-                                continue;
-                            };
-                            super::call(interp, "kill-buffer", &[value], env)?;
-                            let survivor =
-                                interp.get_buffer_by_id(other).map(|buffer| buffer.name());
-                            if let Some(survivor) = survivor {
-                                // SDATA (BVAR (other, name)).
-                                return Err(crate::lisp::primitives::values::doprnt_error_sdata(
-                                    Some(interp),
-                                    "Unable to kill buffer whose indirect buffer `{}' cannot be killed",
-                                    &[survivor],
-                                ));
-                            }
+                    // FOR_EACH_LIVE_BUFFER over Vbuffer_alist as each kill
+                    // leaves it: an indirect buffer that a kill's hooks
+                    // make is in the list by the time the walk reaches its
+                    // end, and is killed too.
+                    let indirect = |interp: &Interpreter| {
+                        interp.buffer_list.iter().find_map(|(other, _)| {
+                            interp.buffer_object(*other).filter(|other| {
+                                other.base_buffer().is_some_and(|base| base.ptr_eq(&object))
+                            })
+                        })
+                    };
+                    while let Some(other) = indirect(interp) {
+                        super::call(interp, "kill-buffer", &[Value::Buffer(other)], env)?;
+                        if other.is_live() {
+                            // SDATA (BVAR (other, name)).
+                            return Err(crate::lisp::primitives::values::doprnt_error_sdata(
+                                Some(interp),
+                                "Unable to kill buffer whose indirect buffer `{}' cannot be killed",
+                                &[other.name()],
+                            ));
                         }
-                        if !interp.has_buffer_id(id) {
-                            return Ok(Value::T);
-                        }
+                    }
+                    // Exit if we now have killed the base buffer (Bug#11665).
+                    if !interp.has_buffer_id(id) {
+                        return Ok(Value::T);
                     }
                 }
                 // replace_buffer_in_windows, before another buffer is made

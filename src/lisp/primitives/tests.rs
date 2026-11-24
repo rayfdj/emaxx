@@ -803,6 +803,45 @@ fn buffer_swap_text_gives_each_buffer_the_other_s_point_markers_as_gnu() {
 }
 
 #[test]
+fn kill_buffer_kills_the_indirect_buffers_its_hooks_make_as_gnu() {
+    // buffer.c:Fkill_buffer kills a base's indirect buffers in a
+    // FOR_EACH_LIVE_BUFFER walk after the hooks: one that the kill of
+    // another makes from its hook is in Vbuffer_alist by then and is
+    // killed too, so no indirect buffer outlives its base, and
+    // Fmake_indirect_buffer of a killed one refuses.  An indirect
+    // buffer's indirect buffer is its base's (`base_buffer->base_buffer
+    // ? ... : base_buffer').
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((b (get-buffer-create "or-b")) i1 i3 i4 i5)
+           (with-current-buffer b (insert "0123456789"))
+           (setq i1 (make-indirect-buffer b "or-i1"))
+           ;; The kill of I1, which the kill of B makes, makes I3 of B, and I3's
+           ;; kill makes I5 of I3 (so of B).
+           (with-current-buffer i1
+             (add-hook 'kill-buffer-hook
+                       (lambda ()
+                         (setq i3 (make-indirect-buffer "or-b" "or-i3"))
+                         (with-current-buffer i3
+                           (add-hook 'kill-buffer-hook
+                                     (lambda () (setq i5 (make-indirect-buffer i3 "or-i5")))
+                                     nil t)))
+                       nil t))
+           (list (kill-buffer b)
+                 (mapcar (lambda (x) (and x (list (buffer-live-p x) (eq (buffer-base-buffer x) b))))
+                         (list b i1 i3 i5))
+                 (condition-case e (setq i4 (make-indirect-buffer i3 "or-i4")) (error e))
+                 (let ((base (get-buffer-create "or-b2")))
+                   (setq i4 (make-indirect-buffer base "or-b2-i"))
+                   (list (eq (buffer-base-buffer (make-indirect-buffer i4 "or-b2-ii")) base)
+                         (kill-buffer base)
+                         (mapcar #'buffer-live-p (list base i4 (get-buffer "or-b2-ii")))))
+                 (seq-filter (lambda (n) (string-prefix-p "or-" n)) (mapcar #'buffer-name (buffer-list)))))"#,
+        r##"(t ((nil nil) (nil t) (nil t) (nil t)) (error "Base buffer has been killed") (t t (nil nil nil)) nil)"##,
+        "indirect buffers made while their base is killed",
+    );
+}
+
+#[test]
 fn killed_buffers_keep_what_fkill_buffer_leaves_as_gnu() {
     // buffer.c:Fkill_buffer: the name nil, BUFFER_LIVE_P false; the
     // file name and truename and the directory kept, the other slots as

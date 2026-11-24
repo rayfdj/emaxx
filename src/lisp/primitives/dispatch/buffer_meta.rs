@@ -354,9 +354,9 @@ define_dispatch!(
                         &[args[0]],
                     )
                 })?;
-                let base_id = interp
-                    .live_buffer_id(base)
-                    .ok_or_else(|| LispError::Signal("Base buffer has been killed".into()))?;
+                if !base.is_live() {
+                    return Err(LispError::Signal("Base buffer has been killed".into()));
+                }
                 if crate::lisp::primitives::string_char_count(&new_name) == Some(0) {
                     return Err(LispError::Signal(
                         "Empty string for buffer name is not allowed".into(),
@@ -364,20 +364,15 @@ define_dispatch!(
                 }
                 let clone = args.get(2).is_some_and(|value| value.is_truthy());
                 let inhibit_hooks = args.get(3).is_some_and(|value| value.is_truthy());
-                // No double indirection: an indirect buffer's base is a
-                // buffer with its own text.
-                let base_id = interp.root_buffer_id(base_id);
+                // No double indirection: `b->base_buffer = (XBUFFER
+                // (base_buffer)->base_buffer ? XBUFFER
+                // (base_buffer)->base_buffer : XBUFFER (base_buffer))'.
+                let base_object = base.base_buffer().unwrap_or(base);
+                let base_id = base_object.id;
                 let new_id = interp.create_buffer_named(new_name);
-                let (base_object, object) =
-                    match (interp.buffer_object(base_id), interp.buffer_object(new_id)) {
-                        (Some(base), Some(object)) => (base, object),
-                        _ => {
-                            return Err(LispError::Signal(format!(
-                                "No buffer with id {}",
-                                base_id
-                            )));
-                        }
-                    };
+                let object = interp
+                    .buffer_object(new_id)
+                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", new_id)))?;
                 // The name and last_name create_buffer_named gave it, a
                 // copy of NAME.
                 let new_name = object.borrow().name();
