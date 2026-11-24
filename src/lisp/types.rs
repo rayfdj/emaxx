@@ -1867,6 +1867,36 @@ pub(crate) fn circular_list(tail: Value) -> LispError {
 #[derive(Clone, Copy)]
 pub struct Value(usize, std::marker::PhantomData<*mut ()>);
 
+// No heap handle, editor or obarray owner is Send or Sync, so none can
+// reach an OS thread that does not hold the runtime (`with_runtime'
+// returns only Send results).  This resolves only while that holds:
+// giving one of these types either trait adds a second implementation
+// that matches it, the inference of `_' becomes ambiguous, and the build
+// fails.
+const _: [fn(); 11] = {
+    trait ThreadBound<A> {
+        fn check() {}
+    }
+    struct IfSend;
+    struct IfSync;
+    impl<T: ?Sized> ThreadBound<()> for T {}
+    impl<T: ?Sized + Send> ThreadBound<IfSend> for T {}
+    impl<T: ?Sized + Sync> ThreadBound<IfSync> for T {}
+    [
+        <Value as ThreadBound<_>>::check,
+        <SymbolName as ThreadBound<_>>::check,
+        <crate::lisp::eval::Interpreter as ThreadBound<_>>::check,
+        <crate::lisp::alloc::ConsRef as ThreadBound<_>>::check,
+        <crate::lisp::alloc::FloatRef as ThreadBound<_>>::check,
+        <crate::lisp::alloc::StringObjectRef as ThreadBound<_>>::check,
+        <crate::lisp::alloc::SymbolRef as ThreadBound<_>>::check,
+        <crate::lisp::alloc::VectorRef as ThreadBound<_>>::check,
+        <crate::lisp::alloc::WeakConsRef as ThreadBound<_>>::check,
+        <BufferRef as ThreadBound<_>>::check,
+        <symbols::SymbolOwner as ThreadBound<_>>::check,
+    ]
+};
+
 const TAG_MASK: usize = 7;
 const TAG_SYMBOL: usize = 0;
 const TAG_INT0: usize = 2;
