@@ -23835,6 +23835,18 @@ ert-tests as a whole 26,307 ms against 27,211.
   (run 45340584137) passed: 3,602 library tests, the seven integration
   targets (227) and the binaries' tests (61), none failed.
 
+**On `b693c28`** (round 384): the frozen run (run 45374047173) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, the eglot test GNU's side had failed twice on round 383
+  passing on both sides.  Setup 54.7 s against 47.2 s (1.159), test
+  bodies 235.1 s against 227.0 s (1.036), in all 1.057 (GNU's suite
+  took 274 s).  The widest body gaps are tramp-tests (15.1 s against
+  13.5 s), comp-tests (12.3 against 11.2), semantic-utest-ia (2.70
+  against 1.97), mule-tests (1.96 against 1.34), process-tests (2.23
+  against 1.72) and package-tests (5.90 against 5.57).  The Rust gate
+  (run 45374040978) passed: 3,611 library tests, the seven integration
+  targets (227) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 384 and its review), outside the
   round and in no milestone.**  One line each: an indirect buffer made
