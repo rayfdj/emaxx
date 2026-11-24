@@ -4356,8 +4356,19 @@ fn run_entered_with(
         let mut pc = 0;
         let mut quitcounter = 1;
         // SAFETY: as in `run_loop': the verified loop runs no Lisp, collects
-        // nothing and stores into no string while it reads the bytes.
-        let (code, current) = unsafe { program.code.bytes_unguarded() };
+        // nothing and stores into no string while it reads the bytes.  When
+        // SETUP ran no Lisp, nothing has run since `entry_program' found
+        // them current with no code changed (its `code_changes' test), and
+        // they are read as `bytes_unchanged' reads them, SDATA alone; their
+        // state is then read only by the assertion below.
+        let (code, current) = if setup_runs_lisp {
+            unsafe { program.code.bytes_unguarded() }
+        } else {
+            (
+                unsafe { program.code.bytes_unchanged() },
+                program.code.string().code_state() == crate::lisp::alloc::CodeState::Current,
+            )
+        };
         let admitted = || {
             current
                 && program

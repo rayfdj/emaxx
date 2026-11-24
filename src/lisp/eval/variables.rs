@@ -3250,6 +3250,43 @@ impl InterpreterState {
         self.lisp_eval_depth -= 1;
     }
 
+    /// The end of a call that returned, whose record, at RECORD, is the
+    /// innermost: Ffuncall's `backtrace_debug_on_exit (count)', and when
+    /// the record is not marked, its `specpdl_ptr--' and
+    /// `lisp_eval_depth--', the frame read once for the mark and for what
+    /// it owns, and no test of the length the call's activation left.
+    /// False, with nothing changed, for a marked record, whose debugger
+    /// the caller enters.
+    #[inline(always)]
+    pub(crate) fn leave_innermost_funcall(&mut self, record: usize) -> bool {
+        debug_assert_eq!(
+            self.backtrace_frames.len(),
+            record + 1,
+            "the call's record is innermost"
+        );
+        let Some(frame) = self.backtrace_frames.get(record) else {
+            return false;
+        };
+        if frame.debug_on_exit() {
+            return false;
+        }
+        let owns_nothing = frame.owns_nothing();
+        // A sample taken while the frames stood is filed under them.
+        if crate::lisp::primitives::profiler::samples_pending() {
+            Interpreter::record_profiler_samples(&self.backtrace_frames);
+        }
+        if owns_nothing {
+            // SAFETY: the frames from RECORD on are the call's record
+            // alone, which holds no allocation: forgetting it releases
+            // nothing.
+            unsafe { self.backtrace_frames.set_len(record) };
+        } else {
+            self.truncate_backtrace_frames_to(record);
+        }
+        self.lisp_eval_depth -= 1;
+        true
+    }
+
     /// eval.c:backtrace_debug_on_exit of the frame a call recorded at
     /// DEPTH (its index), which `backtrace-debug' or do_debug_on_call
     /// marked.

@@ -1577,6 +1577,15 @@ impl Interpreter {
             let depth = self.enter_plain_funcall(func, args);
             let result =
                 crate::lisp::bytecode::vm::funcall_closure_in_place(self, closure, args, env);
+            // The activation leaves the backtrace as long as it found it,
+            // the call's record its last (`finish_activation', or the fast
+            // return's test): Ffuncall's `backtrace_debug_on_exit (count)'
+            // and `specpdl_ptr--' of that record.
+            if let Ok(value) = result
+                && self.leave_innermost_funcall(depth)
+            {
+                return Some(Ok(value));
+            }
             let result = self.settle_call_result(depth, result, env);
             self.leave_plain_funcall(depth);
             return Some(result);
