@@ -2391,6 +2391,7 @@ impl Loader<'_> {
         };
         object.detach_markers();
         *object.borrow_mut() = buffer;
+        object.adopt_text();
         object.borrow_mut().install_mark_object(object, mark_marker);
         self.interp.install_buffer(object);
         if let Some(base) = base {

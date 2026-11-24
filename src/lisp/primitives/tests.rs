@@ -1129,6 +1129,113 @@ fn parse_sexp_lookup_properties_decides_whether_syntax_properties_count_as_gnu()
 }
 
 #[test]
+fn an_indirect_family_reads_its_base_s_own_text_through_kills_and_swaps_as_gnu() {
+    // buffer.h: an indirect buffer's `text' is its base's own_text; a
+    // killed indirect buffer has a text of its own again (its counts
+    // kept), the base's text stays the base's; Fkill_buffer of a base
+    // kills its indirect buffers, the current one among them;
+    // Fbuffer_swap_text refuses an indirect buffer and a base of one,
+    // and swaps the own_texts once its indirect buffers are gone;
+    // collections between edits through the indirect buffer.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil))
+           ;; The indirect buffer killed first, then the base.
+           (let* ((b (get-buffer-create "fk-b")) (i (make-indirect-buffer b "fk-i")))
+             (with-current-buffer i (insert "shared text"))
+             (kill-buffer i)
+             (push (list (with-current-buffer b (buffer-string)) (buffer-live-p i) (buffer-size i)
+                         (eq (buffer-base-buffer i) b))
+                   r)
+             (with-current-buffer b (insert "!"))
+             (dotimes (_ 2) (garbage-collect))
+             (push (list (with-current-buffer b (buffer-string)) (kill-buffer b) (buffer-size b)) r))
+           ;; The base killed with two indirect buffers, one current.
+           (let* ((b (get-buffer-create "fk2-b")) (i1 (make-indirect-buffer b "fk2-i1"))
+                  (i2 (make-indirect-buffer b "fk2-i2")))
+             (with-current-buffer b (insert "abc"))
+             (with-current-buffer i1
+               (push (list (kill-buffer b) (buffer-live-p i1) (buffer-live-p i2) (buffer-live-p b)
+                           (buffer-name) (buffer-size i1))
+                     r)))
+           ;; buffer-swap-text refuses an indirect buffer and a base of one.
+           (let* ((b (get-buffer-create "fk3-b")) (i (make-indirect-buffer b "fk3-i"))
+                  (o (get-buffer-create "fk3-o")))
+             (push (list (condition-case e (with-current-buffer i (buffer-swap-text o)) (error e))
+                         (condition-case e (with-current-buffer o (buffer-swap-text b)) (error e))
+                         (condition-case e (with-current-buffer b (buffer-swap-text o)) (error e)))
+                   r)
+             (kill-buffer i)
+             (push (list (with-current-buffer b (insert "base") (buffer-swap-text o) (buffer-string))
+                         (with-current-buffer o (buffer-string)))
+                   r)
+             (kill-buffer b) (kill-buffer o))
+           ;; Edits through the indirect buffer, collections between them.
+           (let* ((b (get-buffer-create "fk4-b")) (i (make-indirect-buffer b "fk4-i")))
+             (dotimes (n 5)
+               (with-current-buffer i (goto-char (point-max)) (insert (format "%d" n)))
+               (make-list 1000 n) (garbage-collect))
+             (push (list (with-current-buffer b (buffer-string)) (with-current-buffer i (buffer-size))) r)
+             (kill-buffer b))
+           (nreverse r))"#,
+        r##"(("shared text" nil 11 t) ("!shared text" t 12) (t nil nil nil "*Messages*" 3) ((error "Cannot swap indirect buffers's text") (error "One of the buffers to swap has indirect buffers") (error "One of the buffers to swap has indirect buffers")) ("" "base") ("01234" 5))"##,
+        "indirect family texts",
+    );
+}
+
+#[test]
+fn an_indirect_buffer_s_text_is_its_base_object_s_own_text() {
+    // The objects behind the family: a base's state reads its object's
+    // own_text, an indirect buffer's state its base's, a killed indirect
+    // buffer's its own (empty) one; a copy of the interpreter gives each
+    // copied buffer its own text, the indirect copy's a snapshot of the
+    // base's, which an edit in the original leaves.
+    let mut interp = Interpreter::new();
+    let eval = |interp: &mut Interpreter, source: &str| {
+        let form = Reader::new(source)
+            .read()
+            .expect("the form parses")
+            .expect("a form");
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    };
+    let object = |value: Value| match value.kind() {
+        Kind::Buffer(buffer) => buffer,
+        other => panic!("a buffer: {other:?}"),
+    };
+    let base = object(eval(
+        &mut interp,
+        r#"(save-current-buffer (set-buffer (get-buffer-create "ot-base")) (insert "own text") (current-buffer))"#,
+    ));
+    let indirect = object(eval(
+        &mut interp,
+        r#"(make-indirect-buffer "ot-base" "ot-i")"#,
+    ));
+    let owner = |buffer: crate::lisp::types::BufferRef| buffer.borrow().text_owner();
+    assert!(owner(base).is_some_and(|owner| owner.ptr_eq(&base)));
+    assert!(owner(indirect).is_some_and(|owner| owner.ptr_eq(&base)));
+    assert!(indirect.borrow().shares_text_with(&base.borrow()));
+    let copy = interp.deep_clone_image();
+    let copied = |buffer: crate::lisp::types::BufferRef| {
+        copy.buffer_object(buffer.id).expect("the copied buffer")
+    };
+    let (copied_base, copied_indirect) = (copied(base), copied(indirect));
+    assert!(owner(copied_indirect).is_some_and(|owner| owner.ptr_eq(&copied_indirect)));
+    assert!(owner(copied_base).is_some_and(|owner| owner.ptr_eq(&copied_base)));
+    eval(
+        &mut interp,
+        r#"(save-current-buffer (set-buffer "ot-i") (goto-char (point-max)) (insert "!"))"#,
+    );
+    assert_eq!(base.borrow().full_buffer_string(), "own text!");
+    assert_eq!(copied_indirect.borrow().full_buffer_string(), "own text");
+    assert_eq!(copied_base.borrow().full_buffer_string(), "own text");
+    eval(&mut interp, r#"(kill-buffer "ot-i")"#);
+    assert!(owner(indirect).is_some_and(|owner| owner.ptr_eq(&indirect)));
+    assert_eq!(base.borrow().full_buffer_string(), "own text!");
+    assert_eq!(indirect.borrow().size_total(), 0);
+}
+
+#[test]
 fn killed_buffers_keep_what_fkill_buffer_leaves_as_gnu() {
     // buffer.c:Fkill_buffer: the name nil, BUFFER_LIVE_P false; the
     // file name and truename and the directory kept, the other slots as

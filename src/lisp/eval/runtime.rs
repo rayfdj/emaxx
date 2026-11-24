@@ -2746,9 +2746,10 @@ impl Interpreter {
         if let Some(object) = self.buffer_object(id) {
             object.live.set(false);
         }
-        // free_buffer_text.
-        if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
-            buffer.release_killed_storage();
+        // free_buffer_text: the object's own_text, an empty one, is what
+        // the buffer reads from now on.
+        if let Some(object) = self.buffer_object(id) {
+            object.borrow_mut().release_killed_storage(object);
         }
         // A current buffer stays current, killed, until another is made
         // current; set_current_buffer_id then lets it go.

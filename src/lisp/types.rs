@@ -1060,6 +1060,10 @@ pub struct BufferValue {
     /// Weak chain, as in buffer_text.markers. It does not keep markers alive.
     /// An indirect buffer's markers are on its base's chain, the one text's.
     pub(crate) markers: Cell<Option<MarkerRef>>,
+    /// buffer.h's own_text: the text of a buffer that is not indirect,
+    /// which an indirect buffer of it reads too (its `text' points here);
+    /// an indirect buffer's own is empty until it is killed.
+    pub(crate) own_text: RefCell<crate::buffer::BufferText>,
     /// buffer.h's base_buffer: the buffer whose text an indirect buffer
     /// was made to share, kept once either is killed (Fbuffer_base_buffer
     /// of a killed buffer answers it).  A live indirect buffer's text and
@@ -1220,9 +1224,10 @@ impl BufferRef {
     /// Allocate the buffer identity before relocating its existing mark.
     /// Restoring an image must not create a second, temporary mark object.
     pub(crate) fn for_restore(id: u64, buffer: crate::buffer::Buffer) -> Self {
-        Self::allocate(BufferValue {
+        let object = Self::allocate(BufferValue {
             id,
             markers: Cell::new(None),
+            own_text: RefCell::new(crate::buffer::BufferText::default()),
             base_buffer: Cell::new(None),
             indirections: Cell::new(0),
             syntax_table: Cell::new(Value::Nil),
@@ -1233,7 +1238,18 @@ impl BufferRef {
             case_eqv_table: Cell::new(Value::Nil),
             state: RefCell::new(buffer),
             live: Cell::new(true),
-        })
+        });
+        object.adopt_text();
+        object
+    }
+
+    /// The text of the state placed in the object, taken as its
+    /// own_text: the state reads it there from now on.
+    pub(crate) fn adopt_text(&self) {
+        let text = self.borrow_mut().take_pending_text(*self);
+        if let Some(text) = text {
+            *self.own_text.borrow_mut() = text;
+        }
     }
 
     /// BUFFER_LIVE_P.
@@ -1377,9 +1393,9 @@ impl BufferRef {
     /// Ordinary Lisp edits operate on the existing buffer and marker fields.
     pub(crate) fn replace_state(&self, buffer: crate::buffer::Buffer) {
         self.detach_markers();
-        let mut state = self.borrow_mut();
-        *state = buffer;
-        state.install_mark_object(*self, None);
+        *self.borrow_mut() = buffer;
+        self.adopt_text();
+        self.borrow_mut().install_mark_object(*self, None);
     }
 }
 

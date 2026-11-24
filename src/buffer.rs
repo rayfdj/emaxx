@@ -4,7 +4,6 @@ use crate::intervals::{self, Intervals, PropertyRecorder, PropertySetType, Prope
 use crate::lisp::types::{BufferRef, Kind, MarkerRef};
 use crate::lisp::types::{PropertyKey, PropertyName, Value};
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 
 mod gap;
 pub use gap::GapText;
@@ -117,9 +116,9 @@ pub struct Buffer {
     /// the name itself at creation and once killed.
     last_name: Value,
 
-    /// buffer.h's `text': the buffer_text this buffer and the rest of its
-    /// indirect family share, its own (GNU's own_text) unless indirect.
-    text: Rc<RefCell<BufferText>>,
+    /// buffer.h's `text': the buffer_text this buffer reads, the own_text
+    /// of its object or, for an indirect buffer, of its base.
+    text: TextSlot,
 
     /// BVAR (b, pt_marker), begv_marker and zv_marker: where the point
     /// and bounds of a buffer that shares its text are kept while it is
@@ -251,10 +250,10 @@ impl Clone for Buffer {
             last_name: self.last_name,
             // A snapshot's own text, apart from any family's, which no
             // window shows.
-            text: Rc::new(RefCell::new(BufferText {
+            text: TextSlot::pending(BufferText {
                 window_count: 0,
-                ..self.text.borrow().clone()
-            })),
+                ..self.text.get().borrow().clone()
+            }),
             position_markers: None,
             positions_away: false,
             killed_size: self.killed_size,
@@ -292,8 +291,36 @@ impl Clone for Buffer {
 /// Z_BYTE: the bytes in a gap buffer (`gap::GapText'), as insdel.c keeps
 /// them, with the count of the raw-byte markers among them.  All changes
 /// go through `insert' and `remove', which keep the counts.
+/// Where a buffer's `text' is: an object's own_text (its own object's,
+/// or its base's), or, for a buffer state not yet placed in an object
+/// (one being made, or a snapshot), a text of its own that the object
+/// takes when the state is placed in it (`BufferRef::adopt_text').
+enum TextSlot {
+    Object(BufferRef),
+    Pending(Box<RefCell<BufferText>>),
+}
+
+impl TextSlot {
+    fn pending(text: BufferText) -> Self {
+        Self::Pending(Box::new(RefCell::new(text)))
+    }
+
+    /// buffer.h's `b->text': the own_text of the buffer's object, or of its
+    /// base's, or the text a state not yet placed holds.
+    #[inline]
+    fn get(&self) -> &RefCell<BufferText> {
+        match self {
+            // The object outlives the state: it holds the state, or it is
+            // the base, which mark_buffer keeps while an indirect buffer
+            // that shares its text lives and Fkill_buffer kills after it.
+            Self::Object(owner) => &owner.own_text,
+            Self::Pending(text) => text,
+        }
+    }
+}
+
 #[derive(Clone, Default)]
-struct BufferText {
+pub(crate) struct BufferText {
     text: GapText,
     /// The raw-byte markers (U+E080..U+E0FF) in the text, whose stored
     /// form is a byte longer than GNU's: a marker's byte position needs
@@ -1306,7 +1333,7 @@ impl Buffer {
         Buffer {
             name,
             last_name: Value::Nil,
-            text: Rc::new(RefCell::new(text)),
+            text: TextSlot::pending(text),
             position_markers: None,
             positions_away: false,
             killed_size: 0,
@@ -1391,7 +1418,7 @@ impl Buffer {
         Buffer {
             name: Value::string(name),
             last_name: Value::Nil,
-            text: Rc::new(RefCell::new(text)),
+            text: TextSlot::pending(text),
             position_markers: None,
             positions_away: false,
             killed_size: 0,
@@ -1460,12 +1487,12 @@ impl Buffer {
     /// text-derived cache keyed on it can never serve stale content.
     /// This process's count of text edits (see `edit_serial').
     pub fn text_edit_serial(&self) -> u64 {
-        self.text.borrow().text_edit_serial
+        self.text.get().borrow().text_edit_serial
     }
 
     /// This process's count of text and text-property edits.
     pub fn edit_serial(&self) -> u64 {
-        self.text.borrow().edit_serial
+        self.text.get().borrow().edit_serial
     }
 
     /// The edits after SERIAL, oldest first, or None when the log no
@@ -1473,19 +1500,21 @@ impl Buffer {
     /// since, or a text replacement that emptied it): the records
     /// SERIAL+1 ..= the current serial, each present.
     pub fn edits_since(&self, serial: u64) -> Option<Vec<EditRecord>> {
-        if serial == self.text.borrow().edit_serial {
+        if serial == self.text.get().borrow().edit_serial {
             return Some(Vec::new());
         }
-        if serial > self.text.borrow().edit_serial {
+        if serial > self.text.get().borrow().edit_serial {
             return None;
         }
         let first = self
             .text
+            .get()
             .borrow()
             .edits
             .partition_point(|record| record.serial <= serial);
         let records = self
             .text
+            .get()
             .borrow()
             .edits
             .range(first..)
@@ -1496,15 +1525,15 @@ impl Buffer {
             .is_some_and(|record| record.serial == serial + 1)
             && records
                 .last()
-                .is_some_and(|record| record.serial == self.text.borrow().edit_serial)
-            && records.len() as u64 == self.text.borrow().edit_serial - serial;
+                .is_some_and(|record| record.serial == self.text.get().borrow().edit_serial)
+            && records.len() as u64 == self.text.get().borrow().edit_serial - serial;
         contiguous.then_some(records)
     }
 
     /// Advance the edit serial (and the text serial when TEXT) and record
     /// the edit of [START, OLD_END) into [START, NEW_END).
     fn log_edit(&mut self, start: usize, old_end: usize, new_end: usize, text: bool) {
-        let mut stored = self.text.borrow_mut();
+        let mut stored = self.text.get().borrow_mut();
         stored.edit_serial += 1;
         if text {
             stored.text_edit_serial += 1;
@@ -1530,13 +1559,13 @@ impl Buffer {
     /// and empty the log, so no view of an earlier state can be replayed
     /// across it.
     fn text_replaced_without_record(&mut self) {
-        self.text.borrow_mut().edit_serial += 1;
-        self.text.borrow_mut().text_edit_serial += 1;
-        self.text.borrow_mut().edits.clear();
+        self.text.get().borrow_mut().edit_serial += 1;
+        self.text.get().borrow_mut().text_edit_serial += 1;
+        self.text.get().borrow_mut().edits.clear();
     }
 
     pub fn chars_modification_count(&self) -> ModCount {
-        self.text.borrow().chars_modiff
+        self.text.get().borrow().chars_modiff
     }
 
     pub fn set_multibyte(&mut self, enabled: bool) {
@@ -1578,11 +1607,11 @@ impl Buffer {
         // conversion twice.
         // intervals.c:set_intervals_multibyte: each interval's bounds in
         // the new positions, one left with no text gone.
-        if let Some(intervals) = &mut self.text.borrow_mut().intervals {
+        if let Some(intervals) = &mut self.text.get().borrow_mut().intervals {
             intervals.remap(remap);
         }
         {
-            let mut stored = self.text.borrow_mut();
+            let mut stored = self.text.get().borrow_mut();
             stored.extended_chars = extended;
             stored.replace_chars(&text);
         }
@@ -1593,17 +1622,17 @@ impl Buffer {
 
     /// Total characters in the buffer (ignoring narrowing).
     pub fn size_total(&self) -> usize {
-        self.text.borrow().len_chars()
+        self.text.get().borrow().len_chars()
     }
 
     /// GPT: the character position of the gap.
     pub fn gap_position(&self) -> usize {
-        self.text.borrow().text.gap_char() + 1
+        self.text.get().borrow().text.gap_char() + 1
     }
 
     /// GAP_SIZE: the gap's bytes.
     pub fn gap_size(&self) -> usize {
-        self.text.borrow().text.gap_size()
+        self.text.get().borrow().text.gap_size()
     }
 
     /// A killed buffer's size as Fkill_buffer left it (editfns.c's
@@ -1639,7 +1668,7 @@ impl Buffer {
         if idx == 0 {
             return true;
         }
-        self.text.borrow().char(idx - 1) == '\n'
+        self.text.get().borrow().char(idx - 1) == '\n'
     }
 
     /// Point is at end of a line.
@@ -1647,7 +1676,7 @@ impl Buffer {
         if self.pt == self.zv {
             return true;
         }
-        self.text.borrow().char(self.pt - 1) == '\n'
+        self.text.get().borrow().char(self.pt - 1) == '\n'
     }
 
     // ── Point movement ──
@@ -1690,7 +1719,7 @@ impl Buffer {
         limit: usize,
         mut predicate: impl FnMut(char) -> bool,
     ) -> usize {
-        let text = self.text.borrow();
+        let text = self.text.get().borrow();
         let start = self.pt;
         let end = limit.clamp(start, self.zv);
         let mut remaining = end - start;
@@ -1717,7 +1746,7 @@ impl Buffer {
         limit: usize,
         mut predicate: impl FnMut(char) -> bool,
     ) -> usize {
-        let text = self.text.borrow();
+        let text = self.text.get().borrow();
         let start = self.pt;
         let end = limit.clamp(self.begv, start);
         let mut remaining = start - end;
@@ -1746,7 +1775,7 @@ impl Buffer {
     /// `text_range_string' with the store byte offsets of the range's
     /// ends, the end's counted from FROM's.
     fn text_range_with_bytes(&self, from: usize, to: usize) -> (String, usize, usize) {
-        let text = self.text.borrow();
+        let text = self.text.get().borrow();
         let to = to.min(text.len_chars()).max(from);
         let start = text.char_to_byte(from);
         let end = if self.text_is_ascii() {
@@ -1762,7 +1791,7 @@ impl Buffer {
     /// newline at or after char index FROM, scanned a half at a time with
     /// memchr and its position counted from FROM's.
     fn newline_at_or_after(&self, from: usize) -> Option<usize> {
-        let text = self.text.borrow();
+        let text = self.text.get().borrow();
         if from >= text.len_chars() {
             return None;
         }
@@ -1819,13 +1848,13 @@ impl Buffer {
     /// Whether every character of the text is one byte, so that a char
     /// index within a chunk is its byte index (the counts are kept).
     pub(crate) fn text_is_ascii(&self) -> bool {
-        self.text.borrow().len_chars() == self.text.borrow().len_bytes()
+        self.text.get().borrow().len_chars() == self.text.get().borrow().len_bytes()
     }
 
     /// search.c's find_newline backward: the 0-based index of the last
     /// newline before char index BEFORE.
     fn newline_before(&self, before: usize) -> Option<usize> {
-        let stored = self.text.borrow();
+        let stored = self.text.get().borrow();
         let before = before.min(stored.len_chars());
         let end = stored.char_to_byte(before);
         let mut byte = end;
@@ -1847,7 +1876,7 @@ impl Buffer {
     /// LIMIT (positions, LIMIT <= POS): the position after the last
     /// newline in [LIMIT, POS), if there is one.
     pub(crate) fn line_start_within(&self, pos: usize, limit: usize) -> Option<usize> {
-        let stored = self.text.borrow();
+        let stored = self.text.get().borrow();
         let end_index = pos.saturating_sub(1).min(stored.len_chars());
         let start_index = limit.saturating_sub(1).min(end_index);
         let end = stored.char_to_byte(end_index);
@@ -1877,7 +1906,9 @@ impl Buffer {
     /// Return the beginning of the line containing POS without moving point.
     pub fn line_start_at(&self, pos: usize) -> usize {
         let pt = pos.clamp(self.begv, self.zv);
-        let char_index = pt.saturating_sub(1).min(self.text.borrow().len_chars());
+        let char_index = pt
+            .saturating_sub(1)
+            .min(self.text.get().borrow().len_chars());
         let line_start = self
             .newline_before(char_index)
             .map_or(1, |newline| newline + 2);
@@ -1980,19 +2011,42 @@ impl Buffer {
 
     /// The buffer's text, which an indirect family shares.
     pub(crate) fn shares_text_with(&self, other: &Buffer) -> bool {
-        Rc::ptr_eq(&self.text, &other.text)
+        std::ptr::eq(self.text.get(), other.text.get())
     }
 
     /// The text's address: one value for a base buffer and each of its
     /// indirect buffers.
     pub(crate) fn text_identity(&self) -> usize {
-        Rc::as_ptr(&self.text) as usize
+        std::ptr::from_ref(self.text.get()) as usize
+    }
+
+    /// The object whose own_text the buffer reads, once placed.
+    pub(crate) fn text_owner(&self) -> Option<BufferRef> {
+        match self.text {
+            TextSlot::Object(owner) => Some(owner),
+            TextSlot::Pending(_) => None,
+        }
+    }
+
+    /// The text a state not yet placed holds, for the object that takes
+    /// it as its own_text; the state reads OWNER's from then on.
+    pub(crate) fn take_pending_text(&mut self, owner: BufferRef) -> Option<BufferText> {
+        let slot = std::mem::replace(&mut self.text, TextSlot::Object(owner));
+        match slot {
+            TextSlot::Pending(text) => Some(text.into_inner()),
+            TextSlot::Object(previous) => {
+                self.text = TextSlot::Object(previous);
+                None
+            }
+        }
     }
 
     /// Fmake_indirect_buffer's `b->text = b->base_buffer->text': this
     /// buffer, made empty for it, takes the text of BASE.
     pub(crate) fn share_text_of(&mut self, base: &Buffer) {
-        self.text = Rc::clone(&base.text);
+        if let Some(owner) = base.text_owner() {
+            self.text = TextSlot::Object(owner);
+        }
         self.multibyte = base.multibyte;
     }
 
@@ -2091,20 +2145,27 @@ impl Buffer {
     /// Unicode is a three-byte placeholder for GNU's four or five bytes, a
     /// genuine U+E080..U+E0FF counted as a raw byte is three in both.
     pub(crate) fn marker_byte_position(&self, position: usize) -> usize {
-        if !self.multibyte || self.text.borrow().len_bytes() == self.text.borrow().len_chars() {
+        if !self.multibyte
+            || self.text.get().borrow().len_bytes() == self.text.get().borrow().len_chars()
+        {
             return position;
         }
-        self.byte_position_at_stored(position, self.text.borrow().char_to_byte(position - 1))
+        self.byte_position_at_stored(
+            position,
+            self.text.get().borrow().char_to_byte(position - 1),
+        )
     }
 
     /// `marker_byte_position' of POSITION, whose character starts at byte
     /// STORED of the text as stored.
     fn byte_position_at_stored(&self, position: usize, stored: usize) -> usize {
-        if !self.multibyte || self.text.borrow().len_bytes() == self.text.borrow().len_chars() {
+        if !self.multibyte
+            || self.text.get().borrow().len_bytes() == self.text.get().borrow().len_chars()
+        {
             return position;
         }
-        let mut bytes = stored - self.text.borrow().raw_markers_before(stored);
-        for &(at, code) in &self.text.borrow().extended_chars {
+        let mut bytes = stored - self.text.get().borrow().raw_markers_before(stored);
+        for &(at, code) in &self.text.get().borrow().extended_chars {
             if at >= position {
                 break;
             }
@@ -2187,7 +2248,7 @@ impl Buffer {
     pub fn buffer_string(&self) -> String {
         let start = self.begv - 1;
         let end = self.zv - 1;
-        self.text.borrow().string(start..end)
+        self.text.get().borrow().string(start..end)
     }
 
     /// What a regexp match reads of the buffer before it starts, the text
@@ -2195,7 +2256,7 @@ impl Buffer {
     /// and point's positions and stored bytes, as looking_at_1 and
     /// search_buffer_re take BEGV, ZV, PT and their bytes.
     pub(crate) fn match_view(&self) -> MatchView {
-        let text = self.text.borrow();
+        let text = self.text.get().borrow();
         let scan = text.scan_text();
         let ascii = scan.is_ascii();
         let (begv, zv, point) = (self.begv, self.zv, self.pt);
@@ -2234,36 +2295,36 @@ impl Buffer {
     /// The text for a scan apart from the buffer: the gap buffer's bytes,
     /// shared until the next change copies them.
     pub fn scan_text(&self) -> ScanText {
-        self.text.borrow().scan_text()
+        self.text.get().borrow().scan_text()
     }
 
     /// The stored text's characters and UTF-8 bytes, which the buffer
     /// keeps.
     pub fn text_counts(&self) -> (usize, usize) {
         (
-            self.text.borrow().len_chars(),
-            self.text.borrow().len_bytes(),
+            self.text.get().borrow().len_chars(),
+            self.text.get().borrow().len_bytes(),
         )
     }
 
     /// The text of [FROM, TO) (1-based), read past any narrowing.
     pub(crate) fn absolute_text_range(&self, from: usize, to: usize) -> String {
-        self.text.borrow().string(from - 1..to - 1)
+        self.text.get().borrow().string(from - 1..to - 1)
     }
 
     pub fn full_buffer_string(&self) -> String {
-        self.text.borrow().whole_string()
+        self.text.get().borrow().whole_string()
     }
 
     /// Text of up to COUNT lines starting at 1-based LINE, one string per
     /// line without its terminator.
     pub fn lines_from(&self, line: usize, count: usize) -> Vec<String> {
-        let total = self.text.borrow().len_lines();
+        let total = self.text.get().borrow().len_lines();
         let start = line.saturating_sub(1).min(total);
         let end = start.saturating_add(count).min(total);
         (start..end)
             .map(|index| {
-                let mut text = self.text.borrow().line(index);
+                let mut text = self.text.get().borrow().line(index);
                 while text.ends_with(['\n', '\r']) {
                     text.pop();
                 }
@@ -2277,25 +2338,25 @@ impl Buffer {
     /// GNU's byte position where raw bytes or characters beyond Unicode
     /// sit before POS.
     pub fn storage_byte_position(&self, pos: usize) -> Option<usize> {
-        let char_len = self.text.borrow().len_chars();
+        let char_len = self.text.get().borrow().len_chars();
         if pos == 0 || pos > char_len + 1 {
             return None;
         }
-        Some(1 + self.text.borrow().char_to_byte(pos - 1))
+        Some(1 + self.text.get().borrow().char_to_byte(pos - 1))
     }
 
     /// The position of the character the stored text's byte offset
     /// BYTE - 1 lies in: `storage_byte_position' inverted.
     pub fn storage_byte_to_position(&self, byte: usize) -> Option<usize> {
-        if byte == 0 || byte > self.text.borrow().len_bytes() + 1 {
+        if byte == 0 || byte > self.text.get().borrow().len_bytes() + 1 {
             return None;
         }
-        Some(self.text.borrow().byte_to_char(byte - 1) + 1)
+        Some(self.text.get().borrow().byte_to_char(byte - 1) + 1)
     }
 
     /// Fposition_bytes: GNU's byte position of POS in [BEG, Z].
     pub fn position_bytes(&self, pos: usize) -> Option<usize> {
-        let char_len = self.text.borrow().len_chars();
+        let char_len = self.text.get().borrow().len_chars();
         if pos == 0 || pos > char_len + 1 {
             return None;
         }
@@ -2305,7 +2366,7 @@ impl Buffer {
     /// Fbyte_to_position: the character at GNU byte position BYTE in
     /// [BEG_BYTE, Z_BYTE], the one a byte inside a character belongs to.
     pub fn byte_to_position(&self, byte: usize) -> Option<usize> {
-        let end = self.text.borrow().len_chars() + 1;
+        let end = self.text.get().borrow().len_chars() + 1;
         if byte == 0 || byte > self.marker_byte_position(end) {
             return None;
         }
@@ -2328,7 +2389,7 @@ impl Buffer {
         &self,
         from: usize,
     ) -> (std::cell::Ref<'_, str>, std::cell::Ref<'_, str>) {
-        std::cell::Ref::map_split(self.text.borrow(), |text| {
+        std::cell::Ref::map_split(self.text.get().borrow(), |text| {
             let start = text.char_to_byte(from - 1);
             text.text.range_halves(start..text.len_bytes())
         })
@@ -2337,8 +2398,8 @@ impl Buffer {
     /// The byte offsets in the text of positions FROM and TO (1-based).
     pub(crate) fn span_bytes(&self, from: usize, to: usize) -> (usize, usize) {
         (
-            self.text.borrow().char_to_byte(from - 1),
-            self.text.borrow().char_to_byte(to - 1),
+            self.text.get().borrow().char_to_byte(from - 1),
+            self.text.get().borrow().char_to_byte(to - 1),
         )
     }
 
@@ -2349,7 +2410,7 @@ impl Buffer {
         start: usize,
         end: usize,
     ) -> (std::cell::Ref<'_, str>, std::cell::Ref<'_, str>) {
-        std::cell::Ref::map_split(self.text.borrow(), |text| {
+        std::cell::Ref::map_split(self.text.get().borrow(), |text| {
             text.text.range_halves(start..end)
         })
     }
@@ -2357,7 +2418,7 @@ impl Buffer {
     /// Remember that position POS (1-based) starts at byte offset BYTE, as
     /// a scan that counted both finds it (GNU keeps PT_BYTE with PT).
     pub(crate) fn note_position(&self, pos: usize, byte: usize) {
-        self.text.borrow().note_position(pos - 1, byte);
+        self.text.get().borrow().note_position(pos - 1, byte);
     }
 
     /// Get a substring. Positions are 1-based, range is [from, to).
@@ -2368,12 +2429,12 @@ impl Buffer {
         if from > to {
             return Err(BufferError::InvalidPosition(from));
         }
-        Ok(self.text.borrow().string((from - 1)..(to - 1)))
+        Ok(self.text.get().borrow().string((from - 1)..(to - 1)))
     }
 
     /// The text [FROM, TO), past any narrowing, within BEG..Z.
     pub(crate) fn text_between(&self, from: usize, to: usize) -> String {
-        let text = self.text.borrow();
+        let text = self.text.get().borrow();
         let end = text.len_chars();
         let from = from.saturating_sub(1).min(end);
         let to = to.saturating_sub(1).clamp(from, end);
@@ -2383,8 +2444,9 @@ impl Buffer {
     /// The text from FROM to Z, past any narrowing.
     pub(crate) fn text_to_z(&self, from: usize) -> String {
         self.text
+            .get()
             .borrow()
-            .string((from - 1)..self.text.borrow().len_chars())
+            .string((from - 1)..self.text.get().borrow().len_chars())
     }
 
     /// The text of [FROM, TO) where it stands, when one side of the gap
@@ -2394,7 +2456,7 @@ impl Buffer {
         from: usize,
         to: usize,
     ) -> Option<std::cell::Ref<'_, str>> {
-        std::cell::Ref::filter_map(self.text.borrow(), |text| {
+        std::cell::Ref::filter_map(self.text.get().borrow(), |text| {
             match text.range_halves((from - 1)..(to - 1)) {
                 (text, "") | ("", text) => Some(text),
                 _ => None,
@@ -2405,11 +2467,12 @@ impl Buffer {
 
     pub fn extended_char_at(&self, pos: usize) -> Option<u32> {
         self.text
+            .get()
             .borrow()
             .extended_chars
             .binary_search_by_key(&pos, |(position, _)| *position)
             .ok()
-            .map(|index| self.text.borrow().extended_chars[index].1)
+            .map(|index| self.text.get().borrow().extended_chars[index].1)
     }
 
     /// Whether any character of [FROM, TO) has a sidecar entry (a code
@@ -2417,7 +2480,7 @@ impl Buffer {
     /// then renders differently from the stored text.
     pub fn has_extended_chars_in(&self, from: usize, to: usize) -> bool {
         let (from, to) = if from <= to { (from, to) } else { (to, from) };
-        let text = self.text.borrow();
+        let text = self.text.get().borrow();
         let first = text
             .extended_chars
             .partition_point(|(position, _)| *position < from);
@@ -2430,6 +2493,7 @@ impl Buffer {
     pub fn substring_extended_chars(&self, from: usize, to: usize) -> Vec<(usize, u32)> {
         let (from, to) = if from <= to { (from, to) } else { (to, from) };
         self.text
+            .get()
             .borrow()
             .extended_chars
             .iter()
@@ -2440,10 +2504,12 @@ impl Buffer {
 
     pub fn set_inserted_extended_chars(&mut self, start: usize, chars: &[(usize, u32)]) {
         self.text
+            .get()
             .borrow_mut()
             .extended_chars
             .extend(chars.iter().map(|(offset, code)| (start + *offset, *code)));
         self.text
+            .get()
             .borrow_mut()
             .extended_chars
             .sort_unstable_by_key(|(position, _)| *position);
@@ -2457,7 +2523,7 @@ impl Buffer {
         let Some(symbol) = crate::lisp::types::SymbolName::find(property) else {
             return false;
         };
-        let Some(intervals) = &self.text.borrow().intervals else {
+        let Some(intervals) = &self.text.get().borrow().intervals else {
             return false;
         };
         let name = Value::Symbol(symbol);
@@ -2486,6 +2552,7 @@ impl Buffer {
         };
         let name = Value::Symbol(symbol);
         self.text
+            .get()
             .borrow()
             .intervals
             .as_ref()
@@ -2499,7 +2566,7 @@ impl Buffer {
         self.last_name = copy(&self.last_name);
         self.text_conversion_style = copy(&self.text_conversion_style);
         self.mark_active = copy(&self.mark_active);
-        if let Some(intervals) = &mut self.text.borrow_mut().intervals {
+        if let Some(intervals) = &mut self.text.get().borrow_mut().intervals {
             intervals.rewrite_plists(|plist| copy(&plist));
         }
         self.undo_list = copy(&self.undo_list);
@@ -2526,7 +2593,7 @@ impl Buffer {
                 visit(&Value::Marker(marker));
             }
         }
-        if let Some(intervals) = &self.text.borrow().intervals {
+        if let Some(intervals) = &self.text.get().borrow().intervals {
             for plist in intervals.plists() {
                 visit(&plist);
             }
@@ -2549,6 +2616,7 @@ impl Buffer {
     /// How many intervals this buffer holds (the census's `intervals').
     pub(crate) fn text_property_span_count(&self) -> usize {
         self.text
+            .get()
             .borrow()
             .intervals
             .as_ref()
@@ -2558,6 +2626,7 @@ impl Buffer {
     /// Whether any text property is set.
     pub fn has_text_properties(&self) -> bool {
         self.text
+            .get()
             .borrow()
             .intervals
             .as_ref()
@@ -2567,17 +2636,17 @@ impl Buffer {
     /// Whether the buffer has intervals (buffer_intervals non-null), every
     /// plist of which may be empty.
     pub fn has_interval_tree(&self) -> bool {
-        self.text.borrow().intervals.is_some()
+        self.text.get().borrow().intervals.is_some()
     }
 
     /// buffer_intervals.
     pub(crate) fn intervals(&self) -> Option<std::cell::Ref<'_, Intervals>> {
-        std::cell::Ref::filter_map(self.text.borrow(), |text| text.intervals.as_ref()).ok()
+        std::cell::Ref::filter_map(self.text.get().borrow(), |text| text.intervals.as_ref()).ok()
     }
 
     /// set_buffer_intervals.
     pub(crate) fn set_intervals(&mut self, intervals: Option<Intervals>) {
-        self.text.borrow_mut().intervals = intervals;
+        self.text.get().borrow_mut().intervals = intervals;
     }
 
     /// PROP in the plist of the character at POS (none outside the
@@ -2610,7 +2679,7 @@ impl Buffer {
         {
             return Value::Nil;
         }
-        match &self.text.borrow().intervals {
+        match &self.text.get().borrow().intervals {
             Some(intervals) => intervals.plist(intervals.find(pos)),
             None => Value::Nil,
         }
@@ -2625,7 +2694,7 @@ impl Buffer {
         to: usize,
         mut f: impl FnMut(usize, usize, Value) -> Result<(), E>,
     ) -> Result<(), E> {
-        let Some(intervals) = &self.text.borrow().intervals else {
+        let Some(intervals) = &self.text.get().borrow().intervals else {
             return Ok(());
         };
         let mut i = intervals.find(from.clamp(intervals.origin(), intervals.end()));
@@ -2659,7 +2728,7 @@ impl Buffer {
     pub(crate) fn text_property_interval_around(&self, pos: usize) -> (usize, usize) {
         let begv = self.point_min();
         let zv = self.point_max();
-        let Some(intervals) = &self.text.borrow().intervals else {
+        let Some(intervals) = &self.text.get().borrow().intervals else {
             return (begv, zv);
         };
         let i = intervals.find(pos.clamp(intervals.origin(), intervals.end()));
@@ -2676,7 +2745,7 @@ impl Buffer {
         if !self.is_modified() {
             self.record_first_change();
         }
-        modiff_incr(&mut self.text.borrow_mut().modiff, 1);
+        modiff_incr(&mut self.text.get().borrow_mut().modiff, 1);
         self.log_edit(start, end, end, false);
     }
 
@@ -2694,12 +2763,12 @@ impl Buffer {
         if start >= end {
             return None;
         }
-        if self.text.borrow().intervals.is_none() {
+        if self.text.get().borrow().intervals.is_none() {
             if !force {
                 return None;
             }
             let total = self.size_total();
-            self.text.borrow_mut().intervals = Some(Intervals::root(1, total + 1));
+            self.text.get().borrow_mut().intervals = Some(Intervals::root(1, total + 1));
         }
         Some((start, end))
     }
@@ -2716,7 +2785,7 @@ impl Buffer {
         if start >= end || properties.is_nil() {
             return false;
         }
-        match &self.text.borrow().intervals {
+        match &self.text.get().borrow().intervals {
             // A new root interval has no properties.
             None => true,
             Some(intervals) => {
@@ -2736,7 +2805,7 @@ impl Buffer {
         list: Value,
     ) -> bool {
         let (start, end) = (start.max(self.point_min()), end.min(self.point_max()));
-        match &self.text.borrow().intervals {
+        match &self.text.get().borrow().intervals {
             Some(intervals) if start < end => {
                 intervals::would_remove_properties(intervals, start, end - start, plist, list)
                     .unwrap_or(true)
@@ -2762,7 +2831,7 @@ impl Buffer {
         let Some((start, end)) = self.intervals_for_change(start, end, true) else {
             return Ok(false);
         };
-        let mut stored = self.text.borrow_mut();
+        let mut stored = self.text.get().borrow_mut();
         let intervals = stored.intervals.as_mut().expect("intervals for the change");
         intervals::split_for_add(intervals, start, end - start, properties)
     }
@@ -2795,7 +2864,7 @@ impl Buffer {
         if start >= end {
             return Ok(false);
         }
-        let mut stored = self.text.borrow_mut();
+        let mut stored = self.text.get().borrow_mut();
         match stored.intervals.as_mut() {
             Some(intervals) => {
                 intervals::split_for_remove(intervals, start, end - start, plist, list)
@@ -2825,7 +2894,7 @@ impl Buffer {
         self.begin_text_property_change(start, end);
         self.note_layout_properties(properties, false);
         let disabled = self.undo_recording_disabled();
-        let mut stored = self.text.borrow_mut();
+        let mut stored = self.text.get().borrow_mut();
         let intervals = stored.intervals.as_mut().expect("intervals for the change");
         if disabled {
             intervals::add_text_properties_range(
@@ -2894,7 +2963,7 @@ impl Buffer {
         properties: Value,
     ) -> Result<(), crate::lisp::types::LispError> {
         let disabled = self.undo_recording_disabled();
-        let mut stored = self.text.borrow_mut();
+        let mut stored = self.text.get().borrow_mut();
         let Some(intervals) = stored.intervals.as_mut() else {
             return Ok(());
         };
@@ -2942,7 +3011,7 @@ impl Buffer {
             self.note_layout_properties(list, true);
         }
         let disabled = self.undo_recording_disabled();
-        let mut stored = self.text.borrow_mut();
+        let mut stored = self.text.get().borrow_mut();
         let intervals = stored
             .intervals
             .as_mut()
@@ -3039,7 +3108,7 @@ impl Buffer {
     /// The intervals of [FROM, TO) as a string's (copy_intervals, from 0);
     /// none where the buffer has none there.
     pub(crate) fn copy_intervals(&self, from: usize, to: usize) -> Option<Intervals> {
-        let stored = self.text.borrow();
+        let stored = self.text.get().borrow();
         let intervals = stored.intervals.as_ref()?;
         if from >= to {
             return None;
@@ -3051,7 +3120,7 @@ impl Buffer {
     /// its intervals, unless no property changes before TO
     /// (next-property-change) and the text at FROM has none.
     pub(crate) fn string_intervals(&self, from: usize, to: usize) -> Option<Intervals> {
-        let stored = self.text.borrow();
+        let stored = self.text.get().borrow();
         let tree = stored.intervals.as_ref()?;
         if from >= to {
             return None;
@@ -3068,7 +3137,7 @@ impl Buffer {
     }
 
     fn invalidate_char_cache(&mut self) {
-        self.text.borrow_mut().char_cache.get_mut().valid = false;
+        self.text.get().borrow_mut().char_cache.get_mut().valid = false;
     }
 
     /// Character at position (1-based). None if out of range.
@@ -3090,7 +3159,7 @@ impl Buffer {
 
     fn text_char_at(&self, pos: usize) -> Option<char> {
         let index = pos - 1;
-        let text = self.text.borrow();
+        let text = self.text.get().borrow();
         // An ASCII text's character is its byte, read in place as
         // FETCH_CHAR reads it, with no chunk decoded into the cache.
         if text.len_chars() == text.len_bytes() {
@@ -3159,7 +3228,7 @@ impl Buffer {
     /// Err with the text's new size when enlarge_buffer_text cannot have
     /// it.
     pub(crate) fn try_reserve_insertion(&mut self, bytes: usize) -> Result<(), usize> {
-        self.text.borrow_mut().text.try_reserve_gap(bytes)
+        self.text.get().borrow_mut().text.try_reserve_gap(bytes)
     }
 
     /// `insert' with the properties PROPS gives the text and the
@@ -3190,7 +3259,7 @@ impl Buffer {
         if nchars == 0 {
             return;
         }
-        if let Some(intervals) = &mut self.text.borrow_mut().intervals {
+        if let Some(intervals) = &mut self.text.get().borrow_mut().intervals {
             let mut host = *vars;
             let _ = intervals.adjust_for_insertion(&mut host, pos, nchars);
         }
@@ -3204,7 +3273,7 @@ impl Buffer {
             InsertedProperties::None { inherit } => {
                 // Without inheritance, the new text's properties are
                 // cleared out.
-                if !inherit && self.text.borrow().intervals.is_some() && length > 0 {
+                if !inherit && self.text.get().borrow().intervals.is_some() && length > 0 {
                     let _ = self.set_text_properties_1(position, position + length, Value::Nil);
                 }
             }
@@ -3213,12 +3282,12 @@ impl Buffer {
                     // The inserted text is the whole buffer: a copy of the
                     // interval structure.
                     if let Ok(tree) = intervals::reproduce(source, 1) {
-                        self.text.borrow_mut().intervals = Some(tree);
+                        self.text.get().borrow_mut().intervals = Some(tree);
                     }
                     return;
                 }
                 let total = self.size_total();
-                let mut stored = self.text.borrow_mut();
+                let mut stored = self.text.get().borrow_mut();
                 let tree = stored
                     .intervals
                     .get_or_insert_with(|| Intervals::root(1, total + 1));
@@ -3281,14 +3350,16 @@ impl Buffer {
         let insert_at = self.pt;
         let idx0 = self.pt - 1; // 0-based
         // The text keeps its length; what it grew by is the insertion's.
-        let before = self.text.borrow().len_chars();
+        let before = self.text.get().borrow().len_chars();
         match inserted {
-            Inserted::Text(s) => self.text.borrow_mut().insert(idx0, s),
-            Inserted::RawBytes(bytes, high) => {
-                self.text.borrow_mut().insert_raw_bytes(idx0, bytes, high)
-            }
+            Inserted::Text(s) => self.text.get().borrow_mut().insert(idx0, s),
+            Inserted::RawBytes(bytes, high) => self
+                .text
+                .get()
+                .borrow_mut()
+                .insert_raw_bytes(idx0, bytes, high),
         }
-        let nchars = self.text.borrow().len_chars() - before;
+        let nchars = self.text.get().borrow().len_chars() - before;
         self.invalidate_char_cache();
         self.record_insert(insert_at, nchars);
 
@@ -3331,9 +3402,9 @@ impl Buffer {
         self.adjust_intervals_for_insert(insert_at, nchars, props, vars);
         self.adjust_extended_chars_for_insert(insert_at, nchars);
 
-        modiff_incr(&mut self.text.borrow_mut().modiff, nchars);
+        modiff_incr(&mut self.text.get().borrow_mut().modiff, nchars);
         {
-            let mut text = self.text.borrow_mut();
+            let mut text = self.text.get().borrow_mut();
             text.chars_modiff = text.modiff;
         }
         self.log_edit(insert_at, insert_at, insert_at + nchars, true);
@@ -3354,9 +3425,9 @@ impl Buffer {
         noundo: bool,
     ) {
         if noundo {
-            modiff_incr(&mut self.text.borrow_mut().modiff, to - from);
+            modiff_incr(&mut self.text.get().borrow_mut().modiff, to - from);
             {
-                let mut text = self.text.borrow_mut();
+                let mut text = self.text.get().borrow_mut();
                 text.chars_modiff = text.modiff;
             }
         } else {
@@ -3374,9 +3445,9 @@ impl Buffer {
         if !self.is_modified() {
             self.record_first_change();
         }
-        modiff_incr(&mut self.text.borrow_mut().modiff, end - start);
+        modiff_incr(&mut self.text.get().borrow_mut().modiff, end - start);
         {
-            let mut text = self.text.borrow_mut();
+            let mut text = self.text.get().borrow_mut();
             text.chars_modiff = text.modiff;
         }
     }
@@ -3386,19 +3457,19 @@ impl Buffer {
     /// the count moved by one.
     pub(crate) fn modify_text_unrecorded(&mut self, start: usize, end: usize) {
         self.compute_unchanged(start as i64 - 1, end as i64);
-        modiff_incr(&mut self.text.borrow_mut().modiff, end - start);
+        modiff_incr(&mut self.text.get().borrow_mut().modiff, end - start);
         {
-            let mut text = self.text.borrow_mut();
+            let mut text = self.text.get().borrow_mut();
             text.chars_modiff = text.modiff;
         }
-        if self.text.borrow().save_modiff == self.text.borrow().modiff - 1 {
+        if self.text.get().borrow().save_modiff == self.text.get().borrow().modiff - 1 {
             {
-                let mut text = self.text.borrow_mut();
+                let mut text = self.text.get().borrow_mut();
                 text.save_modiff = text.modiff;
             }
         }
-        if self.autosave_modiff == self.text.borrow().modiff - 1 {
-            self.autosave_modiff = self.text.borrow().modiff;
+        if self.autosave_modiff == self.text.get().borrow().modiff - 1 {
+            self.autosave_modiff = self.text.get().borrow().modiff;
         }
     }
 
@@ -3443,7 +3514,7 @@ impl Buffer {
         let (len1_byte, len2_byte) = (byte(end1) - byte(start1), byte(end2) - byte(start2));
         let piece = |from: usize, to: usize| {
             (
-                self.text.borrow().string((from - 1)..(to - 1)),
+                self.text.get().borrow().string((from - 1)..(to - 1)),
                 self.substring_extended_chars(from, to),
             )
         };
@@ -3601,16 +3672,18 @@ impl Buffer {
     ) {
         let inschars = text.chars().count();
         let to = from + 1;
-        self.text.borrow_mut().remove(from - 1..to - 1);
-        self.text.borrow_mut().insert(from - 1, text);
+        self.text.get().borrow_mut().remove(from - 1..to - 1);
+        self.text.get().borrow_mut().insert(from - 1, text);
         self.invalidate_char_cache();
         self.adjust_extended_chars_for_delete(from, to);
         self.adjust_extended_chars_for_insert(from, inschars);
         self.text
+            .get()
             .borrow_mut()
             .extended_chars
             .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
         self.text
+            .get()
             .borrow_mut()
             .extended_chars
             .sort_unstable_by_key(|(position, _)| *position);
@@ -3620,9 +3693,9 @@ impl Buffer {
             self.pt = self.pt + inschars - 1;
         }
         self.refresh_marker_byte_positions();
-        modiff_incr(&mut self.text.borrow_mut().modiff, 1 + inschars);
+        modiff_incr(&mut self.text.get().borrow_mut().modiff, 1 + inschars);
         {
-            let mut text = self.text.borrow_mut();
+            let mut text = self.text.get().borrow_mut();
             text.chars_modiff = text.modiff;
         }
         self.log_edit(from, to, from + inschars, true);
@@ -3637,17 +3710,20 @@ impl Buffer {
         text: &str,
         extended: &[(usize, u32)],
     ) {
-        self.text.borrow_mut().remove(from - 1..to - 1);
-        self.text.borrow_mut().insert(from - 1, text);
+        self.text.get().borrow_mut().remove(from - 1..to - 1);
+        self.text.get().borrow_mut().insert(from - 1, text);
         self.text
+            .get()
             .borrow_mut()
             .extended_chars
             .retain(|(position, _)| *position < from || *position >= to);
         self.text
+            .get()
             .borrow_mut()
             .extended_chars
             .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
         self.text
+            .get()
             .borrow_mut()
             .extended_chars
             .sort_unstable_by_key(|(position, _)| *position);
@@ -3697,10 +3773,13 @@ impl Buffer {
         let from_byte = self.marker_byte_position(from);
         let to_byte = self.marker_byte_position(to);
         if nchars_del > 0 {
-            self.text.borrow_mut().remove_text(from0..to - 1, &deleted);
+            self.text
+                .get()
+                .borrow_mut()
+                .remove_text(from0..to - 1, &deleted);
         }
         if inschars > 0 {
-            self.text.borrow_mut().insert(from0, text);
+            self.text.get().borrow_mut().insert(from0, text);
         }
         self.invalidate_char_cache();
         let new_bytes =
@@ -3743,10 +3822,12 @@ impl Buffer {
         self.adjust_extended_chars_for_delete(from, to);
         self.adjust_extended_chars_for_insert(from, inschars);
         self.text
+            .get()
             .borrow_mut()
             .extended_chars
             .extend(extended.iter().map(|(offset, code)| (from + offset, *code)));
         self.text
+            .get()
             .borrow_mut()
             .extended_chars
             .sort_unstable_by_key(|(position, _)| *position);
@@ -3756,9 +3837,12 @@ impl Buffer {
         self.graft_intervals(props, from, inschars);
         self.zv = self.zv + inschars - nchars_del;
         self.refresh_marker_byte_positions();
-        modiff_incr(&mut self.text.borrow_mut().modiff, nchars_del + inschars);
+        modiff_incr(
+            &mut self.text.get().borrow_mut().modiff,
+            nchars_del + inschars,
+        );
         {
-            let mut text = self.text.borrow_mut();
+            let mut text = self.text.get().borrow_mut();
             text.chars_modiff = text.modiff;
         }
         self.log_edit(from, to, from + inschars, true);
@@ -3839,8 +3923,8 @@ impl Buffer {
             kept.push_str(&region[copied..]);
             kept
         };
-        self.text.borrow_mut().remove(first - 1..last);
-        self.text.borrow_mut().insert(first - 1, &kept);
+        self.text.get().borrow_mut().remove(first - 1..last);
+        self.text.get().borrow_mut().insert(first - 1, &kept);
         self.invalidate_char_cache();
         self.pt -= before(self.pt);
         match &mut self.mark {
@@ -3865,7 +3949,7 @@ impl Buffer {
             }
         }
         {
-            let mut stored = self.text.borrow_mut();
+            let mut stored = self.text.get().borrow_mut();
             if let Some(intervals) = &mut stored.intervals
                 && !intervals.adjust_for_deletions(&original)
             {
@@ -3873,13 +3957,14 @@ impl Buffer {
             }
         }
         self.text
+            .get()
             .borrow_mut()
             .extended_chars
             .iter_mut()
             .for_each(|(position, _)| *position -= before(*position));
         self.zv -= n;
         {
-            let mut text = self.text.borrow_mut();
+            let mut text = self.text.get().borrow_mut();
             for _ in 0..n {
                 modiff_incr(&mut text.modiff, 1);
             }
@@ -3923,16 +4008,20 @@ impl Buffer {
         } else {
             (
                 None,
-                self.text.borrow().char_to_byte(from0),
-                self.text.borrow().char_to_byte(to0),
+                self.text.get().borrow().char_to_byte(from0),
+                self.text.get().borrow().char_to_byte(to0),
             )
         };
 
         let from_byte = self.byte_position_at_stored(from, from_stored);
         let to_byte = self.byte_position_at_stored(to, to_stored);
         match &deleted {
-            Some(deleted) => self.text.borrow_mut().remove_text(from0..to0, deleted),
-            None => self.text.borrow_mut().remove(from0..to0),
+            Some(deleted) => self
+                .text
+                .get()
+                .borrow_mut()
+                .remove_text(from0..to0, deleted),
+            None => self.text.get().borrow_mut().remove(from0..to0),
         }
         self.invalidate_char_cache();
 
@@ -3977,9 +4066,9 @@ impl Buffer {
         // Shrink accessible region
         self.zv -= nchars;
 
-        modiff_incr(&mut self.text.borrow_mut().modiff, nchars);
+        modiff_incr(&mut self.text.get().borrow_mut().modiff, nchars);
         {
-            let mut text = self.text.borrow_mut();
+            let mut text = self.text.get().borrow_mut();
             text.chars_modiff = text.modiff;
         }
         self.log_edit(from, to, from, true);
@@ -4010,8 +4099,10 @@ impl Buffer {
     pub fn narrow_to_region(&mut self, start: usize, end: usize) {
         let lower = start.min(end);
         let upper = start.max(end);
-        let start = lower.max(1).min(self.text.borrow().len_chars() + 1);
-        let end = upper.max(start).min(self.text.borrow().len_chars() + 1);
+        let start = lower.max(1).min(self.text.get().borrow().len_chars() + 1);
+        let end = upper
+            .max(start)
+            .min(self.text.get().borrow().len_chars() + 1);
         self.begv = start;
         self.zv = end;
         // Clamp point into the new region
@@ -4022,15 +4113,17 @@ impl Buffer {
     /// Remove narrowing.
     pub fn widen(&mut self) {
         self.begv = 1;
-        self.zv = self.text.borrow().len_chars() + 1;
+        self.zv = self.text.get().borrow().len_chars() + 1;
         self.note_positions_moved();
     }
 
     pub fn restore_restriction(&mut self, start: usize, end: usize) {
         let lower = start.min(end);
         let upper = start.max(end);
-        self.begv = lower.max(1).min(self.text.borrow().len_chars() + 1);
-        self.zv = upper.max(self.begv).min(self.text.borrow().len_chars() + 1);
+        self.begv = lower.max(1).min(self.text.get().borrow().len_chars() + 1);
+        self.zv = upper
+            .max(self.begv)
+            .min(self.text.get().borrow().len_chars() + 1);
         self.pt = self.pt.clamp(self.begv, self.zv);
         // GNU narrowing moves point, but does not move markers outside it.
         self.note_positions_moved();
@@ -4039,12 +4132,12 @@ impl Buffer {
     // ── Modification state ──
 
     pub fn is_modified(&self) -> bool {
-        self.text.borrow().save_modiff < self.text.borrow().modiff
+        self.text.get().borrow().save_modiff < self.text.get().borrow().modiff
     }
 
     pub fn set_unmodified(&mut self) {
         {
-            let mut text = self.text.borrow_mut();
+            let mut text = self.text.get().borrow_mut();
             text.save_modiff = text.modiff;
         }
     }
@@ -4065,7 +4158,7 @@ impl Buffer {
         if count == 0 {
             return;
         }
-        let mut text = self.text.borrow_mut();
+        let mut text = self.text.get().borrow_mut();
         for _ in 0..count {
             modiff_incr(&mut text.modiff, 1);
         }
@@ -4075,28 +4168,28 @@ impl Buffer {
     /// Frestore_buffer_modified_p's non-nil FLAG: when SAVE_MODIFF >=
     /// MODIFF, SAVE_MODIFF = modiff_incr (&MODIFF, 1).
     pub fn set_modified(&mut self) {
-        if self.text.borrow().save_modiff >= self.text.borrow().modiff {
+        if self.text.get().borrow().save_modiff >= self.text.get().borrow().modiff {
             {
-                let mut text = self.text.borrow_mut();
+                let mut text = self.text.get().borrow_mut();
                 text.save_modiff = text.modiff;
             }
-            modiff_incr(&mut self.text.borrow_mut().modiff, 1);
+            modiff_incr(&mut self.text.get().borrow_mut().modiff, 1);
         }
     }
 
     /// Fbuffer_modified_p's `autosaved': modified, and auto-saved since.
     pub fn is_autosaved(&self) -> bool {
-        self.is_modified() && self.autosave_modiff == self.text.borrow().modiff
+        self.is_modified() && self.autosave_modiff == self.text.get().borrow().modiff
     }
 
     /// Frecent_auto_save_p: auto-saved since last read or saved.
     pub fn recent_auto_save_p(&self) -> bool {
-        self.text.borrow().save_modiff < self.autosave_modiff
+        self.text.get().borrow().save_modiff < self.autosave_modiff
     }
 
     /// BUF_AUTOSAVE_MODIFF = MODIFF.
     pub fn set_autosaved(&mut self) {
-        self.autosave_modiff = self.text.borrow().modiff;
+        self.autosave_modiff = self.text.get().borrow().modiff;
     }
 
     /// BUF_AUTOSAVE_MODIFF = COUNT, a count of the text this buffer
@@ -4109,23 +4202,23 @@ impl Buffer {
     /// SAVE_MODIFF, which an indirect buffer shares with its base.
     pub(crate) fn text_counters(&self) -> [ModCount; 3] {
         [
-            self.text.borrow().modiff,
-            self.text.borrow().chars_modiff,
-            self.text.borrow().save_modiff,
+            self.text.get().borrow().modiff,
+            self.text.get().borrow().chars_modiff,
+            self.text.get().borrow().save_modiff,
         ]
     }
 
     pub(crate) fn set_text_counters(&mut self, [modiff, chars_modiff, save_modiff]: [ModCount; 3]) {
-        self.text.borrow_mut().modiff = modiff;
-        self.text.borrow_mut().chars_modiff = chars_modiff;
-        self.text.borrow_mut().save_modiff = save_modiff;
+        self.text.get().borrow_mut().modiff = modiff;
+        self.text.get().borrow_mut().chars_modiff = chars_modiff;
+        self.text.get().borrow_mut().save_modiff = save_modiff;
     }
 
     /// Fdo_auto_save's test: changed since the last real save and since
     /// the last auto-save.
     pub(crate) fn changed_since_saves(&self) -> bool {
-        self.text.borrow().save_modiff < self.text.borrow().modiff
-            && self.autosave_modiff < self.text.borrow().modiff
+        self.text.get().borrow().save_modiff < self.text.get().borrow().modiff
+            && self.autosave_modiff < self.text.get().borrow().modiff
     }
 
     // ── Undo (undo.c) ──
@@ -4308,7 +4401,7 @@ impl Buffer {
     /// byte offsets of their ends: the text read where the buffer holds
     /// it, copied only when the range spans the gap.
     fn deleted_text_value_in_place(&self, from0: usize, to0: usize) -> (Value, usize, usize) {
-        let text = self.text.borrow();
+        let text = self.text.get().borrow();
         let to0 = to0.min(text.len_chars()).max(from0);
         let start = text.char_to_byte(from0);
         let end = if self.text_is_ascii() {
@@ -4382,21 +4475,22 @@ impl Buffer {
     /// Release editing storage when the buffer dies, even if Lisp still
     /// retains the buffer object.  GNU Fkill_buffer clears undo, intervals
     /// and overlays and frees text; file slots remain readable afterwards.
-    pub(crate) fn release_killed_storage(&mut self) {
+    pub(crate) fn release_killed_storage(&mut self, object: BufferRef) {
         self.killed_size = self.size_total();
         self.killed_bounds = (self.point_min(), self.point_max());
         // free_buffer_text: the dead buffer leaves its text, which an
         // indirect buffer's base keeps; the counts stay readable.
         let (modiff, chars_modiff, save_modiff) = {
-            let text = self.text.borrow();
+            let text = self.text.get().borrow();
             (text.modiff, text.chars_modiff, text.save_modiff)
         };
-        self.text = Rc::new(RefCell::new(BufferText {
+        *object.own_text.borrow_mut() = BufferText {
             modiff,
             chars_modiff,
             save_modiff,
             ..BufferText::default()
-        }));
+        };
+        self.text = TextSlot::Object(object);
         self.position_markers = None;
         self.positions_away = false;
         self.undo_list = Value::Nil;
@@ -4421,13 +4515,13 @@ impl Buffer {
     pub(crate) fn image_parts(&self) -> BufferImage {
         BufferImage {
             name: self.name,
-            text: self.text.borrow().whole_string(),
+            text: self.text.get().borrow().whole_string(),
             pt: self.pt,
             mark: self.mark(),
             mark_active: self.mark_active,
-            modiff: self.text.borrow().modiff,
-            chars_modiff: self.text.borrow().chars_modiff,
-            save_modiff: self.text.borrow().save_modiff,
+            modiff: self.text.get().borrow().modiff,
+            chars_modiff: self.text.get().borrow().chars_modiff,
+            save_modiff: self.text.get().borrow().save_modiff,
             autosave_modiff: self.autosave_modiff,
             begv: self.begv,
             zv: self.zv,
@@ -4436,8 +4530,8 @@ impl Buffer {
             visited_file_modtime: self.visited_file_modtime,
             undo_list: self.undo_list,
             keymap: self.keymap,
-            intervals: self.text.borrow().intervals.clone(),
-            extended_chars: self.text.borrow().extended_chars.clone(),
+            intervals: self.text.get().borrow().intervals.clone(),
+            extended_chars: self.text.get().borrow().extended_chars.clone(),
             inhibit_hooks: self.inhibit_hooks,
             text_conversion_style: self.text_conversion_style,
             text_conversion_style_is_local: self.text_conversion_style_is_local,
@@ -4452,14 +4546,14 @@ impl Buffer {
         Buffer {
             name: parts.name,
             last_name: Value::Nil,
-            text: Rc::new(RefCell::new(BufferText {
+            text: TextSlot::pending(BufferText {
                 modiff: parts.modiff,
                 chars_modiff: parts.chars_modiff,
                 save_modiff: parts.save_modiff,
                 intervals: parts.intervals,
                 extended_chars: parts.extended_chars,
                 ..BufferText::from_str(&parts.text)
-            })),
+            }),
             position_markers: None,
             positions_away: false,
             killed_size: 0,
@@ -4495,17 +4589,17 @@ impl Buffer {
     }
 
     pub fn modified_tick(&self) -> ModCount {
-        self.text.borrow().modiff
+        self.text.get().borrow().modiff
     }
 
     /// BUF_OVERLAY_MODIFF.
     pub(crate) fn overlay_modified_tick(&self) -> ModCount {
-        self.text.borrow().overlay_modiff
+        self.text.get().borrow().overlay_modiff
     }
 
     /// The count of layout-affecting text property changes.
     pub(crate) fn layout_properties_tick(&self) -> ModCount {
-        self.text.borrow().layout_properties_modiff
+        self.text.get().borrow().layout_properties_modiff
     }
 
     /// Count a property change when PLIST (a property list, or with NAMES
@@ -4514,7 +4608,10 @@ impl Buffer {
         let mut tail = plist;
         while let Some(cell) = tail.cons_ref() {
             if !layout_neutral_property(cell.car.get()) {
-                modiff_incr(&mut self.text.borrow_mut().layout_properties_modiff, 1);
+                modiff_incr(
+                    &mut self.text.get().borrow_mut().layout_properties_modiff,
+                    1,
+                );
                 return;
             }
             tail = cell.cdr.get();
@@ -4526,26 +4623,26 @@ impl Buffer {
 
     /// modify_overlay's `modiff_incr (&BUF_OVERLAY_MODIFF (buf), 1)'.
     pub(crate) fn bump_overlay_modified_tick(&mut self) {
-        self.text.borrow_mut().overlay_modiff += 1;
+        self.text.get().borrow_mut().overlay_modiff += 1;
     }
 
     /// buffer.h BUF_COMPUTE_UNCHANGED: a change of [START, END) shrinks
     /// the text known unchanged since redisplay last took the counts,
     /// which a first change since then sets afresh.
     pub(crate) fn compute_unchanged(&mut self, start: i64, end: i64) {
-        self.text.borrow_mut().compute_unchanged(start, end);
+        self.text.get().borrow_mut().compute_unchanged(start, end);
     }
 
     /// BUF_BEG_UNCHANGED and BUF_END_UNCHANGED.
     pub(crate) fn unchanged_extent(&self) -> (i64, i64) {
-        let text = self.text.borrow();
+        let text = self.text.get().borrow();
         (text.beg_unchanged, text.end_unchanged)
     }
 
     /// BEG + BEG_UNCHANGED and Z - END_UNCHANGED: the text before the
     /// first and after the last change since redisplay took the counts.
     pub(crate) fn changed_region(&self) -> (i64, i64) {
-        let text = self.text.borrow();
+        let text = self.text.get().borrow();
         let z = text.len_chars() as i64 + 1;
         (1 + text.beg_unchanged, z - text.end_unchanged)
     }
@@ -4554,7 +4651,7 @@ impl Buffer {
     /// BUF_MODIFF (b)' and the rest: the counts taken, the unchanged text
     /// what is before and after the gap.
     pub(crate) fn take_unchanged_counts(&mut self) {
-        let mut text = self.text.borrow_mut();
+        let mut text = self.text.get().borrow_mut();
         text.unchanged_modified = text.modiff;
         text.overlay_unchanged_modified = text.overlay_modiff;
         let gpt = text.text.gap_char() as i64;
@@ -4565,22 +4662,22 @@ impl Buffer {
 
     /// b->text->redisplay.
     pub(crate) fn text_redisplay(&self) -> bool {
-        self.text.borrow().redisplay
+        self.text.get().borrow().redisplay
     }
 
     pub(crate) fn set_text_redisplay(&mut self, on: bool) {
-        self.text.borrow_mut().redisplay = on;
+        self.text.get().borrow_mut().redisplay = on;
     }
 
     /// buffer.h buffer_window_count: the windows showing the buffer or a
     /// buffer sharing its text.
     pub(crate) fn window_count(&self) -> usize {
-        self.text.borrow().window_count
+        self.text.get().borrow().window_count
     }
 
     /// window.c adjust_window_count's `b->window_count += arg'.
     pub(crate) fn adjust_window_count(&mut self, shown: bool) {
-        let mut text = self.text.borrow_mut();
+        let mut text = self.text.get().borrow_mut();
         text.window_count = if shown {
             text.window_count + 1
         } else {
@@ -4590,7 +4687,7 @@ impl Buffer {
 
     /// The count set outright: the windows counted anew.
     pub(crate) fn set_window_count(&mut self, count: usize) {
-        self.text.borrow_mut().window_count = count;
+        self.text.get().borrow_mut().window_count = count;
     }
 
     /// BEGV and ZV.
@@ -4627,36 +4724,43 @@ impl Buffer {
 
     /// BUF_COMPACT.
     pub(crate) fn compact_tick(&self) -> ModCount {
-        self.text.borrow().compact
+        self.text.get().borrow().compact
     }
 
     pub(crate) fn set_compact_tick(&mut self, tick: ModCount) {
-        self.text.borrow_mut().compact = tick;
+        self.text.get().borrow_mut().compact = tick;
     }
 
     pub fn chars_modified_tick(&self) -> ModCount {
-        self.text.borrow().chars_modiff
+        self.text.get().borrow().chars_modiff
     }
 
     /// BUF_UNCHANGED_MODIFIED: BUF_MODIFF when redisplay last took the
     /// counts (mark_window_display_accurate_1).
     pub(crate) fn unchanged_modified(&self) -> ModCount {
-        self.text.borrow().unchanged_modified
+        self.text.get().borrow().unchanged_modified
     }
 
     pub fn set_modified_tick(&mut self, tick: ModCount) {
-        self.text.borrow_mut().modiff = tick;
+        self.text.get().borrow_mut().modiff = tick;
     }
 
     pub(crate) fn set_chars_modified_tick(&mut self, tick: ModCount) {
-        self.text.borrow_mut().chars_modiff = tick;
+        self.text.get().borrow_mut().chars_modiff = tick;
     }
 
     pub fn swap_text_state(&mut self, other: &mut Buffer) {
-        std::mem::swap(&mut self.text, &mut other.text);
+        // swapfield (own_text, struct buffer_text): each object's own_text,
+        // which each buffer, not indirect, reads.
+        match (&self.text, &other.text) {
+            (TextSlot::Object(own), TextSlot::Object(others)) => {
+                own.own_text.swap(&others.own_text)
+            }
+            _ => std::mem::swap(&mut self.text, &mut other.text),
+        }
         // modiff_incr of each text's modiff, chars_modiff and
         // overlay_modiff by one: both buffers are modified by the swap.
-        for text in [&self.text, &other.text] {
+        for text in [self.text.get(), other.text.get()] {
             let mut text = text.borrow_mut();
             modiff_incr(&mut text.modiff, 1);
             modiff_incr(&mut text.chars_modiff, 1);
@@ -4740,7 +4844,7 @@ impl Buffer {
         from: usize,
         to: usize,
     ) -> (std::cell::Ref<'_, str>, std::cell::Ref<'_, str>) {
-        std::cell::Ref::map_split(self.text.borrow(), |text| {
+        std::cell::Ref::map_split(self.text.get().borrow(), |text| {
             text.range_halves((from - 1)..(to - 1))
         })
     }
@@ -4748,22 +4852,22 @@ impl Buffer {
     /// xdisp.c count_lines: the newlines from 1-based FROM to TO.
     pub(crate) fn count_newlines(&self, from: usize, to: usize) -> usize {
         let (from, to) = (from.min(to), from.max(to));
-        let end = self.text.borrow().len_chars();
-        let start = self.text.borrow().char_to_byte((from - 1).min(end));
-        let stop = self.text.borrow().char_to_byte((to - 1).min(end));
-        self.text.borrow().newlines_in(start..stop)
+        let end = self.text.get().borrow().len_chars();
+        let start = self.text.get().borrow().char_to_byte((from - 1).min(end));
+        let stop = self.text.get().borrow().char_to_byte((to - 1).min(end));
+        self.text.get().borrow().newlines_in(start..stop)
     }
 
     pub fn line_number_at_pos(&self, pos: usize) -> usize {
-        let pos0 = (pos - 1).min(self.text.borrow().len_chars());
-        self.text.borrow().char_to_line(pos0) + 1
+        let pos0 = (pos - 1).min(self.text.get().borrow().len_chars());
+        self.text.get().borrow().char_to_line(pos0) + 1
     }
 
     /// Start position (1-based) of the 1-based LINE, clamped to the text.
     pub fn line_start_of(&self, line: usize) -> usize {
-        let total = self.text.borrow().len_lines();
+        let total = self.text.get().borrow().len_lines();
         let index = line.saturating_sub(1).min(total.saturating_sub(1));
-        self.text.borrow().line_to_char(index) + 1
+        self.text.get().borrow().line_to_char(index) + 1
     }
 
     /// Where display of the 1-based LINE begins: its start, or BEGV when
@@ -4777,9 +4881,9 @@ impl Buffer {
     /// position just after the COUNTth newline before the end, or None when
     /// the text has fewer. Only newlines count as line breaks.
     pub fn after_newlines_from_end(&self, count: usize) -> Option<usize> {
-        let newlines = self.text.borrow().len_lines() - 1;
+        let newlines = self.text.get().borrow().len_lines() - 1;
         (count >= 1 && count <= newlines)
-            .then(|| self.text.borrow().line_to_char(newlines - count + 1) + 1)
+            .then(|| self.text.get().borrow().line_to_char(newlines - count + 1) + 1)
     }
 
     /// Current column (0-based) of point.
@@ -4787,24 +4891,25 @@ impl Buffer {
         let idx0 = self.pt - 1;
         let line_start = self
             .text
+            .get()
             .borrow()
-            .line_to_char(self.text.borrow().char_to_line(idx0));
+            .line_to_char(self.text.get().borrow().char_to_line(idx0));
         idx0 - line_start
     }
 
     /// Number of lines in the accessible region.
     pub fn count_lines(&self) -> usize {
         let start = self.begv - 1;
-        let end = (self.zv - 1).min(self.text.borrow().len_chars());
+        let end = (self.zv - 1).min(self.text.get().borrow().len_chars());
         if start >= end {
             return 0;
         }
         let (start_byte, end_byte) = (
-            self.text.borrow().char_to_byte(start),
-            self.text.borrow().char_to_byte(end),
+            self.text.get().borrow().char_to_byte(start),
+            self.text.get().borrow().char_to_byte(end),
         );
         // Count newlines + 1 (last line might not end with newline)
-        let newlines = self.text.borrow().newlines_in(start_byte..end_byte);
+        let newlines = self.text.get().borrow().newlines_in(start_byte..end_byte);
         if end > start { newlines + 1 } else { 0 }
     }
 
@@ -4812,7 +4917,7 @@ impl Buffer {
     /// at START, or -LENGTH deleted from it; a deletion of the whole text
     /// leaves no intervals.
     fn offset_intervals(&mut self, start: usize, length: isize, vars: &PropertyVariables) {
-        let mut stored = self.text.borrow_mut();
+        let mut stored = self.text.get().borrow_mut();
         let Some(intervals) = &mut stored.intervals else {
             return;
         };
@@ -4825,7 +4930,7 @@ impl Buffer {
     }
 
     fn adjust_extended_chars_for_insert(&mut self, pos: usize, nchars: usize) {
-        for (position, _) in &mut self.text.borrow_mut().extended_chars {
+        for (position, _) in &mut self.text.get().borrow_mut().extended_chars {
             if *position >= pos {
                 *position += nchars;
             }
@@ -4835,6 +4940,7 @@ impl Buffer {
     fn adjust_extended_chars_for_delete(&mut self, from: usize, to: usize) {
         let removed = to.saturating_sub(from);
         self.text
+            .get()
             .borrow_mut()
             .extended_chars
             .retain_mut(|(position, _)| {
@@ -4993,17 +5099,17 @@ mod tests {
             for _ in 0..4 {
                 let index = next(chars + 1);
                 assert_eq!(
-                    buf.text.borrow().char_to_byte(index),
+                    buf.text.get().borrow().char_to_byte(index),
                     offsets[index],
                     "round {round}"
                 );
                 assert_eq!(
-                    buf.text.borrow().byte_to_char(offsets[index]),
+                    buf.text.get().borrow().byte_to_char(offsets[index]),
                     index,
                     "round {round}"
                 );
             }
-            let checkpoints = buf.text.borrow().checkpoints.borrow().clone();
+            let checkpoints = buf.text.get().borrow().checkpoints.borrow().clone();
             assert!(checkpoints.windows(2).all(|pair| pair[0].0 < pair[1].0));
             for (index, byte) in checkpoints {
                 assert_eq!(offsets[index], byte, "round {round}");
@@ -5021,7 +5127,7 @@ mod tests {
                 _ => {}
             }
         }
-        assert!(!buf.text.borrow().checkpoints.borrow().is_empty());
+        assert!(!buf.text.get().borrow().checkpoints.borrow().is_empty());
     }
 
     #[test]
@@ -5192,22 +5298,22 @@ mod tests {
         // A read alone decodes its character where it stands; the next
         // one beside it scans, filling the window.
         assert_eq!(buf.char_at(1500), Some('a'));
-        assert!(!buf.text.borrow().char_cache.borrow().valid);
+        assert!(!buf.text.get().borrow().char_cache.borrow().valid);
         assert_eq!(buf.char_at(1501), Some('λ'));
-        assert!(buf.text.borrow().char_cache.borrow().valid);
+        assert!(buf.text.get().borrow().char_cache.borrow().valid);
         assert_eq!(buf.char_at(3001), Some('b'));
         assert_eq!(
-            buf.text.borrow().char_cache.borrow().start,
+            buf.text.get().borrow().char_cache.borrow().start,
             1500 - CHAR_CACHE_BEHIND
         );
 
         buf.goto_char(1);
         buf.insert("z");
-        assert!(!buf.text.borrow().char_cache.borrow().valid);
+        assert!(!buf.text.get().borrow().char_cache.borrow().valid);
         assert_eq!(buf.char_at(1502), Some('λ'));
 
         buf.replace_region_in_place(1502, 1503, "Ω", &[], false);
-        assert!(!buf.text.borrow().char_cache.borrow().valid);
+        assert!(!buf.text.get().borrow().char_cache.borrow().valid);
         assert_eq!(buf.char_at(1502), Some('Ω'));
 
         assert_eq!(buf.delete_region(1, 2), Ok("z".into()));
@@ -5273,13 +5379,13 @@ mod tests {
             assert_eq!(format!("{before}{after}"), expected);
             assert_eq!(scan.chars(), expected.chars().count());
             let lines: Vec<&str> = expected.split('\n').collect();
-            assert_eq!(buf.text.borrow().len_lines(), lines.len());
+            assert_eq!(buf.text.get().borrow().len_lines(), lines.len());
             assert_eq!(buf.lines_from(2, 1), vec![lines[1].to_string()]);
             let second_line = expected
                 .find('\n')
                 .map_or(0, |at| expected[..=at].chars().count());
-            assert_eq!(buf.text.borrow().line_to_char(1), second_line);
-            assert_eq!(buf.text.borrow().char_to_line(second_line), 1);
+            assert_eq!(buf.text.get().borrow().line_to_char(1), second_line);
+            assert_eq!(buf.text.get().borrow().char_to_line(second_line), 1);
             for (index, ch) in expected.chars().enumerate().step_by(97) {
                 assert_eq!(buf.char_at(index + 1), Some(ch));
                 let byte = expected.char_indices().nth(index).expect("char").0;
@@ -5323,7 +5429,7 @@ mod tests {
         // the newlines are recorded and answer the rest, until a change
         // drops the record.  Every answer is the scan's.
         fn answers(buf: &Buffer) -> Vec<usize> {
-            let mut answers = vec![buf.text.borrow().len_lines()];
+            let mut answers = vec![buf.text.get().borrow().len_lines()];
             let end = buf.size_total() + 1;
             for pos in (1..=end).step_by(7) {
                 answers.push(buf.line_number_at_pos(pos));
@@ -5340,16 +5446,16 @@ mod tests {
             .collect();
         let mut buf = Buffer::from_text("lines", &text);
         let scanned = answers(&buf);
-        assert!(buf.text.borrow().text.newline_offsets().is_some());
+        assert!(buf.text.get().borrow().text.newline_offsets().is_some());
         assert_eq!(answers(&buf), scanned);
         buf.goto_char(40);
         buf.insert("ab\ncd\n");
-        assert!(buf.text.borrow().text.newline_offsets().is_none());
+        assert!(buf.text.get().borrow().text.newline_offsets().is_none());
         let reference = Buffer::from_text("reference", &buf.full_buffer_string());
         let edited = answers(&reference);
         assert_eq!(answers(&buf), edited);
         assert_eq!(answers(&buf), edited);
-        assert!(buf.text.borrow().text.newline_offsets().is_some());
+        assert!(buf.text.get().borrow().text.newline_offsets().is_some());
         assert_eq!(buf.delete_region(40, 46).as_deref(), Ok("ab\ncd\n"));
         assert_eq!(answers(&buf), {
             let reference = Buffer::from_text("reference", &buf.full_buffer_string());
