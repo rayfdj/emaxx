@@ -189,6 +189,12 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   (931.6 before), `(setq last-command X)' 149.6 against 257.0 (1,020.6).  Round 387: stages R4 and R5, the
   dead and test-only machinery out, the reader's literals to its
   context, `put' a plist store (435.6 against 399.0, 561.6 before).
+- **In progress: A2.5, A4.7, C5.1, C5.3 and D43** (runtime ownership
+  and thread access; the plan: docs/plans/runtime-ownership.md, stages
+  0 to 9).  Round 388: stages 0 to 2; the runtime lock names its
+  holder, an editor is built only by the thread holding it, and the
+  tests' gates take one order.  The library tests still need one test
+  thread until allocation takes the lock (stage 3).
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -20657,6 +20663,60 @@ setup_process_coding_systems's check now refuses). A 13-form
   the ERT code, a test literal moved between helpers, and the
   anti-cheat scan of the thread visitor re-anchored, which the review
   read.
+- **Round 388: the runtime lock names its holder, and an editor is
+  built only by the OS thread that holds it (M2, the first stages of
+  A2.5, A4.7, C5.1, C5.3 and D43; none closed).**  The first three
+  stages of the plan of runtime ownership and thread access
+  (docs/plans/runtime-ownership.md).  **The ordinary configuration**:
+  `cargo test' runs one test thread, as the gate and CI do, where
+  `.cargo/config.toml' set two with a comment saying the tests shared
+  no interpreter state (D43 is that they do); docs/testing.md says what
+  the gate runs.  **The lock**: the process lock every public entry
+  takes, Emaxx's thread.c global_lock, now records the thread holding
+  it and how many wait; a thread that calls into the runtime outside a
+  public entry holds it until the thread exits (a tenure, as
+  run_thread holds global_lock while its thread runs Lisp), a scoped
+  entry inside a tenure taking nothing and registering its own stack
+  base; a waiter that has waited 60 seconds prints one line naming the
+  holder; the result a scoped entry hands out must be `Send', and the
+  build fails if one of eleven heap handle types becomes `Send' or
+  `Sync'.  **Editors**: building an editor (new, from an image, a clone,
+  the image template's copy) takes the lock, so library tests that
+  build editors take it in turn.  The tests' own gates take their
+  places in one order (host permits, the runtime, the boot
+  environment, the process-test permit within its writers, the
+  template, the fixture lock), except the process-test permit itself,
+  which a test can take while running GNU on a thread of its own and
+  then join a thread that builds the editor; and a test that waits for
+  the large-stack thread it starts lends that thread the lock and takes
+  it back, as thread-join gives global_lock up while it waits.
+  Allocation outside an editor does not take the lock yet (the next
+  stage), so the tests still need one test thread: with two, the
+  runtime's tests still crash where they share the allocator's free
+  lists.  **Behaviour and counts**: nothing Lisp sees changes, and the
+  call, interpreter and allocation guards are unchanged (a cons
+  allocation loop without collections 2,212.8 instructions an
+  iteration before and after; the lock costs once a process).  The
+  independent review (the one question: does the round cheat or break
+  something) read the lock's states, its release on every path and
+  its waiters, every caller of the lending helpers (244 test sites,
+  none keeping a Lisp value across the join), and the order of the
+  gates, ran the runtime's, the support code's, the thread, timer,
+  process-filter and mutex tests and the gate's skipped tests from the
+  round's test binary, and probes of threads, mutexes, condition
+  variables, timers, process filters and the command line on the build
+  before and this one, which answered alike.  It found no cheat and
+  nothing broken.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,639 passed, 0 failed, 2 ignored (nine
+  library tests more); cli 30, cli_parity 187, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 735 changed
+  lines with 9 tests and 44 assertions added; its notes of new state
+  are the lock, the thread's entry flags and the tenure (GNU's
+  global_lock, current_thread and run_thread's hold), and of changed
+  infrastructure the test-thread setting and the test support's boot.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24108,6 +24168,22 @@ ert-tests as a whole 26,307 ms against 27,211.
   targets (230) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 388 and its review), within the
+  plan's later stages.**  One line each: the build-time check that heap
+  handles are neither `Send' nor `Sync' names eleven types and misses
+  others (the closure, hash table, bool-vector, char-table and
+  sub-char-table, record and symbol-with-position handles, the cons
+  slot, the string states, the interpreter state and its owner, the
+  native heap, the window handle, and `VectorlikeRef' beyond one
+  instance), none of them `Send' today; a thread that lends the lock
+  to a thread it joins has its stack and thread-local roots unscanned
+  by that thread's collections, as before the round (tests only; GNU's
+  mark_threads scans every thread); a tenure is released by a
+  thread-local destructor, so thread-locals registered before it are
+  destroyed after the release (a window only parallel runs open); the
+  process-test permit, unordered with the lock, can deadlock two tests
+  run in parallel; a library user's thread that waits for the lock 60
+  seconds now prints a line on stderr.
 - **Found after the scope lock (round 387 and its review), outside the
   round and in no milestone.**  One line: a few host scans and tests
   still read without a Lisp context (file-local values, shorthands,
