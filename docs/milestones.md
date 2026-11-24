@@ -118,7 +118,8 @@ interval within 0.97 and 1.03).
   296)
   In progress (round 381: the current buffer is its object; one liveness
   and one base_buffer, as buffer.h's; round 382: the tables and two C
-  variables, 1,291.6 against 1,147.0).
+  variables, 1,291.6 against 1,147.0; round 384: the text as
+  buffer_text, 1,237.6).
 - D14: make-symbol ~690 instructions (round 173)
   **Done** (round 379: 1,280 against 1,965 a call).
 - D17: Rust-to-byte-code call ~120 instructions over GNU (rounds 167, 297).

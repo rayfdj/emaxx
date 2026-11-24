@@ -172,7 +172,9 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   text as buffer_text take it down).  Round 382: the tables are the
   buffer's words and `case-fold-search' and
   `parse-sexp-lookup-properties' C variables; `looking-at' 1,291.6,
-  `string-match' 1,323.6 (GNU 1,148.0).
+  `string-match' 1,323.6 (GNU 1,148.0).  Round 384: the text is
+  buffer_text and point and the bounds keep their bytes; `looking-at'
+  1,237.6, `char-after' 368.6 (GNU 260.0).
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -20371,6 +20373,66 @@ setup_process_coding_systems's check now refuses). A 13-form
   package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
   rustfmt clean.  The round audit reports no hard finding, 857 changed
   lines with 9 tests and 10 assertions added.
+- **Round 384: a buffer's text is buffer.h's buffer_text, and point and
+  the bounds keep their byte positions (M2, stage S5 of D13 and A3.6;
+  neither closed).**  **The text**: a buffer's text is its object's
+  own_text, which an indirect buffer reads through its `text' pointer,
+  as `b->text' is `&b->own_text' or the base's; the gap's beg, gpt,
+  gpt_byte, z, z_byte and gap_size are its fields, the caches one boxed
+  record, where the text was a shared cell holding a gap buffer.
+  **Positions**: pt_byte, begv_byte and zv_byte are kept where GNU keeps
+  them (SET_PT_BOTH and SET_PT, insdel's adjustments, narrowing, the
+  swap, the record and fetch of the position markers, an image's load),
+  SET_PT testing PT, BEGV and ZV first and then the ASCII case, and
+  `position-bytes' of point or a bound reads the kept byte.  **The
+  matcher**: a match in a buffer reads the text in place, its two
+  halves cut once as looking_at_1 cuts them and its start at
+  PT_BYTE - BEGV_BYTE, and shares the bytes as soon as the match can
+  run Lisp (`parse-sexp-lookup-properties' at once; otherwise before the
+  slow path of a quit check, before `syntax-propertize' and in the plain
+  search's quit check), so a callout that edits the buffer leaves the
+  match reading what it began with; `char-after' reads an ASCII byte
+  directly.  **Lisp sees one change, GNU's**: a regexp search whose
+  `syntax-propertize' callout signals no longer leaves that search's
+  match data set ((9 12 buffer) before, nil as GNU's).  **Counts**
+  (callgrind, the release build; before = round 381's build, whose
+  matcher round 382 changed to 1,291.6): `looking-at' at a failing
+  position 1,387.6 instructions, 1,237.6 after (GNU 1,147.0);
+  `string-match' 1,374.6 to 1,324.6 (GNU 1,148.0); the new probe
+  `re-search-forward' 2,017.6 to 1,963.6 (GNU 2,445.0); `char-after'
+  466.6 to 368.6 (GNU 260.0); `goto-char' 132.6 to 138.6 in ASCII and
+  multibyte text (GNU 231.0 and 239.0), the six SET_PT's test of PT
+  and its store of PT_BYTE, which GNU's set_point_both also makes;
+  `set-buffer' 703.6 to 705.6 (GNU 515.0), code layout; `insert'
+  2,093.7 to 2,077.7 (GNU 3,692.5); the call and interpreter guards
+  unchanged.  What `looking-at' still pays over GNU is in reaching the
+  buffer's state and the tables around the match (393 instructions
+  against looking_at_1's, RE_SETUP's and re_set_registers' 139), where
+  the call, the unwind and the matcher itself cost Emaxx less; the next
+  stage takes it down.  The independent review (the one question: does
+  the round cheat or break something) read the text pointer's lifetime
+  through kills, collections, clones and images, every path on which a
+  match can run Lisp, and the byte positions, and ran probes on GNU,
+  the build before and this one: twelve seeds of 120 random edits
+  checking point, the bounds, `position-bytes' and `byte-to-position'
+  after each (GNU's own build crashes on one seed), fourteen seeds of
+  edits each followed by eleven matches, 180 matches at the
+  accessible region's ends with the gap placed at each, 72 destructive
+  `syntax-propertize' callouts under six matchers (the same answers as
+  the build before), a quit's debugger replacing the text or killing
+  the buffer mid-match in a terminal, and an image with an indirect
+  family.  Every answer was GNU's or, where GNU's differed before, the
+  build before's.  It found no cheat and nothing broken.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,604 passed, 0 failed, 2 ignored (nine
+  library tests more); cli 30, cli_parity 184, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 2,295
+  changed lines with 9 tests and 46 assertions added and 11 changed
+  (the same checks reading the text's caches through the new path);
+  its two notes of new state are the character cache, moved into the
+  text's boxed caches, and the match's slot for the shared bytes.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23774,6 +23836,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   targets (227) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 384 and its review), outside the
+  round and in no milestone.**  One line each: an indirect buffer made
+  of a dying base after the kill's walk of its indirect buffers (by an
+  advice on `replace-buffer-in-windows') survives with the killed
+  base's emptied text where the build before kept the base's text and
+  GNU's points at freed text and signals "Marker does not point
+  anywhere"; a `syntax-propertize' callout that swaps the buffer's text
+  leaves point 1 where GNU's has 25, and a `quit-flag' a callout sets
+  is not acted on where GNU quits (both older); GNU 30.2 aborts in
+  regex-emacs.c on a `posix-search-forward' the round's oracle test
+  leaves out.
 - **Found after the scope lock (round 383 and its review), outside the
   round and in no milestone.**  One line each: after an in-place
   `(defvar Y)' inside a `let', lexbound_p still finds the `let''s
