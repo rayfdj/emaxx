@@ -4121,10 +4121,12 @@ pub fn execute_closure(
 }
 
 /// Ffuncall of a byte-code closure from Rust (`mapatoms', `mapcar', a
-/// hook's function): `execute_closure' under the nil environment byte code
-/// runs in, with the entered frame set up in this one function rather
-/// than in `run_entered' below it.  A frame binds nil only over another
-/// environment, as funcall_lambda specbinds only a changed one.
+/// hook's function): `execute_closure' with the entered frame set up in
+/// this one function rather than in `run_entered' below it.  A
+/// lexical-binding function's code runs under the caller's environment,
+/// as funcall_lambda hands a FIXNUMP template's arguments to
+/// exec_byte_code with no specbind; a dynamic-binding function's under
+/// its nil lexenv (`under_nil_environment').
 #[inline(never)]
 pub(crate) fn funcall_closure(
     interp: &mut Interpreter,
@@ -4132,11 +4134,7 @@ pub(crate) fn funcall_closure(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    let depth = env.len();
-    if crate::lisp::types::current_environment(env).is_some() {
-        env.push(crate::lisp::types::EnvFrame::dynamic());
-    }
-    let result = match super::verify::entry_program(closure) {
+    match super::verify::entry_program(closure) {
         // SAFETY: nothing runs Lisp or collects before the copy.
         Some(program) if unsafe { program.as_ref() }.takes(args.len()) => {
             let program = unsafe { *program.as_ref() };
@@ -4144,11 +4142,33 @@ pub(crate) fn funcall_closure(
         }
         Some(program) if let Some(arguments) = unsafe { program.as_ref() }.arguments => {
             let program = unsafe { *program.as_ref() };
-            run_dynamic(interp, program, arguments, closure, args, env)
+            under_nil_environment(env, |env| {
+                run_dynamic(interp, program, arguments, closure, args, env)
+            })
         }
-        _ => closure_program(closure)
-            .and_then(|program| run(interp, program, Value::Closure(closure), args, env)),
-    };
+        _ => closure_program(closure).and_then(|program| {
+            let function = Value::Closure(closure);
+            if matches!(program.argspec, ArgSpec::Packed { .. }) {
+                run(interp, program, function, args, env)
+            } else {
+                under_nil_environment(env, |env| run(interp, program, function, args, env))
+            }
+        }),
+    }
+}
+
+/// funcall_lambda's `specbind (Qinternal_interpreter_environment,
+/// lexenv)' for a dynamic-binding byte-code function, whose lexenv is
+/// nil: made only over another environment (`!EQ (lexenv,
+/// Vinternal_interpreter_environment)'), a nil frame while BODY runs that
+/// goes when it returns, as the call's unbind_to restores the variable.
+#[inline(always)]
+pub(crate) fn under_nil_environment<T>(env: &mut Env, body: impl FnOnce(&mut Env) -> T) -> T {
+    let depth = env.len();
+    if crate::lisp::types::current_environment(env).is_some() {
+        env.push(crate::lisp::types::EnvFrame::dynamic());
+    }
+    let result = body(env);
     if env.len() > depth {
         env.truncate(depth);
     }

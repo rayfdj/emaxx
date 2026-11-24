@@ -2236,7 +2236,7 @@ impl Interpreter {
         Err(self.signal_or_quit(error, env))
     }
 
-    /// eval.c:funcall_lambda's direct `exec_byte_code' branch.  The caller
+    /// eval.c:funcall_lambda's two `exec_byte_code' calls.  The caller
     /// owns Ffuncall's depth and backtrace entry; this supplies only the
     /// byte-code activation boundary shared by source and native callers.
     #[inline(always)]
@@ -2246,17 +2246,19 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        // Byte code reads variables with Fsymbol_value, never through the
-        // interpreter environment (bytecode.c's Bvarref); a nil frame keeps
-        // the caller's lexical bindings out of the VM's reads, and is
-        // needed only over another environment, as funcall_lambda
-        // specbinds only a changed one.
+        // A FIXNUMP template's arguments go to exec_byte_code with no
+        // specbind: the code runs under the caller's environment, which
+        // byte code itself never reads (Bvarref is Fsymbol_value's) and
+        // the subrs it calls read as GNU's do.  A dynamic-binding
+        // function's code runs under its nil lexenv, specbound over
+        // another environment (`under_nil_environment').
+        let lexical = closure.parameters().is_fixnum();
         let depth = env.len();
-        if crate::lisp::types::current_environment(env).is_some() {
+        if !lexical && crate::lisp::types::current_environment(env).is_some() {
             env.push(EnvFrame::dynamic());
         }
         let result = crate::lisp::bytecode::vm::execute_closure(self, closure, args, env);
-        if env.len() > depth {
+        if !lexical && env.len() > depth {
             env.truncate(depth);
         }
         result

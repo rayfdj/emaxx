@@ -37573,6 +37573,31 @@ fn bytecode_returning_to_c_with_a_binding_or_catch_left_has_them_undone() {
 }
 
 #[test]
+fn defvar_1_in_byte_code_that_c_calls_finds_the_callers_environment_unsaved() {
+    // eval.c:funcall_lambda runs a lexical-binding byte-code function
+    // with no specbind of internal-interpreter-environment, so defvar-1
+    // and internal--define-uninitialized-variable in it, under an
+    // interpreted `let' binding the name lexically, find no saved
+    // environment that binds it (lexbound_p) and define the variable,
+    // called by mapcar, funcall, apply or the interpreter; a
+    // dynamic-binding interpreted lambda between them specbinds the
+    // environment to nil, saving the caller's, and the definition is
+    // refused.
+    assert_oracle_contract_matches_interpreter(
+        r#"(eval '(let ((lexical-binding t))
+  (fset 't17-dv (byte-compile '(lambda (s) (condition-case e (progn (defvar-1 s 5 nil) (list 'ok (special-variable-p s) (default-value s))) (error e)))))
+  (fset 't17-ud (byte-compile '(lambda (s) (condition-case e (progn (internal--define-uninitialized-variable s) (list 'ok (special-variable-p s))) (error e)))))
+  (fset 't17-dyn (let ((lexical-binding nil)) (eval '(lambda (s) (t17-dv s)) nil)))
+  (list (let ((t17a 1) (t17b 2) (t17c 3) (t17d 4))
+          (list (mapcar #'t17-dv '(t17a)) (funcall #'t17-dv 't17b) (apply #'t17-ud '(t17c)) (t17-dv 't17d) t17a t17b t17c t17d))
+        (let ((t17e 1)) (list (funcall (symbol-function 't17-dyn) 't17e) (special-variable-p 't17e)))
+        (mapcar #'special-variable-p '(t17a t17b t17c t17d)))) t)"#,
+        r#"((((ok t 5)) (ok t 5) (ok t) (ok t 5) 1 2 3 4) ((error "Defining as dynamic an already lexical var" t17e) nil) (t t t t))"#,
+        "defvar-1 in byte code that C calls",
+    );
+}
+
+#[test]
 fn byte_code_frames_leave_with_their_call_records_innermost() {
     // bytecode.c's Breturn reads the callee's record as `specpdl_ptr - 1':
     // after a byte op's signal caught in the frame (its record gone), in a

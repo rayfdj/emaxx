@@ -1443,6 +1443,62 @@ fn byte_code_called_from_c_sees_its_interpreted_callers_environment() {
 }
 
 #[test]
+fn byte_code_called_from_c_defines_and_evaluates_in_its_callers_environment() {
+    // eval.c:funcall_lambda hands a lexical-binding byte-code function's
+    // arguments to exec_byte_code with no specbind of
+    // internal-interpreter-environment, so the subrs the function calls
+    // run in its interpreted caller's environment, which no binding has
+    // saved: defvar-1, defconst-1 and
+    // internal--define-uninitialized-variable of a name the caller binds
+    // lexically find no saved environment binding it (lexbound_p) and
+    // define it, whether mapcar, funcall, apply or the interpreter calls
+    // the function; backtrace-eval at the frame of its own call evaluates
+    // in that environment; the obsolete Bcatch's eval_sub of its body
+    // reads it, and a (defvar X) there declares X in it for the rest of
+    // the caller's `let', as the obsolete Bcondition_case's body, the
+    // obsolete Bsave_window_excursion's forms and the form list an
+    // obsolete Bunwind_protect runs at its Bunbind read it.  Through a
+    // dynamic-binding interpreted lambda, which specbinds the environment
+    // to nil, the caller's binding is saved and the definition refused.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "defs.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defmacro d17-try (form) `(condition-case e ,form (error (list 'err e))))
+(defalias 'd17-dv (byte-compile '(lambda (s) (d17-try (progn (defvar-1 s 5 nil) (list 'ok (special-variable-p s)))))))
+(defalias 'd17-dc (byte-compile '(lambda (s) (d17-try (progn (defconst-1 s 6 nil) (list 'ok (special-variable-p s)))))))
+(defalias 'd17-ud (byte-compile '(lambda (s) (d17-try (progn (internal--define-uninitialized-variable s) (list 'ok (special-variable-p s)))))))
+(defun d17-defs (fn)
+  (let ((d17a 1) (d17b 2) (d17c 3) (d17d 4))
+    (list (mapcar fn '(d17a)) (funcall fn 'd17b) (apply fn '(d17c)) (funcall fn 'd17d) d17a d17b d17c d17d)))
+(princ (format "1 %S\n" (list (d17-defs #'d17-dv) (mapcar #'special-variable-p '(d17a d17b d17c d17d)))))
+(defun d17-defs2 (fn)
+  (let ((d17e 1) (d17f 2))
+    (list (mapcar fn '(d17e)) (d17-dc 'd17f) d17e d17f)))
+(princ (format "2 %S\n" (list (d17-defs2 #'d17-ud) (mapcar #'special-variable-p '(d17e d17f)))))
+(defvar d17-dynf (let ((lexical-binding nil)) (eval '(lambda (s) (d17-dv s)) nil)))
+(princ (format "3 %S\n" (let ((d17g 1)) (list (funcall d17-dynf 'd17g) (special-variable-p 'd17g)))))
+(defalias 'd17-bs (byte-compile '(lambda (_) (d17-try (backtrace-eval 'd17x 0 #'backtrace-eval)))))
+(defalias 'd17-oc (make-byte-code 257 (unibyte-string #o300 #o301 #o215 #o207) [d17tag d17x] 3))
+(defun d17-caller (fn)
+  (let ((d17x 'lexical))
+    (list (d17-try (mapcar fn '(1))) (d17-try (funcall fn 1)) (d17-try (apply fn '(1))))))
+(princ (format "4 %S\n" (list (d17-caller #'d17-bs) (d17-caller #'d17-oc) (let ((d17x 'lexical)) (list (d17-bs 1) (d17-try (d17-oc 1)))))))
+(defalias 'd17-od (make-byte-code 257 (unibyte-string #o300 #o301 #o215 #o207) [d17tag (defvar d17z)] 3))
+(princ (format "5 %S\n" (let ((d17z 1)) (list (funcall #'d17-od 1) (let ((d17z 2)) (d17-try (symbol-value 'd17z))) (special-variable-p 'd17z)))))
+(defvar d17-out nil)
+(defalias 'd17-occ (make-byte-code 257 (unibyte-string #o300 #o301 #o302 #o217 #o207) [nil d17x nil] 4))
+(defalias 'd17-osw (make-byte-code 257 (unibyte-string #o300 #o213 #o207) [(d17x)] 3))
+(defalias 'd17-ouw (make-byte-code 257 (unibyte-string #o300 #o216 #o301 #o051 #o207) [((setq d17-out d17x)) done] 3))
+(princ (format "6 %S\n" (let ((d17x 'lexical)) (list (d17-try (mapcar #'d17-occ '(1))) (d17-try (funcall #'d17-osw 1)) (d17-try (d17-ouw 1)) d17-out))))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
 fn the_memory_profiler_files_a_byte_code_callback_under_mapc() {
     // profiler.c's malloc_probe from a byte-code callback that mapc calls:
     // the sample's backtrace holds the callback with mapc as its caller.
