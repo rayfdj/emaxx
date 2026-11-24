@@ -1359,12 +1359,16 @@ fn byte_code_called_from_c_enters_the_debugger_as_ffuncall_does() {
 
 #[test]
 fn byte_code_called_from_c_keeps_its_arguments_reentrant_and_redefinable() {
-    // mapcar1's Ffuncall of a byte-code callback: an argument only C's
-    // call holds (here the key of a weak table, reachable from the
-    // argument alone) survives a collection in the callee; the callback
-    // re-enters mapcar; one that fsets its own name is read again from the
-    // function cell at the next element; two Lisp threads yield to each
-    // other from callbacks of their own mapc.
+    // Ffuncall of a byte-code function from C: an argument that only the
+    // call's argument vector holds (funcall's, apply's: a fresh key of a
+    // weak table, which the callee drops from its own slot) survives a
+    // collection in the callee; a mapcar callback re-enters mapcar; one
+    // that fsets its own name is read again from the function cell at the
+    // next element; two Lisp threads yield from callbacks of their own
+    // mapc, each thread's callbacks running in and out in its order.  (Which
+    // thread runs after a yield is the OS scheduler's choice in GNU, whose
+    // thread-yield releases the global lock for sched_yield; the probe
+    // does not compare the interleaving.)
     let corpus = Corpus::new();
     let probe = corpus.write(
         "gc.el",
@@ -1372,9 +1376,13 @@ fn byte_code_called_from_c_keeps_its_arguments_reentrant_and_redefinable() {
 (require 'bytecomp)
 (setq byte-compile-warnings nil)
 (defvar d17-w (make-hash-table :test 'eq :weakness 'key))
-(defun d17-gc (x) (setq x (car x)) (garbage-collect) (list (hash-table-count d17-w) (car x)))
+(defun d17-mk (i) (let ((k (list i))) (puthash k t d17-w) k))
+(byte-compile 'd17-mk)
+(defun d17-held (i) (let (found) (maphash (lambda (k _v) (when (equal k (list i)) (setq found t))) d17-w) found))
+(byte-compile 'd17-held)
+(defun d17-gc (x i) (setq x nil) (garbage-collect) (list x (d17-held i)))
 (byte-compile 'd17-gc)
-(princ (format "1 %S\n" (mapcar #'d17-gc (let ((l nil)) (dotimes (i 3) (let ((k (list i))) (puthash k t d17-w) (push (list k) l))) l))))
+(princ (format "1 %S\n" (list (funcall #'d17-gc (d17-mk 0) 0) (apply #'d17-gc (d17-mk 1) '(1)) (apply #'d17-gc (list (d17-mk 2) 2)))))
 (garbage-collect)
 (princ (format "2 %S\n" (hash-table-count d17-w)))
 (defun d17-re (x) (if (> x 0) (apply #'+ (mapcar #'d17-re (make-list 2 (1- x)))) 1))
@@ -1389,7 +1397,7 @@ fn byte_code_called_from_c_keeps_its_arguments_reentrant_and_redefinable() {
 (let ((th (make-thread (lambda () (mapc #'d17-th '(a b))))))
   (mapc #'d17-th '(1 2))
   (thread-join th))
-(princ (format "5 %S\n" (length d17-th-log)))
+(princ (format "5 %S\n" (let ((log (reverse d17-th-log))) (list (seq-filter (lambda (e) (numberp (cadr e))) log) (seq-filter (lambda (e) (symbolp (cadr e))) log)))))
 (princ (format "6 %S\n" (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n)))
 "#,
     );
