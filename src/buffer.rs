@@ -147,6 +147,12 @@ pub struct Buffer {
     /// Current cursor position (1-based char offset).
     pt: usize,
 
+    /// PT_BYTE: point's byte position in the stored text (BEG_BYTE 1),
+    /// kept with `pt' as GNU keeps it: SET_PT_BOTH, insdel's adjustments,
+    /// narrowing and fetch_buffer_markers.  The stored bytes are UTF-8
+    /// with the raw-byte markers, not GNU's; `position-bytes' converts.
+    pt_byte: usize,
+
     /// A standalone buffer has no Lisp allocation. Installation replaces its
     /// position with the actual mark object, without retaining a position copy.
     mark: BufferMark,
@@ -167,6 +173,9 @@ pub struct Buffer {
     /// exclusive of zv in the sense that zv is one past the last accessible char).
     begv: usize,
     zv: usize,
+    /// BEGV_BYTE and ZV_BYTE, in the stored text as `pt_byte'.
+    begv_byte: usize,
+    zv_byte: usize,
 
     /// BVAR (b, filename): nil or the string `buffer-file-name' holds, the
     /// object itself.
@@ -260,12 +269,15 @@ impl Clone for Buffer {
             killed_bounds: self.killed_bounds,
             killed_locals: self.killed_locals.clone(),
             pt: self.pt,
+            pt_byte: self.pt_byte,
             mark: self.mark.clone(),
             mark_active: self.mark_active,
             autosave_modiff: self.autosave_modiff,
             auto_save_failure_time: self.auto_save_failure_time,
             begv: self.begv,
             zv: self.zv,
+            begv_byte: self.begv_byte,
+            zv_byte: self.zv_byte,
             file: self.file,
             file_truename: self.file_truename,
             visited_file_modtime: self.visited_file_modtime,
@@ -1356,12 +1368,15 @@ impl Buffer {
             killed_bounds: (1, 1),
             killed_locals: None,
             pt: 1,
+            pt_byte: 1,
             mark: BufferMark::Position(None),
             mark_active: Value::Nil,
             autosave_modiff: 0,
             auto_save_failure_time: 0,
             begv: 1,
             zv: 1, // empty buffer: zv = 1
+            begv_byte: 1,
+            zv_byte: 1,
             file: Value::Nil,
             file_truename: Value::Nil,
             visited_file_modtime: VisitedModtime::UNKNOWN,
@@ -1431,6 +1446,7 @@ impl Buffer {
     pub fn from_text(name: &str, s: &str) -> Self {
         let text = BufferText::from_str(s);
         let len = text.len_chars();
+        let len_bytes = text.len_bytes();
         Buffer {
             name: Value::string(name),
             last_name: Value::Nil,
@@ -1441,12 +1457,15 @@ impl Buffer {
             killed_bounds: (1, 1),
             killed_locals: None,
             pt: 1,
+            pt_byte: 1,
             mark: BufferMark::Position(None),
             mark_active: Value::Nil,
             autosave_modiff: 0,
             auto_save_failure_time: 0,
             begv: 1,
             zv: len + 1,
+            begv_byte: 1,
+            zv_byte: len_bytes + 1,
             file: Value::Nil,
             file_truename: Value::Nil,
             visited_file_modtime: VisitedModtime::UNKNOWN,
@@ -1634,6 +1653,9 @@ impl Buffer {
         self.invalidate_char_cache();
         self.multibyte = enabled;
         self.text_replaced_without_record();
+        // set-buffer-multibyte's TEMP_SET_PT_BOTH and SET_BUF_BEGV_BOTH
+        // and SET_BUF_ZV_BOTH over the new text.
+        self.refresh_position_bytes();
     }
 
     /// Total characters in the buffer (ignoring narrowing).
@@ -1700,9 +1722,69 @@ impl Buffer {
     /// Move point to an absolute position (1-based). Clamps to accessible region.
     /// Returns the new point.
     pub fn goto_char(&mut self, pos: usize) -> usize {
-        self.pt = pos.clamp(self.begv, self.zv);
+        self.set_pt(pos.clamp(self.begv, self.zv));
         self.note_positions_moved();
         self.pt
+    }
+
+    /// buf_charpos_to_bytepos in the stored text: the byte position of
+    /// POS, POS itself while each character is one byte (Z == Z_BYTE).
+    #[inline]
+    fn stored_byte_of(&self, pos: usize) -> usize {
+        let text = self.text.get().borrow();
+        if text.text.is_ascii() {
+            pos
+        } else {
+            text.char_to_byte(pos - 1) + 1
+        }
+    }
+
+    /// SET_PT_BOTH.
+    #[inline]
+    fn set_pt_both(&mut self, pt: usize, pt_byte: usize) {
+        self.pt = pt;
+        self.pt_byte = pt_byte;
+    }
+
+    /// SET_PT: point at POS, with its byte position.
+    #[inline]
+    fn set_pt(&mut self, pos: usize) {
+        let byte = self.stored_byte_of(pos);
+        self.set_pt_both(pos, byte);
+    }
+
+    /// SET_BUF_BEGV and SET_BUF_ZV: the bounds BEGV and ZV, with their
+    /// byte positions.
+    fn set_bounds(&mut self, begv: usize, zv: usize) {
+        self.begv_byte = self.stored_byte_of(begv);
+        self.zv_byte = self.stored_byte_of(zv);
+        self.begv = begv;
+        self.zv = zv;
+    }
+
+    /// The byte positions of point and the bounds found again, after a
+    /// change of the text that moved them without its byte counts at
+    /// hand (a replacement, a change of representation) or a fetch of
+    /// the positions from their markers.
+    fn refresh_position_bytes(&mut self) {
+        self.pt_byte = self.stored_byte_of(self.pt);
+        self.begv_byte = self.stored_byte_of(self.begv);
+        self.zv_byte = self.stored_byte_of(self.zv);
+    }
+
+    /// PT_BYTE, BEGV_BYTE and ZV_BYTE in the stored text.
+    #[inline]
+    pub(crate) fn position_bytes_stored(&self) -> (usize, usize, usize) {
+        debug_assert_eq!(
+            (self.pt_byte, self.begv_byte, self.zv_byte),
+            (
+                self.stored_byte_of(self.pt),
+                self.stored_byte_of(self.begv),
+                self.stored_byte_of(self.zv)
+            ),
+            "the byte positions follow the positions"
+        );
+        (self.pt_byte, self.begv_byte, self.zv_byte)
     }
 
     /// Move point forward by n characters. Errors if hitting the boundary.
@@ -1714,15 +1796,15 @@ impl Buffer {
         };
 
         if new_pt < self.begv {
-            self.pt = self.begv;
+            self.set_pt_both(self.begv, self.begv_byte);
             return Err(BufferError::BeginningOfBuffer);
         }
         if new_pt > self.zv {
-            self.pt = self.zv;
+            self.set_pt_both(self.zv, self.zv_byte);
             return Err(BufferError::EndOfBuffer);
         }
 
-        self.pt = new_pt;
+        self.set_pt(new_pt);
         Ok(self.pt)
     }
 
@@ -1739,7 +1821,7 @@ impl Buffer {
         let start = self.pt;
         let end = limit.clamp(start, self.zv);
         let mut remaining = end - start;
-        let mut byte = text.char_to_byte(start - 1);
+        let mut byte = self.pt_byte - 1;
         let mut count = 0;
         'chunks: while remaining > 0 && byte < text.len_bytes() {
             let rest = text.rest_at_byte(byte);
@@ -1753,6 +1835,7 @@ impl Buffer {
             }
         }
         self.pt += count;
+        self.pt_byte = byte + 1;
         count
     }
 
@@ -1766,7 +1849,7 @@ impl Buffer {
         let start = self.pt;
         let end = limit.clamp(self.begv, start);
         let mut remaining = start - end;
-        let mut byte = text.char_to_byte(start - 1);
+        let mut byte = self.pt_byte - 1;
         let mut count = 0;
         'chunks: while remaining > 0 && byte > 0 {
             let before = text.before_byte(byte);
@@ -1780,6 +1863,7 @@ impl Buffer {
             }
         }
         self.pt -= count;
+        self.pt_byte = byte + 1;
         count
     }
 
@@ -1915,7 +1999,7 @@ impl Buffer {
 
     /// Move to the beginning of the current line. Returns new point.
     pub fn beginning_of_line(&mut self) -> usize {
-        self.pt = self.line_start_at(self.pt);
+        self.set_pt(self.line_start_at(self.pt));
         self.pt
     }
 
@@ -1937,11 +2021,12 @@ impl Buffer {
             return self.pt;
         }
         let idx0 = self.pt - 1; // 0-based
-        self.pt = match self.newline_at_or_after(idx0) {
+        let pt = match self.newline_at_or_after(idx0) {
             // The 1-based position of the newline character.
             Some(newline) => (newline + 1).min(self.zv),
             None => self.zv,
         };
+        self.set_pt(pt);
         self.pt
     }
 
@@ -1965,7 +2050,7 @@ impl Buffer {
                 let found = match self.newline_at_or_after(idx0) {
                     Some(newline) if newline + 1 < self.zv => {
                         // The position after the newline, 1-based.
-                        self.pt = (newline + 2).min(self.zv);
+                        self.set_pt((newline + 2).min(self.zv));
                         true
                     }
                     _ => false,
@@ -1976,7 +2061,7 @@ impl Buffer {
                     // satisfies one requested forward-line step.  Only a
                     // call already at ZV has the full remaining shortage.
                     let crossed_final_line = self.pt < self.zv;
-                    self.pt = self.zv;
+                    self.set_pt_both(self.zv, self.zv_byte);
                     return remaining.saturating_sub(usize::from(crossed_final_line)) as isize;
                 }
                 remaining -= 1;
@@ -1994,7 +2079,7 @@ impl Buffer {
                     return -(remaining as isize);
                 }
                 // Step back one char (over the newline before this line)
-                self.pt -= 1;
+                self.set_pt(self.pt - 1);
                 self.beginning_of_line();
                 remaining -= 1;
             }
@@ -2064,6 +2149,7 @@ impl Buffer {
             self.text = TextSlot::Object(owner);
         }
         self.multibyte = base.multibyte;
+        self.refresh_position_bytes();
     }
 
     /// BVAR (b, pt_marker), begv_marker and zv_marker, when it has them.
@@ -2131,12 +2217,12 @@ impl Buffer {
     /// its point and bounds into its markers.
     pub(crate) fn record_position_markers(&self) {
         if let Some(markers) = self.position_markers {
-            for (marker, position) in [
-                (markers.pt, self.pt),
-                (markers.begv, self.begv),
-                (markers.zv, self.zv),
+            for (marker, position, stored) in [
+                (markers.pt, self.pt, self.pt_byte),
+                (markers.begv, self.begv, self.begv_byte),
+                (markers.zv, self.zv, self.zv_byte),
             ] {
-                marker.set_positions(position, self.marker_byte_position(position));
+                marker.set_positions(position, self.byte_position_at_stored(position, stored - 1));
             }
         }
     }
@@ -2151,6 +2237,7 @@ impl Buffer {
             self.pt = read(markers.pt);
             self.begv = read(markers.begv);
             self.zv = read(markers.zv);
+            self.refresh_position_bytes();
         }
     }
 
@@ -2375,6 +2462,17 @@ impl Buffer {
         let char_len = self.text.get().borrow().len_chars();
         if pos == 0 || pos > char_len + 1 {
             return None;
+        }
+        // buf_charpos_to_bytepos CONSIDERs PT, BEGV and ZV, whose bytes
+        // the buffer keeps, before it counts.
+        let (pt_byte, begv_byte, zv_byte) = self.position_bytes_stored();
+        let kept = [
+            (self.pt, pt_byte),
+            (self.begv, begv_byte),
+            (self.zv, zv_byte),
+        ];
+        if let Some(&(_, stored)) = kept.iter().find(|(at, _)| *at == pos) {
+            return Some(self.byte_position_at_stored(pos, stored - 1));
         }
         Some(self.marker_byte_position(pos))
     }
@@ -3372,7 +3470,10 @@ impl Buffer {
         let insert_at = self.pt;
         let idx0 = self.pt - 1; // 0-based
         // The text keeps its length; what it grew by is the insertion's.
-        let before = self.text.get().borrow().len_chars();
+        let (before, before_bytes) = {
+            let text = self.text.get().borrow();
+            (text.len_chars(), text.len_bytes())
+        };
         match inserted {
             Inserted::Text(s) => self.text.get().borrow_mut().insert(idx0, s),
             Inserted::RawBytes(bytes, high) => self
@@ -3381,15 +3482,18 @@ impl Buffer {
                 .borrow_mut()
                 .insert_raw_bytes(idx0, bytes, high),
         }
-        let nchars = self.text.get().borrow().len_chars() - before;
+        let (nchars, stored_bytes) = {
+            let text = self.text.get().borrow();
+            (text.len_chars() - before, text.len_bytes() - before_bytes)
+        };
         self.invalidate_char_cache();
         self.record_insert(insert_at, nchars);
 
-        // Advance point past insertion
-        self.pt += nchars;
-
-        // Adjust zv (the buffer grew)
+        // insert_1_both's adjust_point (nchars, nbytes): point past the
+        // insertion, and ZV and ZV_BYTE grown by it.
+        self.set_pt_both(self.pt + nchars, self.pt_byte + stored_bytes);
         self.zv += nchars;
+        self.zv_byte += stored_bytes;
 
         match &mut self.mark {
             BufferMark::Position(mark) => {
@@ -3619,7 +3723,7 @@ impl Buffer {
     /// moved by the other's length and the distance between them, those
     /// between by the difference of the lengths.
     fn transpose_markers(&mut self, start1: usize, end1: usize, start2: usize, end2: usize) {
-        self.pt = transposed_position(self.pt, start1, end1, start2, end2);
+        self.set_pt(transposed_position(self.pt, start1, end1, start2, end2));
         self.transpose_marker_positions(start1, end1, start2, end2);
     }
 
@@ -3714,6 +3818,7 @@ impl Buffer {
         if from < self.pt && inschars != 1 {
             self.pt = self.pt + inschars - 1;
         }
+        self.refresh_position_bytes();
         self.refresh_marker_byte_positions();
         modiff_incr(&mut self.text.get().borrow_mut().modiff, 1 + inschars);
         {
@@ -3750,6 +3855,7 @@ impl Buffer {
             .extended_chars
             .sort_unstable_by_key(|(position, _)| *position);
         self.invalidate_char_cache();
+        self.refresh_position_bytes();
         self.refresh_marker_byte_positions();
         self.log_edit(from, to, to, true);
     }
@@ -3858,6 +3964,7 @@ impl Buffer {
         self.offset_intervals(from, inschars as isize - nchars_del as isize, vars);
         self.graft_intervals(props, from, inschars);
         self.zv = self.zv + inschars - nchars_del;
+        self.refresh_position_bytes();
         self.refresh_marker_byte_positions();
         modiff_incr(
             &mut self.text.get().borrow_mut().modiff,
@@ -3985,6 +4092,7 @@ impl Buffer {
             .iter_mut()
             .for_each(|(position, _)| *position -= before(*position));
         self.zv -= n;
+        self.refresh_position_bytes();
         {
             let mut text = self.text.get().borrow_mut();
             for _ in 0..n {
@@ -4047,11 +4155,13 @@ impl Buffer {
         }
         self.invalidate_char_cache();
 
-        // Adjust point
+        // del_range_2's adjustment of point: back over the deletion after
+        // it, to FROM within it.
+        let stored_bytes = to_stored - from_stored;
         if self.pt > to {
-            self.pt -= nchars;
+            self.set_pt_both(self.pt - nchars, self.pt_byte - stored_bytes);
         } else if self.pt > from {
-            self.pt = from;
+            self.set_pt_both(from, from_stored + 1);
         }
 
         match &mut self.mark {
@@ -4087,6 +4197,7 @@ impl Buffer {
 
         // Shrink accessible region
         self.zv -= nchars;
+        self.zv_byte -= stored_bytes;
 
         modiff_incr(&mut self.text.get().borrow_mut().modiff, nchars);
         {
@@ -4125,28 +4236,42 @@ impl Buffer {
         let end = upper
             .max(start)
             .min(self.text.get().borrow().len_chars() + 1);
-        self.begv = start;
-        self.zv = end;
+        self.set_bounds(start, end);
         // Clamp point into the new region
-        self.pt = self.pt.clamp(self.begv, self.zv);
+        self.clamp_point();
         self.note_positions_moved();
     }
 
     /// Remove narrowing.
     pub fn widen(&mut self) {
-        self.begv = 1;
-        self.zv = self.text.get().borrow().len_chars() + 1;
+        let (z, z_byte) = {
+            let text = self.text.get().borrow();
+            (text.len_chars() + 1, text.len_bytes() + 1)
+        };
+        (self.begv, self.begv_byte) = (1, 1);
+        (self.zv, self.zv_byte) = (z, z_byte);
         self.note_positions_moved();
+    }
+
+    /// Fnarrow_to_region's move of point into the bounds, with its byte
+    /// position.
+    fn clamp_point(&mut self) {
+        if self.pt < self.begv {
+            self.set_pt_both(self.begv, self.begv_byte);
+        } else if self.pt > self.zv {
+            self.set_pt_both(self.zv, self.zv_byte);
+        }
     }
 
     pub fn restore_restriction(&mut self, start: usize, end: usize) {
         let lower = start.min(end);
         let upper = start.max(end);
-        self.begv = lower.max(1).min(self.text.get().borrow().len_chars() + 1);
-        self.zv = upper
-            .max(self.begv)
+        let begv = lower.max(1).min(self.text.get().borrow().len_chars() + 1);
+        let zv = upper
+            .max(begv)
             .min(self.text.get().borrow().len_chars() + 1);
-        self.pt = self.pt.clamp(self.begv, self.zv);
+        self.set_bounds(begv, zv);
+        self.clamp_point();
         // GNU narrowing moves point, but does not move markers outside it.
         self.note_positions_moved();
     }
@@ -4524,9 +4649,9 @@ impl Buffer {
         // mark can have been moved into another buffer and must survive there.
         self.mark_active = Value::Nil;
         self.mark = BufferMark::Position(None);
-        self.pt = 1;
-        self.begv = 1;
-        self.zv = 1;
+        self.set_pt_both(1, 1);
+        (self.begv, self.begv_byte) = (1, 1);
+        (self.zv, self.zv_byte) = (1, 1);
         // Fkill_buffer: `bset_last_name (b, BVAR (b, name));
         // bset_name (b, Qnil)'.
         self.last_name = self.name;
@@ -4565,7 +4690,7 @@ impl Buffer {
     /// `last_name' before writing, the overlays were refused, and the
     /// character cache is rebuilt on demand.
     pub(crate) fn from_image_parts(parts: BufferImage) -> Self {
-        Buffer {
+        let mut buffer = Buffer {
             name: parts.name,
             last_name: Value::Nil,
             text: TextSlot::pending(BufferText {
@@ -4582,12 +4707,15 @@ impl Buffer {
             killed_bounds: (1, 1),
             killed_locals: None,
             pt: parts.pt,
+            pt_byte: 1,
             mark: BufferMark::Position(parts.mark),
             mark_active: parts.mark_active,
             autosave_modiff: parts.autosave_modiff,
             auto_save_failure_time: 0,
             begv: parts.begv,
             zv: parts.zv,
+            begv_byte: 1,
+            zv_byte: 1,
             file: parts.file,
             file_truename: parts.file_truename,
             visited_file_modtime: parts.visited_file_modtime,
@@ -4607,7 +4735,10 @@ impl Buffer {
             // redisplay takes no shortcut.
             prevent_redisplay_optimizations_p: true,
             long_line_optimizations_p: false,
-        }
+        };
+        // The image holds the positions; their bytes are the text's.
+        buffer.refresh_position_bytes();
+        buffer
     }
 
     pub fn modified_tick(&self) -> ModCount {
@@ -4794,6 +4925,7 @@ impl Buffer {
         self.set_window_count(other_count);
         other.set_window_count(count);
         std::mem::swap(&mut self.pt, &mut other.pt);
+        std::mem::swap(&mut self.pt_byte, &mut other.pt_byte);
         // swapfield_ (pt_marker, Lisp_Object), begv_marker and zv_marker:
         // the markers go with the text, on whose chain they are.  Which
         // buffer then reads its point from them is the caller's to say
@@ -4802,6 +4934,8 @@ impl Buffer {
         std::mem::swap(&mut self.mark_active, &mut other.mark_active);
         std::mem::swap(&mut self.begv, &mut other.begv);
         std::mem::swap(&mut self.zv, &mut other.zv);
+        std::mem::swap(&mut self.begv_byte, &mut other.begv_byte);
+        std::mem::swap(&mut self.zv_byte, &mut other.zv_byte);
         std::mem::swap(&mut self.undo_list, &mut other.undo_list);
         std::mem::swap(&mut self.overlays, &mut other.overlays);
         std::mem::swap(&mut self.multibyte, &mut other.multibyte);
@@ -5824,6 +5958,68 @@ mod tests {
         assert_eq!(buf.char_at(2), Some('b'));
         assert_eq!(buf.char_at(3), Some('c'));
         assert_eq!(buf.char_at(4), None); // past end
+    }
+
+    #[test]
+    fn point_and_the_bounds_keep_their_stored_bytes() {
+        // pt_byte, begv_byte and zv_byte against a conversion of pt, begv
+        // and zv after each change, in ASCII text (Z == Z_BYTE), text of
+        // several-byte characters and text with raw-byte markers.
+        fn check(buf: &Buffer, label: &str) {
+            let converted = (
+                buf.stored_byte_of(buf.pt),
+                buf.stored_byte_of(buf.begv),
+                buf.stored_byte_of(buf.zv),
+            );
+            assert_eq!(
+                (buf.pt_byte, buf.begv_byte, buf.zv_byte),
+                converted,
+                "{label}"
+            );
+        }
+        for text in [
+            "abc\ndef\nghi",
+            "a\u{e9}\u{4e2d}\u{1f600}b\nc\u{e9}d\ne",
+            "x\u{e0ff}\u{e080}y\u{e9}z\nq\u{e0aa}r",
+        ] {
+            let mut buf = Buffer::from_text("bytes", text);
+            check(&buf, "new");
+            buf.goto_char(4);
+            check(&buf, "goto");
+            let _ = buf.forward_char(2);
+            check(&buf, "forward");
+            let _ = buf.forward_char(100);
+            check(&buf, "forward past the end");
+            buf.goto_char(3);
+            buf.insert("\u{e9}\u{4e2d}");
+            check(&buf, "insert at point");
+            buf.narrow_to_region(2, buf.size_total());
+            check(&buf, "narrow");
+            buf.goto_char(1);
+            check(&buf, "goto clamped");
+            assert!(buf.delete_region(2, 4).is_ok());
+            check(&buf, "delete at begv");
+            buf.goto_char(5);
+            assert!(buf.delete_region(3, 4).is_ok());
+            check(&buf, "delete before point");
+            buf.forward_line(1);
+            check(&buf, "forward line");
+            buf.end_of_line();
+            check(&buf, "end of line");
+            buf.beginning_of_line();
+            check(&buf, "beginning of line");
+            buf.skip_forward_while(buf.point_max(), |ch| ch != '\n');
+            check(&buf, "skip forward");
+            buf.skip_backward_while(buf.point_min(), |_| true);
+            check(&buf, "skip backward");
+            buf.widen();
+            check(&buf, "widen");
+            buf.restore_restriction(3, 6);
+            check(&buf, "restore restriction");
+            let image = Buffer::from_image_parts(buf.image_parts());
+            check(&image, "image");
+            check(&buf.clone(), "clone");
+        }
     }
 
     #[test]

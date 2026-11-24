@@ -1129,6 +1129,57 @@ fn parse_sexp_lookup_properties_decides_whether_syntax_properties_count_as_gnu()
 }
 
 #[test]
+fn point_and_the_bounds_keep_their_bytes_through_edits_narrowing_and_multibyte_as_gnu() {
+    // buffer.h's pt_byte, begv_byte and zv_byte: SET_PT_BOTH, insdel's
+    // adjustments of point and ZV for an insertion or deletion before
+    // them, narrowing, set-buffer-multibyte both ways, a transposition
+    // and a substitution, over multibyte text, raw bytes and a unibyte
+    // buffer; `position-bytes' of point and the bounds reads them.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((out nil))
+          (save-current-buffer
+            (dolist (setup (list (lambda () (insert "aé中\U0001F600b\ncdé"))
+                                 (lambda () (insert "x" (string-to-multibyte "\377\200") "yéz"))
+                                 (lambda () (set-buffer-multibyte nil) (insert "ab\377\200cd\351ef"))))
+              (set-buffer (generate-new-buffer "pos"))
+              (funcall setup)
+              (let ((rec (lambda (tag)
+                           (push (list tag (point) (position-bytes (point))
+                                       (point-min) (position-bytes (point-min))
+                                       (point-max) (position-bytes (point-max))
+                                       (byte-to-position (position-bytes (point)))
+                                       (looking-at ".") (char-after) (char-before))
+                                 out))))
+                (goto-char 3) (funcall rec 'goto)
+                (forward-char 2) (funcall rec 'forward)
+                (goto-char 4) (insert "éé") (funcall rec 'insert-at)
+                (save-excursion (goto-char 2) (insert "中")) (funcall rec 'insert-before)
+                (save-excursion (goto-char 3) (insert "z")) (funcall rec 'insert-before-ascii)
+                (delete-region 1 3) (funcall rec 'delete-before)
+                (narrow-to-region 2 (- (point-max) 1)) (funcall rec 'narrow)
+                (save-excursion (goto-char (point-min)) (insert "éq")) (funcall rec 'insert-at-begv)
+                (save-excursion (goto-char (point-max)) (insert "中")) (funcall rec 'insert-at-zv)
+                (save-excursion (delete-region (point-min) (1+ (point-min)))) (funcall rec 'delete-at-begv)
+                (skip-chars-forward "^\n") (funcall rec 'skip)
+                (skip-chars-backward "^q") (funcall rec 'skip-back)
+                (widen) (funcall rec 'widen)
+                (end-of-line) (funcall rec 'eol)
+                (forward-line -1) (funcall rec 'line)
+                (goto-char (point-max)) (funcall rec 'end)
+                (set-buffer-multibyte (not enable-multibyte-characters)) (funcall rec 'toggle)
+                (goto-char 3) (funcall rec 'toggled-goto)
+                (set-buffer-multibyte (not enable-multibyte-characters)) (funcall rec 'toggle-back)
+                (goto-char (point-max)) (funcall rec 'toggled-end)
+                (transpose-regions 1 2 4 6) (funcall rec 'transpose)
+                (subst-char-in-region (point-min) (point-max) ?c ?d) (funcall rec 'subst)
+                (kill-buffer))))
+          (nreverse out))"#,
+        "((goto 3 4 1 1 10 17 3 t 20013 233) (forward 5 11 1 1 10 17 5 t 98 128512) (insert-at 6 11 1 1 12 21 6 t 128512 233) (insert-before 7 14 1 1 13 24 7 t 128512 233) (insert-before-ascii 8 15 1 1 14 25 8 t 128512 233) (delete-before 6 11 1 1 12 21 6 t 128512 233) (narrow 6 11 2 2 11 19 6 t 128512 233) (insert-at-begv 8 14 2 2 13 22 8 t 128512 233) (insert-at-zv 8 14 2 2 14 25 8 t 128512 233) (delete-at-begv 7 12 2 2 13 23 7 t 128512 233) (skip 9 17 2 2 13 23 9 nil 10 98) (skip-back 3 3 2 2 13 23 3 t 233 113) (widen 3 3 1 1 14 25 3 t 233 113) (eol 9 17 1 1 14 25 9 nil 10 98) (line 1 1 1 1 14 25 1 t 122 nil) (end 14 25 1 1 14 25 14 nil nil 233) (toggle 25 25 1 1 25 25 25 nil nil 169) (toggled-goto 3 3 1 1 25 25 3 t 195 113) (toggle-back 3 3 1 1 14 25 3 t 233 113) (toggled-end 14 25 1 1 14 25 14 nil nil 233) (transpose 14 25 1 1 14 25 14 nil nil 233) (subst 14 25 1 1 14 25 14 nil nil 233) (goto 3 4 1 1 7 10 3 t 4194176 4194303) (forward 5 7 1 1 7 10 5 t 233 121) (insert-at 6 10 1 1 9 14 6 t 121 233) (insert-before 7 13 1 1 10 17 7 t 121 233) (insert-before-ascii 8 14 1 1 11 18 8 t 121 233) (delete-before 6 10 1 1 9 14 6 t 121 233) (narrow 6 10 2 2 8 13 6 t 121 233) (insert-at-begv 8 13 2 2 10 16 8 t 121 233) (insert-at-zv 8 13 2 2 11 19 8 t 121 233) (delete-at-begv 7 11 2 2 10 17 7 t 121 233) (skip 10 17 2 2 10 17 10 nil nil 20013) (skip-back 3 3 2 2 10 17 3 t 4194303 113) (widen 3 3 1 1 11 18 3 t 4194303 113) (eol 11 18 1 1 11 18 11 nil nil 122) (line 1 1 1 1 11 18 1 t 122 nil) (end 11 18 1 1 11 18 11 nil nil 122) (toggle 16 16 1 1 16 16 16 nil nil 122) (toggled-goto 3 3 1 1 16 16 3 t 255 113) (toggle-back 3 3 1 1 11 18 3 t 4194303 113) (toggled-end 11 18 1 1 11 18 11 nil nil 122) (transpose 11 18 1 1 11 18 11 nil nil 122) (subst 11 18 1 1 11 18 11 nil nil 122) (goto 3 3 1 1 10 10 3 t 255 98) (forward 5 5 1 1 10 10 5 t 99 128) (insert-at 6 6 1 1 12 12 6 t 128 233) (insert-before 7 7 1 1 13 13 7 t 128 233) (insert-before-ascii 8 8 1 1 14 14 8 t 128 233) (delete-before 6 6 1 1 12 12 6 t 128 233) (narrow 6 6 2 2 11 11 6 t 128 233) (insert-at-begv 8 8 2 2 13 13 8 t 128 233) (insert-at-zv 8 8 2 2 14 14 8 t 128 233) (delete-at-begv 7 7 2 2 13 13 7 t 128 233) (skip 13 13 2 2 13 13 13 nil nil 45) (skip-back 3 3 2 2 13 13 3 t 98 113) (widen 3 3 1 1 14 14 3 t 98 113) (eol 14 14 1 1 14 14 14 nil nil 102) (line 1 1 1 1 14 14 1 t 122 nil) (end 14 14 1 1 14 14 14 nil nil 102) (toggle 14 19 1 1 14 19 14 nil nil 102) (toggled-goto 3 3 1 1 14 19 3 t 98 113) (toggle-back 3 3 1 1 14 14 3 t 98 113) (toggled-end 14 14 1 1 14 14 14 nil nil 102) (transpose 14 14 1 1 14 14 14 nil nil 102) (subst 14 14 1 1 14 14 14 nil nil 102))",
+        "position bytes",
+    );
+}
+
+#[test]
 fn an_indirect_family_reads_its_base_s_own_text_through_kills_and_swaps_as_gnu() {
     // buffer.h: an indirect buffer's `text' is its base's own_text; a
     // killed indirect buffer has a text of its own again (its counts
