@@ -70,12 +70,7 @@ impl InterpreterState {
                 Err(error) => return Some(Err(error)),
             }
         }
-        if self.globals.plain_store(name)
-            && let Some(value) = self.globals.value(name)
-        {
-            return Some(Ok(value));
-        }
-        None
+        name.cell().plain_value().map(Ok)
     }
 }
 

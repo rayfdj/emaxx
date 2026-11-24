@@ -974,7 +974,7 @@ struct Symbols {
     /// obarray is: lisp.h's EQ reads it wherever it runs, and native code
     /// is given its address (comp.c's relocation), as its symbol's forward
     /// is (Lisp_Boolfwd).
-    symbols_with_pos_enabled: std::sync::atomic::AtomicBool,
+    symbols_with_pos_enabled: Cell<bool>,
 }
 
 impl Default for Symbols {
@@ -985,7 +985,7 @@ impl Default for Symbols {
             builtins: std::array::from_fn(|_| Cell::new(None)),
             keys: std::array::from_fn(|_| Cell::new(None)),
             hash_tests: RefCell::new(DescriptorPool::default()),
-            symbols_with_pos_enabled: std::sync::atomic::AtomicBool::new(false),
+            symbols_with_pos_enabled: Cell::new(false),
         }
     }
 }
@@ -1005,8 +1005,7 @@ thread_local! {
     static ACTIVE_KEYS: Cell<*const KeySlots> = const { Cell::new(std::ptr::null()) };
     /// ACTIVE's symbols_with_pos_enabled, or null when no editor is
     /// selected, kept as ACTIVE_KEYS is.
-    static ACTIVE_POS_FLAG: Cell<*const std::sync::atomic::AtomicBool> =
-        const { Cell::new(std::ptr::null()) };
+    static ACTIVE_POS_FLAG: Cell<*const Cell<bool>> = const { Cell::new(std::ptr::null()) };
 }
 
 /// Record ACTIVE's key slots and C flag after a store into ACTIVE.
@@ -1031,18 +1030,14 @@ pub(crate) fn symbols_with_pos_enabled() -> bool {
     }
     // SAFETY: a non-null pointer names the flag of the Symbols in ACTIVE,
     // which a dropping table clears first (see `Drop for Symbols').
-    unsafe { (*flag).load(std::sync::atomic::Ordering::Relaxed) }
+    unsafe { (*flag).get() }
 }
 
 /// The host owner's symbols_with_pos_enabled, read with no editor selected.
 #[cold]
 #[inline(never)]
 fn host_symbols_with_pos_enabled() -> bool {
-    HOST_SYMBOLS.with_borrow(|symbols| {
-        symbols
-            .symbols_with_pos_enabled
-            .load(std::sync::atomic::Ordering::Relaxed)
-    })
+    HOST_SYMBOLS.with_borrow(|symbols| symbols.symbols_with_pos_enabled.get())
 }
 
 impl Drop for Symbols {
@@ -1051,7 +1046,7 @@ impl Drop for Symbols {
         if ACTIVE_KEYS.get() == keys {
             ACTIVE_KEYS.set(std::ptr::null());
         }
-        let flag: *const std::sync::atomic::AtomicBool = &self.symbols_with_pos_enabled;
+        let flag: *const Cell<bool> = &self.symbols_with_pos_enabled;
         if ACTIVE_POS_FLAG.get() == flag {
             ACTIVE_POS_FLAG.set(std::ptr::null());
         }
@@ -1111,7 +1106,7 @@ impl SymbolOwner {
 
     /// This editor's C variable symbols_with_pos_enabled.
     #[inline]
-    pub(crate) fn symbols_with_pos_enabled(&self) -> &std::sync::atomic::AtomicBool {
+    pub(crate) fn symbols_with_pos_enabled(&self) -> &Cell<bool> {
         &self.0.symbols_with_pos_enabled
     }
 

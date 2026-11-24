@@ -18,7 +18,6 @@ use super::terminal::Kboard;
 use std::cell::{Cell, RefCell};
 use std::ptr::NonNull;
 use std::rc::Rc;
-use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
 pub(crate) struct CVariableCells {
     /// eval.c's Vquit_flag.
@@ -32,18 +31,18 @@ pub(crate) struct CVariableCells {
     /// lread.c's Vload_path.
     pub(crate) load_path: Cell<Value>,
     /// eval.c's DEFVAR_INT max_lisp_eval_depth.
-    pub(crate) max_lisp_eval_depth: AtomicI64,
+    pub(crate) max_lisp_eval_depth: Cell<i64>,
     /// eval.c's DEFVAR_BOOL debug_on_next_call.
-    pub(crate) debug_on_next_call: AtomicBool,
+    pub(crate) debug_on_next_call: Cell<bool>,
     /// undo.c's DEFVAR_BOOL undo_inhibit_record_point, which the buffers
     /// hold as well (`Interpreter::set_undo_inhibit_record_point').
-    pub(crate) undo_inhibit_record_point: AtomicBool,
+    pub(crate) undo_inhibit_record_point: Cell<bool>,
     /// buffer.c's Vcase_fold_search and syntax.c's DEFVAR_BOOL
     /// parse_sexp_lookup_properties, both made buffer-local when set: the
     /// current buffer's values, which set_buffer_internal_2 loads, as the
     /// matcher and the scanners read them.
     pub(crate) case_fold_search: Cell<Value>,
-    pub(crate) parse_sexp_lookup_properties: AtomicBool,
+    pub(crate) parse_sexp_lookup_properties: Cell<bool>,
     /// keyboard.c's current_kboard, which the KBOARD variables' symbols
     /// forward to (Lisp_Kboard_Objfwd), and the kboard it names, which
     /// its terminal shares; `set_current_kboard' sets both.
@@ -66,11 +65,11 @@ impl CVariables {
             throw_on_input: Cell::new(Value::Nil),
             overriding_plist_environment: Cell::new(Value::Nil),
             load_path: Cell::new(Value::Nil),
-            max_lisp_eval_depth: AtomicI64::new(1600),
-            debug_on_next_call: AtomicBool::new(false),
-            undo_inhibit_record_point: AtomicBool::new(false),
+            max_lisp_eval_depth: Cell::new(1600),
+            debug_on_next_call: Cell::new(false),
+            undo_inhibit_record_point: Cell::new(false),
             case_fold_search: Cell::new(Value::T),
-            parse_sexp_lookup_properties: AtomicBool::new(false),
+            parse_sexp_lookup_properties: Cell::new(false),
             current_kboard: Cell::new(NonNull::from(&*kboard)),
             current_kboard_owner: RefCell::new(kboard),
         }))
@@ -133,18 +132,17 @@ impl std::ops::Deref for CVariables {
 /// values until the copier replaces the objects with its copies.
 impl Clone for CVariables {
     fn clone(&self) -> Self {
-        let load = |flag: &AtomicBool| AtomicBool::new(flag.load(Ordering::Relaxed));
         Self(Rc::new(CVariableCells {
             quit_flag: self.quit_flag.clone(),
             inhibit_quit: self.inhibit_quit.clone(),
             throw_on_input: self.throw_on_input.clone(),
             overriding_plist_environment: self.overriding_plist_environment.clone(),
             load_path: self.load_path.clone(),
-            max_lisp_eval_depth: AtomicI64::new(self.max_lisp_eval_depth.load(Ordering::Relaxed)),
-            debug_on_next_call: load(&self.debug_on_next_call),
-            undo_inhibit_record_point: load(&self.undo_inhibit_record_point),
+            max_lisp_eval_depth: self.max_lisp_eval_depth.clone(),
+            debug_on_next_call: self.debug_on_next_call.clone(),
+            undo_inhibit_record_point: self.undo_inhibit_record_point.clone(),
             case_fold_search: self.case_fold_search.clone(),
-            parse_sexp_lookup_properties: load(&self.parse_sexp_lookup_properties),
+            parse_sexp_lookup_properties: self.parse_sexp_lookup_properties.clone(),
             current_kboard: self.current_kboard.clone(),
             current_kboard_owner: RefCell::new(Rc::clone(&self.current_kboard_owner.borrow())),
         }))

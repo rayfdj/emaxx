@@ -6135,10 +6135,9 @@ impl Interpreter {
         );
         let symbol_owner = crate::lisp::types::symbols::SymbolOwner::fresh();
         // The copy's own C flag, as the image holds the variable's value.
-        symbol_owner.symbols_with_pos_enabled().store(
-            self.symbols_with_positions_enabled(),
-            std::sync::atomic::Ordering::Relaxed,
-        );
+        symbol_owner
+            .symbols_with_pos_enabled()
+            .set(self.symbols_with_positions_enabled());
         let symbol_scope = symbol_owner.enter();
         let mut clone = self.clone();
         clone.finalizers = crate::lisp::alloc::FinalizerList::default();

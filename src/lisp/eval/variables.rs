@@ -124,9 +124,7 @@ impl InterpreterState {
     /// at hand (`types::eq').
     #[inline]
     pub(crate) fn symbols_with_positions_enabled(&self) -> bool {
-        self.globals
-            .symbols_with_pos_enabled()
-            .load(Ordering::Relaxed)
+        self.globals.symbols_with_pos_enabled().get()
     }
 
     pub(crate) fn quit_flag_is_nil(&self) -> bool {
@@ -135,11 +133,11 @@ impl InterpreterState {
 
     #[inline]
     pub(crate) fn max_lisp_eval_depth_value(&self) -> i64 {
-        self.c_variables.max_lisp_eval_depth.load(Ordering::Relaxed)
+        self.c_variables.max_lisp_eval_depth.get()
     }
 
     pub(crate) fn debug_on_next_call(&self) -> bool {
-        self.c_variables.debug_on_next_call.load(Ordering::Relaxed)
+        self.c_variables.debug_on_next_call.get()
     }
 
     /// The forwards of this editor's symbols into its own C variables
@@ -1655,9 +1653,7 @@ impl Interpreter {
             6 => LispFwd::Bool(NonNull::from(&c.debug_on_next_call)),
             7 => LispFwd::Bool(NonNull::from(self.globals.symbols_with_pos_enabled())),
             8 => LispFwd::Bool(NonNull::from(&c.undo_inhibit_record_point)),
-            9 => LispFwd::Bool(NonNull::from(
-                crate::lisp::primitives::attempt_orderly_shutdown_variable(),
-            )),
+            9 => LispFwd::StaticBool(crate::lisp::primitives::attempt_orderly_shutdown_variable()),
             10 => LispFwd::Obj(NonNull::from(&c.case_fold_search)),
             11 => LispFwd::Bool(NonNull::from(&c.parse_sexp_lookup_properties)),
             _ => unreachable!("FORWARDED_EVAL_CELLS has twelve entries"),
@@ -1720,21 +1716,16 @@ impl Interpreter {
             4 => c.load_path.set(*value),
             5 => {
                 if let Ok(depth) = value.as_integer() {
-                    c.max_lisp_eval_depth.store(depth, Ordering::Relaxed);
+                    c.max_lisp_eval_depth.set(depth);
                 }
             }
-            6 => c.debug_on_next_call.store(truth, Ordering::Relaxed),
-            7 => self
-                .globals
-                .symbols_with_pos_enabled()
-                .store(truth, Ordering::Relaxed),
+            6 => c.debug_on_next_call.set(truth),
+            7 => self.globals.symbols_with_pos_enabled().set(truth),
             8 => self.set_undo_inhibit_record_point(truth),
             9 => crate::lisp::primitives::attempt_orderly_shutdown_variable()
                 .store(truth, Ordering::Relaxed),
             10 => c.case_fold_search.set(*value),
-            11 => c
-                .parse_sexp_lookup_properties
-                .store(truth, Ordering::Relaxed),
+            11 => c.parse_sexp_lookup_properties.set(truth),
             _ => unreachable!("FORWARDED_EVAL_CELLS has twelve entries"),
         }
         if matches!(index, 0 | 5 | 6) {
@@ -1743,13 +1734,7 @@ impl Interpreter {
     }
 
     pub(crate) fn forwarded_eval_cell_value(&self, name: &str) -> Option<Value> {
-        let truth = |flag: &std::sync::atomic::AtomicBool| {
-            if flag.load(Ordering::Relaxed) {
-                Value::T
-            } else {
-                Value::Nil
-            }
-        };
+        let truth = |flag: bool| if flag { Value::T } else { Value::Nil };
         let c = &self.c_variables;
         match name {
             "quit-flag" => Some(c.quit_flag.get()),
@@ -1760,14 +1745,14 @@ impl Interpreter {
             "max-lisp-eval-depth" => Some(crate::lisp::primitives::normalize_integer_value(
                 self.max_lisp_eval_depth_value(),
             )),
-            "debug-on-next-call" => Some(truth(&c.debug_on_next_call)),
-            "symbols-with-pos-enabled" => Some(truth(self.globals.symbols_with_pos_enabled())),
-            "undo-inhibit-record-point" => Some(truth(&c.undo_inhibit_record_point)),
-            "attempt-orderly-shutdown-on-fatal-signal" => Some(truth(
-                crate::lisp::primitives::attempt_orderly_shutdown_variable(),
-            )),
+            "debug-on-next-call" => Some(truth(c.debug_on_next_call.get())),
+            "symbols-with-pos-enabled" => Some(truth(self.symbols_with_positions_enabled())),
+            "undo-inhibit-record-point" => Some(truth(c.undo_inhibit_record_point.get())),
+            "attempt-orderly-shutdown-on-fatal-signal" => {
+                Some(truth(crate::lisp::primitives::attempt_orderly_shutdown()))
+            }
             "case-fold-search" => Some(c.case_fold_search.get()),
-            "parse-sexp-lookup-properties" => Some(truth(&c.parse_sexp_lookup_properties)),
+            "parse-sexp-lookup-properties" => Some(truth(c.parse_sexp_lookup_properties.get())),
             _ => None,
         }
     }
@@ -1798,11 +1783,17 @@ impl Interpreter {
     /// binding the current buffer now sees (swap_in_symval_forwarding),
     /// its own or the default.  A variable bound in neither buffer holds
     /// the same binding before and after.
+    #[inline]
     pub(super) fn refresh_forwarded_eval_cells_after_switch(&mut self, previous: u64) {
         let current = self.current_buffer_id();
-        if !self.has_forwarded_eval_local(previous) && !self.has_forwarded_eval_local(current) {
-            return;
+        if self.has_forwarded_eval_local(previous) || self.has_forwarded_eval_local(current) {
+            self.load_forwarded_bindings(previous, current);
         }
+    }
+
+    /// `refresh_forwarded_eval_cells_after_switch''s walk.
+    #[inline(never)]
+    fn load_forwarded_bindings(&mut self, previous: u64, current: u64) {
         let bound = |locals: Option<&super::LocalCells>, symbol: &SymbolName| {
             locals.is_some_and(|locals| locals.binding_cell(symbol).is_some())
         };
@@ -1827,9 +1818,7 @@ impl Interpreter {
     /// value, the current one again at each switch (a buffer made since
     /// the last store learns it there).
     fn set_undo_inhibit_record_point(&mut self, inhibit: bool) {
-        self.c_variables
-            .undo_inhibit_record_point
-            .store(inhibit, Ordering::Relaxed);
+        self.c_variables.undo_inhibit_record_point.set(inhibit);
         for buffer in std::iter::once(self.buffer)
             .chain(self.inactive_buffers.iter().map(|(_, buffer)| *buffer))
         {
@@ -1839,9 +1828,7 @@ impl Interpreter {
 
     /// undo.c's undo_inhibit_record_point, as record_point reads it.
     pub(crate) fn undo_inhibit_record_point(&self) -> bool {
-        self.c_variables
-            .undo_inhibit_record_point
-            .load(Ordering::Relaxed)
+        self.c_variables.undo_inhibit_record_point.get()
     }
 
     /// comp.c connects loaded code directly to the same bool that
@@ -1875,9 +1862,7 @@ impl Interpreter {
     /// `max_lisp_eval_depth = DEPTH' in C: the C variable, whichever
     /// binding of the symbol is in place, and the depth gate.
     pub(crate) fn set_max_lisp_eval_depth_in_place(&mut self, depth: i64) {
-        self.c_variables
-            .max_lisp_eval_depth
-            .store(depth, Ordering::Relaxed);
+        self.c_variables.max_lisp_eval_depth.set(depth);
         self.refresh_call_depth_gate();
     }
 
@@ -1891,9 +1876,7 @@ impl Interpreter {
             return;
         }
         if self.forwarded_variable_detached(&cached_symbol!("debug-on-next-call").symbol()) {
-            self.c_variables
-                .debug_on_next_call
-                .store(false, Ordering::Relaxed);
+            self.c_variables.debug_on_next_call.set(false);
             self.refresh_call_depth_gate();
         } else {
             self.set_symbol_value_cell("debug-on-next-call", Value::Nil);
@@ -2408,9 +2391,7 @@ impl Interpreter {
     /// syntax.c's parse_sexp_lookup_properties, as the scanners read it.
     #[inline]
     pub(crate) fn parse_sexp_lookup_properties(&self) -> bool {
-        self.c_variables
-            .parse_sexp_lookup_properties
-            .load(Ordering::Relaxed)
+        self.c_variables.parse_sexp_lookup_properties.get()
     }
 
     /// Learn whether SYMBOL's assignments are a plain store (data.c's
@@ -4700,6 +4681,7 @@ mod forwarded_eval_cell_tests {
             LispFwd::Int(variable) => variable.as_ptr() as usize,
             LispFwd::Obj(variable) => variable.as_ptr() as usize,
             LispFwd::Bool(variable) => variable.as_ptr() as usize,
+            LispFwd::StaticBool(variable) => std::ptr::from_ref(variable) as usize,
         }
     }
 
