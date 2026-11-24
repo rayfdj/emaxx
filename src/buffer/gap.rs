@@ -496,19 +496,24 @@ impl GapText {
         Rc::make_mut(&mut self.beg)
     }
 
-    /// gap_left and gap_right: the gap moved to byte AT of the text, the
-    /// character AT_CHAR.
-    fn move_gap(&mut self, at: usize, at_char: usize) {
-        let (gpt_byte, gap_end) = (self.gpt_byte, self.gap_end());
-        if at < gpt_byte {
-            self.bytes_mut()
-                .copy_within(at..gpt_byte, gap_end - (gpt_byte - at));
-        } else if at > gpt_byte {
-            self.bytes_mut()
-                .copy_within(gap_end..gap_end + (at - gpt_byte), gpt_byte);
+    /// gap_left and gap_right: the gap of GAP_SIZE bytes at GPT_BYTE, the
+    /// character GPT, of the text's own BYTES (`bytes_mut') moved to byte
+    /// AT, the character AT_CHAR.
+    #[inline]
+    fn move_gap_in(
+        bytes: &mut [u8],
+        (gpt, gpt_byte): (&mut usize, &mut usize),
+        gap_size: usize,
+        (at, at_char): (usize, usize),
+    ) {
+        let gap_end = *gpt_byte + gap_size;
+        if at < *gpt_byte {
+            bytes.copy_within(at..*gpt_byte, gap_end - (*gpt_byte - at));
+        } else if at > *gpt_byte {
+            bytes.copy_within(gap_end..gap_end + (at - *gpt_byte), *gpt_byte);
         }
-        self.gpt_byte = at;
-        self.gpt = at_char;
+        *gpt_byte = at;
+        *gpt = at_char;
     }
 
     /// make_gap_larger's enlarge_buffer_text for a gap of NEEDED bytes:
@@ -528,28 +533,29 @@ impl GapText {
         self.bytes_mut().try_reserve(added).map_err(|_| new_nbytes)
     }
 
-    /// make_gap_larger: a gap of at least NEEDED bytes, grown by what the
+    /// make_gap_larger: the gap of GAP_SIZE bytes at GPT_BYTE of the
+    /// text's own BYTES made at least NEEDED bytes, grown by what the
     /// insertion needs and GAP_BYTES_DFL (the vector's own growth keeps
     /// the reallocations few, as GNU leaves them to realloc).
-    fn make_gap(&mut self, needed: usize) {
-        if self.gap_size >= needed {
+    #[inline]
+    fn make_gap_in(bytes: &mut Vec<u8>, gpt_byte: usize, gap_size: &mut usize, needed: usize) {
+        if *gap_size >= needed {
             return;
         }
-        let added = needed - self.gap_size + GAP_BYTES_DFL;
-        let gap_end = self.gap_end();
-        let bytes = Rc::make_mut(&mut self.beg);
+        let added = needed - *gap_size + GAP_BYTES_DFL;
+        let gap_end = gpt_byte + *gap_size;
         if bytes.is_empty() && bytes.capacity() < added {
             // A fresh allocation, which reads as zeros without being
             // filled.
             *bytes = vec![0; added];
-            self.gap_size = added;
+            *gap_size = added;
             return;
         }
         let after = bytes.len() - gap_end;
         bytes.resize(bytes.len() + added, 0);
         // The text after the gap moves to the end of the larger space.
         bytes.copy_within(gap_end..gap_end + after, gap_end + added);
-        self.gap_size += added;
+        *gap_size += added;
     }
 
     /// insert_1_both's make_gap for an insertion of NEEDED bytes, without
@@ -581,15 +587,24 @@ impl GapText {
             return;
         }
         debug_assert!(at <= self.len() && at_char <= self.chars());
-        self.move_gap(at, at_char);
-        self.make_gap(len);
-        let start = self.gpt_byte;
-        write(&mut self.bytes_mut()[start..start + len]);
-        self.gpt_byte += len;
-        self.gap_size -= len;
-        self.gpt += chars;
-        self.z += chars;
-        self.z_byte += len;
+        // The bytes taken once for the move, the growth and the copy.
+        let GapText {
+            beg,
+            gpt,
+            gpt_byte,
+            z,
+            z_byte,
+            gap_size,
+        } = self;
+        let bytes = Rc::make_mut(beg);
+        Self::move_gap_in(bytes, (gpt, gpt_byte), *gap_size, (at, at_char));
+        Self::make_gap_in(bytes, *gpt_byte, gap_size, len);
+        write(&mut bytes[*gpt_byte..*gpt_byte + len]);
+        *gpt_byte += len;
+        *gap_size -= len;
+        *gpt += chars;
+        *z += chars;
+        *z_byte += len;
     }
 
     /// del_range_2's widening of the gap over byte RANGE, the characters
@@ -601,10 +616,21 @@ impl GapText {
             return;
         }
         debug_assert!(range.end <= self.len() && chars.end <= self.chars());
-        if self.gpt_byte < range.start {
-            self.move_gap(range.start, chars.start);
+        let to = if self.gpt_byte < range.start {
+            Some((range.start, chars.start))
         } else if self.gpt_byte > range.end {
-            self.move_gap(range.end, chars.end);
+            Some((range.end, chars.end))
+        } else {
+            None
+        };
+        if let Some(to) = to {
+            let bytes = Rc::make_mut(&mut self.beg);
+            Self::move_gap_in(
+                bytes,
+                (&mut self.gpt, &mut self.gpt_byte),
+                self.gap_size,
+                to,
+            );
         }
         self.gap_size += range.len();
         self.gpt_byte = range.start;

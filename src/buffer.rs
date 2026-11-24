@@ -307,27 +307,47 @@ impl Clone for Buffer {
 /// or its base's), or, for a buffer state not yet placed in an object
 /// (one being made, or a snapshot), a text of its own that the object
 /// takes when the state is placed in it (`BufferRef::adopt_text').
-enum TextSlot {
+struct TextSlot {
+    /// buffer.h's `b->text' itself: the buffer_text HOLDER keeps.
+    text: std::ptr::NonNull<RefCell<BufferText>>,
+    holder: TextHolder,
+}
+
+/// What holds the buffer_text a buffer reads.
+enum TextHolder {
+    /// The own_text of the buffer's object, or of its base's.
     Object(BufferRef),
+    /// The text of a state not yet placed in an object.
     Pending(Box<RefCell<BufferText>>),
 }
 
 impl TextSlot {
     fn pending(text: BufferText) -> Self {
-        Self::Pending(Box::new(RefCell::new(text)))
+        let text = Box::new(RefCell::new(text));
+        TextSlot {
+            text: std::ptr::NonNull::from(&*text),
+            holder: TextHolder::Pending(text),
+        }
+    }
+
+    /// OWNER's own_text.
+    fn object(owner: BufferRef) -> Self {
+        TextSlot {
+            text: std::ptr::NonNull::from(&owner.own_text),
+            holder: TextHolder::Object(owner),
+        }
     }
 
     /// buffer.h's `b->text': the own_text of the buffer's object, or of its
     /// base's, or the text a state not yet placed holds.
-    #[inline]
+    #[inline(always)]
     fn get(&self) -> &RefCell<BufferText> {
-        match self {
-            // The object outlives the state: it holds the state, or it is
-            // the base, which mark_buffer keeps while an indirect buffer
-            // that shares its text lives and Fkill_buffer kills after it.
-            Self::Object(owner) => &owner.own_text,
-            Self::Pending(text) => text,
-        }
+        // SAFETY: `text' points at what `holder' keeps: a box this slot
+        // owns, whose contents do not move, or an object's own_text.  The
+        // object outlives the state: it holds the state, or it is the
+        // base, which mark_buffer keeps while an indirect buffer that
+        // shares its text lives and Fkill_buffer kills after it.
+        unsafe { self.text.as_ref() }
     }
 }
 
@@ -2148,20 +2168,20 @@ impl Buffer {
 
     /// The object whose own_text the buffer reads, once placed.
     pub(crate) fn text_owner(&self) -> Option<BufferRef> {
-        match self.text {
-            TextSlot::Object(owner) => Some(owner),
-            TextSlot::Pending(_) => None,
+        match self.text.holder {
+            TextHolder::Object(owner) => Some(owner),
+            TextHolder::Pending(_) => None,
         }
     }
 
     /// The text a state not yet placed holds, for the object that takes
     /// it as its own_text; the state reads OWNER's from then on.
     pub(crate) fn take_pending_text(&mut self, owner: BufferRef) -> Option<BufferText> {
-        let slot = std::mem::replace(&mut self.text, TextSlot::Object(owner));
-        match slot {
-            TextSlot::Pending(text) => Some(text.into_inner()),
-            TextSlot::Object(previous) => {
-                self.text = TextSlot::Object(previous);
+        let slot = std::mem::replace(&mut self.text, TextSlot::object(owner));
+        match slot.holder {
+            TextHolder::Pending(text) => Some(text.into_inner()),
+            TextHolder::Object(previous) => {
+                self.text = TextSlot::object(previous);
                 None
             }
         }
@@ -2171,7 +2191,7 @@ impl Buffer {
     /// buffer, made empty for it, takes the text of BASE.
     pub(crate) fn share_text_of(&mut self, base: &Buffer) {
         if let Some(owner) = base.text_owner() {
-            self.text = TextSlot::Object(owner);
+            self.text = TextSlot::object(owner);
         }
         self.multibyte = base.multibyte;
         self.refresh_position_bytes();
@@ -4695,7 +4715,7 @@ impl Buffer {
             save_modiff,
             ..BufferText::default()
         };
-        self.text = TextSlot::Object(object);
+        self.text = TextSlot::object(object);
         self.position_markers = None;
         self.positions_away = false;
         self.undo_list = Value::Nil;
@@ -4963,8 +4983,8 @@ impl Buffer {
     pub fn swap_text_state(&mut self, other: &mut Buffer) {
         // swapfield (own_text, struct buffer_text): each object's own_text,
         // which each buffer, not indirect, reads.
-        match (&self.text, &other.text) {
-            (TextSlot::Object(own), TextSlot::Object(others)) => {
+        match (&self.text.holder, &other.text.holder) {
+            (TextHolder::Object(own), TextHolder::Object(others)) => {
                 own.own_text.swap(&others.own_text)
             }
             _ => std::mem::swap(&mut self.text, &mut other.text),
