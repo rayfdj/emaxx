@@ -56,6 +56,7 @@ impl BcStack {
         }
     }
 
+    #[inline(always)]
     fn ensure_allocated(&mut self) {
         if self.words.capacity() == 0 {
             self.words.reserve_exact(BC_STACK_WORDS);
@@ -79,6 +80,7 @@ impl BcStack {
         unsafe { self.words.as_ptr().add(frame).cast::<BcHeader>().read() }
     }
 
+    #[inline(always)]
     fn enter_frame(&mut self, depth: usize, function: Value, pc: usize) -> Result<(), LispError> {
         let base = self.frame + BC_HEADER_WORDS;
         // The room above BASE bounds DEPTH, with no addition to overflow.
@@ -4134,12 +4136,48 @@ pub(crate) fn funcall_closure(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    match super::verify::entry_program(closure) {
+    funcall_closure_in_place(interp, closure, args, env)
+}
+
+/// `funcall_closure' in its caller's frame, Ffuncall's (`plain_funcall'):
+/// GNU's exec_byte_code runs in the frame below Ffuncall's, which
+/// funcall_general and funcall_lambda reach by tail jumps, and so its
+/// entry is here.  A closure whose cached program takes the arguments
+/// enters the verified loop at once; any other goes on out of line.
+#[inline(always)]
+pub(crate) fn funcall_closure_in_place(
+    interp: &mut Interpreter,
+    closure: crate::lisp::types::ClosureRef,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let entry = super::verify::entry_program(closure);
+    match entry {
         // SAFETY: nothing runs Lisp or collects before the copy.
         Some(program) if unsafe { program.as_ref() }.takes(args.len()) => {
             let program = unsafe { *program.as_ref() };
             run_entered_inline(interp, program, Value::Closure(closure), args, env)
         }
+        _ => funcall_closure_otherwise(interp, closure, entry, args, env),
+    }
+}
+
+/// The rest of `funcall_closure_in_place', given ENTRY, what
+/// `entry_program' answered for CLOSURE: a dynamic-binding function's
+/// formals bound and its code run under its nil lexenv, or the program
+/// of any other read from the closure and run.
+#[inline(never)]
+fn funcall_closure_otherwise(
+    interp: &mut Interpreter,
+    closure: crate::lisp::types::ClosureRef,
+    entry: Option<std::ptr::NonNull<super::verify::EntryProgram>>,
+    args: &[Value],
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    match entry {
+        // SAFETY: the program `entry_program' answered stays in place until
+        // the next lookup, which nothing has made since; nothing runs Lisp
+        // or collects before the copy.
         Some(program) if let Some(arguments) = unsafe { program.as_ref() }.arguments => {
             let program = unsafe { *program.as_ref() };
             under_nil_environment(env, |env| {
@@ -4238,18 +4276,29 @@ fn run_entered_inline(
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    run_entered_with(interp, program, function, env, false, |interp, _| {
-        // SAFETY: the caller's `takes' admits at most the list's ENTRY_DEPTH
-        // arguments, which `entry_program' gives only a program whose
-        // STACK_DEPTH holds them, and `enter_frame' has just put the frame's
-        // footer that depth above its first slot.
-        unsafe {
-            interp
-                .bc_stack
-                .push_arguments_within(args, program.entry_depth)
-        };
-        Ok(())
-    })
+    // The arguments' pushes are inline in the caller's frame, Ffuncall's
+    // for `funcall_closure_in_place', as setup_frame's are in
+    // exec_byte_code.
+    run_entered_with(
+        interp,
+        program,
+        function,
+        env,
+        false,
+        #[inline(always)]
+        |interp, _| {
+            // SAFETY: the caller's `takes' admits at most the list's
+            // ENTRY_DEPTH arguments, which `entry_program' gives only a
+            // program whose STACK_DEPTH holds them, and `enter_frame' has
+            // just put the frame's footer that depth above its first slot.
+            unsafe {
+                interp
+                    .bc_stack
+                    .push_arguments_within(args, program.entry_depth)
+            };
+            Ok(())
+        },
+    )
 }
 
 /// funcall_lambda for a dynamic-binding byte-code function whose fields
