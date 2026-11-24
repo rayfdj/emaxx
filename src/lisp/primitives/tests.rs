@@ -23965,6 +23965,20 @@ fn reader_hex_escapes_preserve_the_raw_byte_boundary_and_digit_count() {
 }
 
 #[test]
+fn concat_converts_unibyte_arguments_of_a_multibyte_result_as_str_to_multibyte() {
+    // fns.c:concat_to_string copies a unibyte argument into a multibyte
+    // result through character.c:str_to_multibyte: an ASCII byte as
+    // itself, any other as its raw-byte character's two bytes, wherever
+    // the argument stands and however often it is repeated; a unibyte
+    // result keeps the bytes as they are.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((u (unibyte-string 65 200 255 127 128)) (m (string #x3b1 #xe9))) (list (append (concat u m) nil) (string-bytes (concat u m)) (multibyte-string-p (concat u m)) (append (concat m u "x" u) nil) (string-bytes (concat m u "x" u)) (append (concat u u) nil) (multibyte-string-p (concat u u)) (string-bytes (concat "" u m "")) (length (concat u (list #x3fffc8) m)) (string-bytes (concat u (list #x3fffc8) m))))"#,
+        r#"((65 4194248 4194303 127 4194176 945 233) 12 t (945 233 65 4194248 4194303 127 4194176 120 65 4194248 4194303 127 4194176) 21 (65 200 255 127 128 65 200 255 127 128) nil 12 8 14)"#,
+        "concat of unibyte arguments into a multibyte result",
+    );
+}
+
+#[test]
 fn concat_preserves_canonical_bytes_properties_and_sequence_characters() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/canonical-concat-storage.el"),
