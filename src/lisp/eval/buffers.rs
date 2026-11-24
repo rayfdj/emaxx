@@ -222,6 +222,12 @@ impl Interpreter {
     /// alone when its text is its own (the current buffer counted even
     /// when the list does not hold it).
     pub fn related_buffer_ids(&self, buffer_id: u64) -> smallvec::SmallVec<[u64; 4]> {
+        // insdel.c's `if (!current_buffer->indirections)': the current
+        // buffer, at hand, is neither indirect (-1) nor a base of live
+        // indirect buffers, so its text is its own.
+        if buffer_id == self.current_buffer_id && self.buffer.indirections() == 0 {
+            return smallvec::smallvec![buffer_id];
+        }
         let root = self.buffer_object(buffer_id).and_then(|buffer| {
             let root = buffer
                 .text_base()
