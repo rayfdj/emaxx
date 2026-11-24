@@ -346,6 +346,9 @@ impl Interpreter {
             }
             RootSlot::LoadPath => self.c_variables.load_path.set(*value),
             RootSlot::CaseFoldSearch => self.c_variables.case_fold_search.set(*value),
+            RootSlot::InhibitChangingMatchData => {
+                self.c_variables.inhibit_changing_match_data.set(*value);
+            }
             RootSlot::LoadsInProgress => self.loads_in_progress = *value,
             RootSlot::LocalTimeZoneRule => self.local_time_zone_rule = *value,
             RootSlot::FrameAndBufferState => self.frame_and_buffer_state = *value,

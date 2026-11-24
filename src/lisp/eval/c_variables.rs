@@ -43,6 +43,9 @@ pub(crate) struct CVariableCells {
     /// matcher and the scanners read them.
     pub(crate) case_fold_search: Cell<Value>,
     pub(crate) parse_sexp_lookup_properties: Cell<bool>,
+    /// search.c's Vinhibit_changing_match_data, which looking_at_1,
+    /// string_match_1 and search_buffer read before they match.
+    pub(crate) inhibit_changing_match_data: Cell<Value>,
     /// keyboard.c's current_kboard, which the KBOARD variables' symbols
     /// forward to (Lisp_Kboard_Objfwd), and the kboard it names, which
     /// its terminal shares; `set_current_kboard' sets both.
@@ -70,6 +73,7 @@ impl CVariables {
             undo_inhibit_record_point: Cell::new(false),
             case_fold_search: Cell::new(Value::T),
             parse_sexp_lookup_properties: Cell::new(false),
+            inhibit_changing_match_data: Cell::new(Value::Nil),
             current_kboard: Cell::new(NonNull::from(&*kboard)),
             current_kboard_owner: RefCell::new(kboard),
         }))
@@ -107,7 +111,7 @@ impl CVariables {
 
     /// The Lisp objects the variables hold, for the mark phase: GNU's
     /// staticpro of each DEFVAR_LISP's C variable (lread.c:defvar_lisp).
-    pub(crate) fn objects(&self) -> [Value; 6] {
+    pub(crate) fn objects(&self) -> [Value; 7] {
         [
             self.quit_flag.get(),
             self.inhibit_quit.get(),
@@ -115,6 +119,7 @@ impl CVariables {
             self.overriding_plist_environment.get(),
             self.load_path.get(),
             self.case_fold_search.get(),
+            self.inhibit_changing_match_data.get(),
         ]
     }
 }
@@ -143,6 +148,7 @@ impl Clone for CVariables {
             undo_inhibit_record_point: self.undo_inhibit_record_point.clone(),
             case_fold_search: self.case_fold_search.clone(),
             parse_sexp_lookup_properties: self.parse_sexp_lookup_properties.clone(),
+            inhibit_changing_match_data: self.inhibit_changing_match_data.clone(),
             current_kboard: self.current_kboard.clone(),
             current_kboard_owner: RefCell::new(Rc::clone(&self.current_kboard_owner.borrow())),
         }))

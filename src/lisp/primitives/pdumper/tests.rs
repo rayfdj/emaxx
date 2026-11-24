@@ -3235,6 +3235,79 @@ fn image_buffers_hold_the_images_standard_tables_or_their_own() {
 }
 
 #[test]
+fn image_carries_inhibit_changing_match_data_s_c_variable() {
+    // search.c's Vinhibit_changing_match_data is staticpro'd: the image
+    // carries the C variable's value, which a forwarded symbol shares and
+    // a symbol `makunbound' made plain does not, and the loaded process's
+    // matchers read it.
+    fn eval(interp: &mut Interpreter, source: &str) -> Value {
+        let form = crate::lisp::reader::Reader::new(source)
+            .read()
+            .expect("the form parses")
+            .expect("a form");
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    }
+    for detached in [false, true] {
+        let mut source = Interpreter::new();
+        if detached {
+            eval(&mut source, "(makunbound 'inhibit-changing-match-data)");
+        }
+        eval(&mut source, "(setq inhibit-changing-match-data 'set)");
+        assert_eq!(
+            source.inhibit_changing_match_data(),
+            if detached {
+                Value::Nil
+            } else {
+                Value::symbol("set")
+            }
+        );
+        let mut ctx = DumpContext::new(false, source.main_thread_record_id());
+        if let Err(error) = write_image(&mut ctx, &source, RootSource::Interpreter) {
+            match error {
+                super::context::DumpError::Unsupported(unsupported) => {
+                    panic!("unsupported: {}", unsupported.message)
+                }
+                super::context::DumpError::Lisp(error) => panic!("dump: {error:?}"),
+            }
+        }
+        let bytes = ctx.buffer().to_vec();
+        let mut target = Interpreter::for_image();
+        let image =
+            load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+        target
+            .install_image(
+                &image,
+                crate::lisp::eval::PdumperLoadRecord {
+                    filename: "icmd.pdmp".into(),
+                    load_time: std::time::Duration::ZERO,
+                    dump_size: bytes.len() as u64,
+                },
+            )
+            .expect("install the image's symbols");
+        target
+            .init_after_pdump_load()
+            .expect("initialize the loaded process");
+        let answer = eval(
+            &mut target,
+            r#"(progn (set-match-data '(0 0))
+                      (list (string-match "b" "abc") (match-data) inhibit-changing-match-data))"#,
+        );
+        let match_data = if detached {
+            Value::list([Value::Integer(1), Value::Integer(2)])
+        } else {
+            Value::list([Value::Integer(0), Value::Integer(0)])
+        };
+        assert_eq!(
+            answer,
+            Value::list([Value::Integer(1), match_data, Value::symbol("set")]),
+            "detached {detached}"
+        );
+    }
+}
+
+#[test]
 fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
     // search.c's Vcase_fold_search and syntax.c's
     // parse_sexp_lookup_properties are C variables the image does not

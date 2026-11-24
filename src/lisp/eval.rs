@@ -5184,6 +5184,10 @@ impl Interpreter {
                 RootSlot::CaseFoldSearch,
                 self.c_variables.case_fold_search.get(),
             ),
+            (
+                RootSlot::InhibitChangingMatchData,
+                self.c_variables.inhibit_changing_match_data.get(),
+            ),
             (RootSlot::LoadsInProgress, self.loads_in_progress),
             (RootSlot::LocalTimeZoneRule, self.local_time_zone_rule),
             (RootSlot::FrameAndBufferState, self.frame_and_buffer_state),
@@ -6210,6 +6214,10 @@ impl Interpreter {
                 (&from.inhibit_quit, &to.inhibit_quit),
                 (&from.throw_on_input, &to.throw_on_input),
                 (&from.case_fold_search, &to.case_fold_search),
+                (
+                    &from.inhibit_changing_match_data,
+                    &to.inhibit_changing_match_data,
+                ),
                 (
                     &from.overriding_plist_environment,
                     &to.overriding_plist_environment,

@@ -11,7 +11,7 @@ use std::sync::atomic::Ordering;
 /// The C variables the evaluator reads, each in `c_variables' (or the
 /// symbol table's or the fault handler's), which its symbol forwards to
 /// (`connect_forwarded_eval_cells').
-const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 12] = [
+const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 13] = [
     cached_symbol!("quit-flag"),
     cached_symbol!("inhibit-quit"),
     cached_symbol!("throw-on-input"),
@@ -24,6 +24,7 @@ const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 12] = [
     cached_symbol!("attempt-orderly-shutdown-on-fatal-signal"),
     cached_symbol!("case-fold-search"),
     cached_symbol!("parse-sexp-lookup-properties"),
+    cached_symbol!("inhibit-changing-match-data"),
 ];
 
 /// Whether SYMBOL is one of the variables whose C variables the evaluator
@@ -46,6 +47,7 @@ pub(super) fn is_forwarded_eval_cell(symbol: &SymbolName) -> bool {
             | "attempt-orderly-shutdown-on-fatal-signal"
             | "case-fold-search"
             | "parse-sexp-lookup-properties"
+            | "inhibit-changing-match-data"
     ) && FORWARDED_EVAL_CELLS
         .iter()
         .any(|key| key.name() == symbol.as_str() && key.with(|cell| cell == symbol))
@@ -1666,7 +1668,8 @@ impl Interpreter {
             9 => LispFwd::StaticBool(crate::lisp::primitives::attempt_orderly_shutdown_variable()),
             10 => LispFwd::Obj(NonNull::from(&c.case_fold_search)),
             11 => LispFwd::Bool(NonNull::from(&c.parse_sexp_lookup_properties)),
-            _ => unreachable!("FORWARDED_EVAL_CELLS has twelve entries"),
+            12 => LispFwd::Obj(NonNull::from(&c.inhibit_changing_match_data)),
+            _ => unreachable!("FORWARDED_EVAL_CELLS has thirteen entries"),
         }
     }
 
@@ -1736,7 +1739,8 @@ impl Interpreter {
                 .store(truth, Ordering::Relaxed),
             10 => c.case_fold_search.set(*value),
             11 => c.parse_sexp_lookup_properties.set(truth),
-            _ => unreachable!("FORWARDED_EVAL_CELLS has twelve entries"),
+            12 => c.inhibit_changing_match_data.set(*value),
+            _ => unreachable!("FORWARDED_EVAL_CELLS has thirteen entries"),
         }
         if matches!(index, 0 | 5 | 6) {
             self.refresh_call_depth_gate();
@@ -1790,6 +1794,7 @@ impl Interpreter {
             }
             "case-fold-search" => Some(c.case_fold_search.get()),
             "parse-sexp-lookup-properties" => Some(truth(c.parse_sexp_lookup_properties.get())),
+            "inhibit-changing-match-data" => Some(c.inhibit_changing_match_data.get()),
             _ => None,
         }
     }
@@ -1884,6 +1889,13 @@ impl Interpreter {
 
     pub(crate) fn throw_on_input_value(&self) -> Value {
         self.c_variables.throw_on_input.get()
+    }
+
+    /// search.c's Vinhibit_changing_match_data, whichever binding of
+    /// `inhibit-changing-match-data' is in place.
+    #[inline]
+    pub(crate) fn inhibit_changing_match_data(&self) -> Value {
+        self.c_variables.inhibit_changing_match_data.get()
     }
 
     pub(crate) fn overriding_plist_environment_value(&self) -> Value {

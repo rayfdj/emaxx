@@ -589,6 +589,9 @@ pub(crate) enum RootSlot {
     /// buffer.c's staticpro'd Vcase_fold_search (DEFVAR_LISP), the C
     /// variable's own value, which a symbol `makunbound' detached keeps.
     CaseFoldSearch = 65,
+    /// search.c's staticpro'd Vinhibit_changing_match_data (DEFVAR_LISP),
+    /// as `CaseFoldSearch'.
+    InhibitChangingMatchData = 66,
 }
 
 impl RootSlot {
@@ -654,6 +657,7 @@ impl RootSlot {
             63 => Self::Prin1ToStringBuffer,
             64 => Self::MinibufferList,
             65 => Self::CaseFoldSearch,
+            66 => Self::InhibitChangingMatchData,
             _ => return None,
         })
     }

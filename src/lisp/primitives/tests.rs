@@ -1646,6 +1646,51 @@ fn the_matcher_calls_syntax_propertize_as_gnu() {
 }
 
 #[test]
+fn matchers_read_inhibit_changing_match_data_s_c_variable_as_gnu() {
+    // search.c's Vinhibit_changing_match_data, which the symbol forwards
+    // to: let-bound around looking-at, posix-looking-at, string-match,
+    // re-search-forward, search-forward, re-search-backward and
+    // looking-back, set with setq and back, and once `makunbound' has made
+    // the symbol plain (data.c:set_internal), when a setq no longer
+    // reaches the C variable the matchers read and the match data change
+    // again.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil)
+              (all (lambda ()
+                     (goto-char 1)
+                     (list (looking-at "fo\\(o\\)") (match-data t)
+                           (posix-looking-at "foo\\|fo") (match-data t)
+                           (string-match "b\\(a\\)" "xbar") (match-data t)
+                           (re-search-forward "ba\\(.\\)" nil t) (match-data t)
+                           (search-forward "z" nil t) (match-data t)
+                           (re-search-backward "\\(o\\)o" nil t) (match-data t)
+                           (looking-back "b" 1) (match-data t)))))
+          (with-temp-buffer
+            (insert "foo bar baz")
+            (set-match-data '(0 0))
+            (let ((inhibit-changing-match-data t))
+              (push (list 'let (funcall all)) r))
+            (push (list 'after-let (match-data t)) r)
+            (set-match-data '(0 0))
+            (setq inhibit-changing-match-data t)
+            (push (list 'setq (funcall all)) r)
+            (setq inhibit-changing-match-data nil)
+            (push (list 'setq-nil (funcall all)) r)
+            ;; makunbound makes the symbol plain: the C variable keeps nil.
+            (makunbound 'inhibit-changing-match-data)
+            (setq inhibit-changing-match-data t)
+            (set-match-data '(0 0))
+            (push (list 'detached inhibit-changing-match-data (funcall all)) r)
+            (let ((inhibit-changing-match-data nil))
+              (set-match-data '(0 0))
+              (push (list 'detached-let (funcall all)) r)))
+          (nreverse r))"#,
+        r##"((let (t (0 0) t (0 0) 1 (0 0) 8 (0 0) 12 (0 0) 2 (0 0) nil (0 0))) (after-let (0 0)) (setq (t (0 0) t (0 0) 1 (0 0) 8 (0 0) 12 (0 0) 2 (0 0) nil (0 0))) (setq-nil (t (1 4 3 4 #<killed buffer>) t (1 4 #<killed buffer>) 1 (1 3 2 3) 8 (5 8 7 8 #<killed buffer>) 12 (11 12 #<killed buffer>) 2 (2 4 2 3 #<killed buffer>) nil (2 4 2 3 #<killed buffer>))) (detached t (t (1 4 3 4 #<killed buffer>) t (1 4 #<killed buffer>) 1 (1 3 2 3) 8 (5 8 7 8 #<killed buffer>) 12 (11 12 #<killed buffer>) 2 (2 4 2 3 #<killed buffer>) nil (2 4 2 3 #<killed buffer>))) (detached-let (t (1 4 3 4 #<killed buffer>) t (1 4 #<killed buffer>) 1 (1 3 2 3) 8 (5 8 7 8 #<killed buffer>) 12 (11 12 #<killed buffer>) 2 (2 4 2 3 #<killed buffer>) nil (2 4 2 3 #<killed buffer>))))"##,
+        "inhibit-changing-match-data",
+    );
+}
+
+#[test]
 fn matches_read_syntax_classes_from_the_buffer_s_table_and_properties_as_gnu() {
     // RE_SETUP_SYNTAX_TABLE_FOR_OBJECT: \sw, \s-, \s(, \s), \s_, \s.
     // and the word and symbol boundaries read the buffer's syntax table

@@ -1277,11 +1277,11 @@ pub(crate) fn restore_search_regs(interp: &mut Interpreter) {
     }
 }
 
-/// Whether match data may change (`inhibit-changing-match-data' nil).
+/// Whether match data may change: search.c's
+/// NILP (Vinhibit_changing_match_data).
+#[inline]
 fn modify_match_data_allowed(interp: &Interpreter) -> bool {
-    !interp
-        .symbol_value_key(cached_symbol!("inhibit-changing-match-data"))
-        .is_some_and(|value| value.is_truthy())
+    interp.inhibit_changing_match_data().is_nil()
 }
 
 /// Store REGISTERS as the match data, through POSITION from text offsets.
