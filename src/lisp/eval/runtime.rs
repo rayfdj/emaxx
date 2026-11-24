@@ -571,27 +571,24 @@ impl Interpreter {
             .ok_or_else(|| nsberror(buffer_or_name))
     }
 
-    /// BUFFER's id when it is live (BUFFER_LIVE_P), else None.
+    /// BUFFER's id when it is live (BUFFER_LIVE_P), else None.  A buffer
+    /// is live exactly while it is registered: the registry holds the
+    /// live buffers, and a buffer leaves it as it is killed or as an
+    /// image's buffer of its id takes its place.
     pub(crate) fn live_buffer_id(&self, buffer: crate::lisp::types::BufferRef) -> Option<u64> {
-        self.buffer_object(buffer.id)
-            .is_some_and(|live| live.ptr_eq(&buffer))
-            .then_some(buffer.id)
+        buffer.is_live().then_some(buffer.id)
     }
 
     /// Resolve a Lisp string-or-buffer value to a live buffer ID.
     pub fn resolve_buffer_id(&self, value: &Value) -> Result<u64, LispError> {
-        match value.kind() {
-            Kind::Buffer(buffer)
-                if self
-                    .buffer_object(buffer.id)
-                    .is_some_and(|live| live.ptr_eq(&buffer)) =>
-            {
-                Ok(buffer.id)
-            }
+        match super::buffers::decode_live_buffer(value) {
+            Some(buffer) => Ok(buffer.id),
             // buffer.c:Fset_buffer checks the given object's liveness.
             // A reused name must never select a different allocation.
-            Kind::Buffer(_) => Err(LispError::Signal("Selecting deleted buffer".into())),
-            _ => Err(LispError::TypeError(
+            None if matches!(value.kind(), Kind::Buffer(_)) => {
+                Err(LispError::Signal("Selecting deleted buffer".into()))
+            }
+            None => Err(LispError::TypeError(
                 "string-or-buffer".into(),
                 value.type_name(),
             )),

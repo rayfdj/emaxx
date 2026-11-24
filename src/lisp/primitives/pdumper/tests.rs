@@ -3019,3 +3019,104 @@ fn image_buffers_take_the_places_of_the_loading_process_buffers_of_their_ids() {
         );
     }
 }
+
+#[test]
+fn image_killed_buffers_and_the_buffers_image_buffers_replace_are_not_live() {
+    // buffer.c's BUFFER_LIVE_P is a non-nil name.  pdumper.c dumps a
+    // killed buffer with its nil name, so the process that loads the
+    // image has it killed: GNU's buffer-live-p answers nil for it.  The
+    // loading process's own buffer that an image's buffer of the same id
+    // replaces is a buffer nothing of the session names, and answers as
+    // a killed one too, so that a buffer is live exactly while it is
+    // registered.
+    fn eval(interp: &mut Interpreter, source: &str) -> Value {
+        let form = crate::lisp::reader::Reader::new(source)
+            .read()
+            .expect("the form parses")
+            .expect("a form");
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    }
+    fn printed(interp: &mut Interpreter, value: &Value) -> String {
+        let value = crate::lisp::native_comp::call_c_primitive(
+            interp,
+            &mut crate::lisp::types::Env::new(),
+            "prin1-to-string",
+            std::slice::from_ref(value),
+        )
+        .unwrap_or_else(|error| panic!("prin1-to-string: {error:?}"));
+        string_like(&value).expect("a string").text
+    }
+    let mut source = Interpreter::new();
+    let graph = eval(
+        &mut source,
+        r#"(let ((killed (get-buffer-create "t5-killed"))
+                 (kind (make-indirect-buffer (get-buffer-create "t5-base") "t5-kind")))
+             (kill-buffer killed)
+             (kill-buffer kind)
+             (vector (current-buffer) killed kind))"#,
+    );
+    source.set_global_binding("t5-image", graph);
+    let mut ctx = DumpContext::new(false, source.main_thread_record_id());
+    if let Err(error) = write_image(&mut ctx, &source, RootSource::Interpreter) {
+        match error {
+            super::context::DumpError::Unsupported(unsupported) => {
+                panic!("unsupported: {}", unsupported.message)
+            }
+            super::context::DumpError::Lisp(error) => panic!("dump: {error:?}"),
+        }
+    }
+    let bytes = ctx.buffer().to_vec();
+    for image_process in [true, false] {
+        let mut target = if image_process {
+            Interpreter::for_image()
+        } else {
+            Interpreter::new()
+        };
+        let own_scratch = target
+            .buffer_object(target.current_buffer_id())
+            .expect("the process's *scratch*");
+        let image =
+            load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+        target
+            .install_image(
+                &image,
+                crate::lisp::eval::PdumperLoadRecord {
+                    filename: "t5-killed.pdmp".into(),
+                    load_time: std::time::Duration::ZERO,
+                    dump_size: bytes.len() as u64,
+                },
+            )
+            .expect("install the image's symbols");
+        if image_process {
+            target
+                .init_after_pdump_load()
+                .expect("initialize the loaded process");
+        }
+        target.set_global_binding("t5-own-scratch", Value::Buffer(own_scratch));
+        let probe = r#"
+          (cons (list (buffer-live-p (aref t5-image 0)) (eq (aref t5-image 0) (current-buffer)))
+                (mapcar (function (lambda (b)
+                                    (list (bufferp b) (buffer-live-p b) (buffer-name b)
+                                          (condition-case err (set-buffer b) (error err))
+                                          (condition-case err
+                                              (save-current-buffer (set-buffer b) (buffer-string))
+                                            (error err)))))
+                        (list (aref t5-image 1) (aref t5-image 2) t5-own-scratch)))"#;
+        let killed = "(t nil nil (error \"Selecting deleted buffer\") \
+                      (error \"Selecting deleted buffer\"))";
+        let expected = format!("((t t) {killed} {killed} {killed})");
+        for step in ["before", "after a collection"] {
+            let answer = eval(&mut target, probe);
+            assert_eq!(
+                printed(&mut target, &answer),
+                expected,
+                "image process {image_process}, {step}"
+            );
+            eval(&mut target, "(garbage-collect)");
+        }
+        assert!(!own_scratch.is_live());
+        assert!(target.current_buffer().is_live());
+    }
+}

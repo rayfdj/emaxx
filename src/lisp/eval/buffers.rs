@@ -1,5 +1,15 @@
 use super::*;
 
+/// buffer.c's `CHECK_BUFFER' and `BUFFER_LIVE_P' of VALUE: the buffer
+/// VALUE is, when it is a live one.
+#[inline]
+pub(crate) fn decode_live_buffer(value: &Value) -> Option<crate::lisp::types::BufferRef> {
+    match value.kind() {
+        Kind::Buffer(buffer) if buffer.is_live() => Some(buffer),
+        _ => None,
+    }
+}
+
 impl Interpreter {
     /// buffer.c:Fmake_indirect_buffer's link to the base, whose undo list
     /// the new buffer shares (Bug#18180).

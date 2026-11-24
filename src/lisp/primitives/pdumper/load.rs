@@ -1011,14 +1011,16 @@ impl Loader<'_> {
                     let id = self.reader.word(offset)?;
                     let flags = self.reader.word(offset + 8 * BUFFER_FLAGS)?;
                     if flags & BUFFER_FLAG_DEAD != 0 {
-                        // A killed buffer: the object, and nothing to
-                        // install but its id's reservation.
+                        // A killed buffer: the object, not live (its name
+                        // nil), and nothing to install but its id's
+                        // reservation.
                         self.interp.reserve_buffer_id(id);
-                        self.objects[number] =
-                            Value::Buffer(crate::lisp::types::BufferRef::for_restore(
-                                id,
-                                crate::buffer::Buffer::new(""),
-                            ));
+                        let object = crate::lisp::types::BufferRef::for_restore(
+                            id,
+                            crate::buffer::Buffer::named(Value::Nil),
+                        );
+                        object.live.set(false);
+                        self.objects[number] = Value::Buffer(object);
                         continue;
                     }
                     let name = self.value_at(offset + 8 * BUFFER_NAME)?;

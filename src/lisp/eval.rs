@@ -4287,6 +4287,8 @@ impl ImageGraphCopier {
                 }
                 let object =
                     crate::lisp::types::BufferRef::for_restore(buffer.id, buffer.borrow().clone());
+                // A killed buffer's copy is killed too.
+                object.live.set(buffer.is_live());
                 let copied = Value::Buffer(object);
                 self.buffers.insert(buffer.identity(), copied);
                 if let Some(mark) = buffer.mark_object() {
@@ -5390,11 +5392,24 @@ impl Interpreter {
     pub(crate) fn install_buffer(&mut self, buffer: crate::lisp::types::BufferRef) {
         let id = buffer.id;
         let name = buffer.borrow().name();
+        // The buffer it replaces, this process's own (its *scratch* or
+        // *Messages*), leaves the registry and is no live buffer: nothing
+        // of the loaded session names it.
+        let replaced = |old: crate::lisp::types::BufferRef| {
+            if !old.ptr_eq(&buffer) {
+                old.live.set(false);
+            }
+        };
         if id == self.current_buffer_id {
-            self.buffer = buffer;
+            replaced(std::mem::replace(&mut self.buffer, buffer));
         } else {
-            self.inactive_buffers
-                .retain(|(buffer_id, _)| *buffer_id != id);
+            self.inactive_buffers.retain(|(buffer_id, old)| {
+                let kept = *buffer_id != id;
+                if !kept {
+                    replaced(*old);
+                }
+                kept
+            });
             self.inactive_buffers.push((id, buffer));
         }
         match self
