@@ -34,7 +34,7 @@ A round's review answers whether the round cheats or breaks something; it does
 not survey the neighbourhood of the change. Current user instructions take
 precedence over this plan as over everything here.
 
-### M2: structure and performance — 5 of 30 done
+### M2: structure and performance — 6 of 30 done
 
 **Baseline of 23 November 2026**, on `394d57de` (round 366's source) under
 Rust 1.100.0, with GNU 30.2 on this host as the oracle.
@@ -183,6 +183,13 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   against 459, of `maphash' 415.9 against 291.  Ffuncall's part is
   level with GNU's; what is left is in the frame entry (the round's
   entry lists it by piece).
+- **Done: D25; D17 in progress** (round 383).  The call from C into
+  byte code is entered as funcall_lambda enters it (the plan:
+  docs/plans/d17-c-to-bytecode.md): a byte-compiled closure called by
+  `mapatoms' costs 458.0 instructions against GNU's 458.6 (503.0
+  before), a byte-compiled `mapc' callback 352.7 against 288.9 (415.7),
+  of `maphash' 355.0 against 291.1, of `mapatoms' 342.1 against 298.9.
+  The parked D130 is fixed with it.
 
 ## Where things stand — 15 October 2026
 
@@ -20275,6 +20282,95 @@ setup_process_coding_systems's check now refuses). A 13-form
   package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
   rustfmt clean.  The round audit reports no hard finding, 1,040
   changed lines with 10 tests and 23 assertions added.
+- **Round 383: byte code that C calls is entered as funcall_lambda
+  enters it (M2, D25 done, D17 not closed; the parked D130 fixed).**
+  The first four stages of the plan of the call from C into byte code
+  (docs/plans/d17-c-to-bytecode.md), with three fixes the review asked
+  for.  **The tests first**: what Lisp sees of a byte-code callback of
+  `mapcar', `maphash', `mapc', `funcall' and `apply' (the debugger on
+  a marked frame and at the next call, throws and signals out, the
+  backtrace's depth, an argument only the call holds through a
+  collection, re-entry, a callback that redefines itself, two threads
+  yielding from their callbacks, the interpreted caller's environment
+  as `eval', `backtrace--locals', `backtrace-eval' and `macroexpand'
+  see it); and hand-made byte code returning to C with a binding or a
+  catch left, which GNU keeps and a later throw then crashes it, where
+  Emaxx undoes both.  **Lexical byte code runs in its caller's
+  environment**: funcall_lambda gives a lexical function's arguments to
+  exec_byte_code with no binding of internal-interpreter-environment
+  and binds it to nil only for a dynamic-binding function, after the
+  formals; every call from Rust into byte code pushed a nil environment
+  frame over a lexical one, so a subr the byte code called found the
+  caller's environment saved and not in effect.  The frame is gone for
+  lexical byte code, and for dynamic-binding byte code the binding is a
+  specpdl entry of its own (UnwindAction::InterpreterEnvironment) made
+  after the formals, undone with them on a return, an unwind or a stack
+  overflow's exit; Fbyte_code binds none, as GNU's.  **The entry is in
+  Ffuncall's own frame**: the call from C was three Rust frames where
+  GNU's is two, and a closure whose cached program takes the arguments
+  now enters its frame and the loop at once.  **The record leaves as
+  specpdl_ptr--**: after the call returns, the record is read once for
+  its debug-on-exit flag and popped by the length.  **The review's
+  fixes**: dynamic-binding byte code called from lexical byte code
+  under a non-nil environment is entered in place (it took the full
+  call, so the first fix had made such calls nearly twice as slow);
+  a watcher of a formal runs with the environment not yet saved, as
+  funcall_lambda's order has it; the tests of rooting and of threads
+  check what they say; and an in-place return undoes the frame's
+  bindings before the exit debugger runs, as funcall_lambda's
+  unbind_to returns before Ffuncall's backtrace_debug_on_exit (it ran
+  with the formals bound, older than the round for dynamic-to-dynamic
+  calls).  **Lisp sees these changes, each now GNU's**: `defvar-1',
+  `defconst-1' and `internal--define-uninitialized-variable' in byte
+  code called by `mapcar', `funcall', `apply', the interpreter or
+  native code, of a name the interpreted caller's `let' binds
+  lexically, define the variable, where they signaled "Defining as
+  dynamic an already lexical var" (the parked D130); `backtrace-eval'
+  at the frame of its own call evaluates in the caller's environment;
+  the forms the obsolete `catch', `condition-case',
+  `save-window-excursion' and `unwind-protect' ops evaluate read the
+  caller's lexical bindings, where they signaled void-variable;
+  `defvar-1' in a watcher of a dynamic-binding function's formal, at
+  its `let' or `unlet', defines the name; the exit debugger of a
+  dynamic-binding callee sees the global value of its formal, where it
+  saw the binding.  **Counts** (callgrind, the release build; before =
+  round 379's build, the call paths unchanged since): a byte-compiled
+  `mapc' callback 415.7 instructions, 352.7 after (GNU 288.9);
+  `maphash' 417.9 to 355.0 (291.1); `mapatoms' 405.1 to 342.1 (298.9),
+  a closure there 503.0 to 458.0 (GNU 458.6: D25 is done); lexical
+  byte code calling dynamic-binding byte code at a file's top level
+  (the new probe `lex-dyn-calls') 690.6 to 876.6 (GNU 1,063.0), the
+  binding of the environment GNU also makes; the dynamic recursion
+  631.0 to 634.0 (GNU 636.2; D9 closed at 634.0), the lexical one 357.1
+  to 358.1 (314.9), the suite's byte-code-calls loop 444.9 to 446.2
+  (468.1); a subr called by `mapc' 191.7 to 193.7 and an interpreted
+  callback 1,452.0 to 1,454.2 (call_function_value's frame holds the
+  byte-code entry's state); the other guards within one instruction.
+  The independent review (the one question: does the round cheat or
+  break something) read each stage and ran probes on GNU, the build
+  before and each version.  It found the stages sound and no cheat; its
+  first reading sent back the slow call, the watcher's order and the
+  two tests; its second found that the first fix made the exit debugger
+  of an in-place dynamic callee run before its bindings were undone and
+  that the dynamic recursion's three instructions over D9's count were
+  Emaxx's own; its third found both fixed, the dynamic recursion back at
+  634.0 and the exit debugger GNU's in every case it tried (a watcher
+  that signals at the unbinding, a marked callee that throws out,
+  nested marked frames, `backtrace-frame' and `backtrace--locals' from
+  inside the debugger, a debugger that signals or throws), no cheat and
+  nothing broken.  What the new probe pays over the build before (876.6
+  against 690.6, the binding GNU also makes aside) is the entry split
+  that keeps the dynamic recursion at 634.0 (+35) and the environment's
+  undo out of line on the return (+43); a lexical-to-dynamic call takes
+  0.137 s for three million against GNU's 0.150 and the build before's
+  0.104.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,595 passed, 0 failed, 2 ignored (two
+  library tests more); cli 30, cli_parity 184 (seven more), ert_runner
+  3, native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 857 changed
+  lines with 9 tests and 10 assertions added.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23647,6 +23743,19 @@ ert-tests as a whole 26,307 ms against 27,211.
   tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 383 and its review), outside the
+  round and in no milestone.**  One line each: after an in-place
+  `(defvar Y)' inside a `let', lexbound_p still finds the `let''s
+  environment saved, so `defvar-1' of a name that `let' binds
+  lexically signals "Defining as dynamic an already lexical var" where
+  GNU defines it (older than the round; no byte code needed); which
+  thread runs after `thread-yield' differs from GNU's, whose order is
+  the OS scheduler's (GNU ran the main thread's whole `mapc' first in
+  six runs of six, Emaxx alternates at each yield), and `defvar-1' in a
+  dynamic callee after a yield answers ok where GNU signals; the C
+  stack overflow's exit restores the interpreter's environment where
+  GNU's longjmp leaves it as it was (GNU crashes in every batch case
+  tried, so the two cannot be compared).
 - **Found after the scope lock (round 382 and its review), outside the
   round and in no milestone.**  One line each: `char-equal' reads
   `case-fold-search''s Lisp binding, not the C word, which shows only

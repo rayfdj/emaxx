@@ -43,7 +43,7 @@ unfinished work pushed as a packaged draft (wip/r367).
 
 This document.
 
-## M2. Structure and performance (30 items; 5 done)
+## M2. Structure and performance (30 items; 6 done)
 
 Exit test: the remaining representation, collector and ownership engineering
 is done, the recorded per-call excesses are removed where GNU does less, and
@@ -122,12 +122,14 @@ interval within 0.97 and 1.03).
 - D14: make-symbol ~690 instructions (round 173)
   **Done** (round 379: 1,280 against 1,965 a call).
 - D17: Rust-to-byte-code call ~120 instructions over GNU (rounds 167, 297).
-  In progress (round 370: 414 against 289 a `mapc' callback, was 458).
+  In progress (round 370: 414 against 289 a `mapc' callback, was 458;
+  round 383: 352.7).
 - D22: Building ucs-names costs 1,024M vs 818M instructions (round 162)
 - D23: Reading a large file still costs 85M vs 67M instructions (rounds 161,
   175). **Done** (baseline of 23 November 2026: 60.0M against 67.2M).
 - D25: Closure entry from Rust 807 vs 639 instructions per mapatoms callback
   (rounds 159, 160). In progress (round 370: 501 against 459, was 548).
+  **Done** (round 383: 458.0 against 458.6 a callback).
 - D43: Library tests share one process heap and are not thread-safe (parallel
   runs crash)
 - D125: Interpreted code and the call from C to a Lisp function are slower
@@ -557,3 +559,4 @@ Exit test: none; outside the goal by the owner's decision of 23 November 2026.
 - D130: Byte code runs under an environment frame GNU does not have (round
   366's review): a byte-compiled function that declares a caller's lexical
   variable s…
+  **Fixed** (round 383, with D17's stages).
