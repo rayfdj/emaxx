@@ -2025,6 +2025,18 @@ impl Buffer {
         self.positions_away = !current;
     }
 
+    /// After Fbuffer_swap_text gave the buffer the other's pt_marker,
+    /// begv_marker and zv_marker: buffer.h's BUF_PT, BUF_BEGV and BUF_ZV
+    /// of a buffer that is not current and has the markers are theirs
+    /// (fetch_buffer_markers reads them as it becomes current), the
+    /// current buffer's are its own fields.
+    pub(crate) fn take_swapped_position_markers(&mut self, current: bool) {
+        self.positions_away = !current && self.position_markers.is_some();
+        if self.positions_away {
+            self.fetch_position_markers();
+        }
+    }
+
     /// set_buffer_internal_2 leaving the buffer: record_buffer_markers.
     pub(crate) fn leave_position_markers(&mut self) {
         self.record_position_markers();
@@ -4656,6 +4668,11 @@ impl Buffer {
         self.set_window_count(other_count);
         other.set_window_count(count);
         std::mem::swap(&mut self.pt, &mut other.pt);
+        // swapfield_ (pt_marker, Lisp_Object), begv_marker and zv_marker:
+        // the markers go with the text, on whose chain they are.  Which
+        // buffer then reads its point from them is the caller's to say
+        // (`take_swapped_position_markers').
+        std::mem::swap(&mut self.position_markers, &mut other.position_markers);
         std::mem::swap(&mut self.mark_active, &mut other.mark_active);
         std::mem::swap(&mut self.begv, &mut other.begv);
         std::mem::swap(&mut self.zv, &mut other.zv);

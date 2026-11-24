@@ -632,6 +632,15 @@ define_dispatch!(
                     ));
                 }
                 interp.swap_buffer_text_state(current_id, other_id)?;
+                // bset_point_before_scroll (current_buffer, Qnil), and the
+                // other's.
+                for buffer_id in [current_id, other_id] {
+                    interp.set_buffer_local_value_key(
+                        buffer_id,
+                        cached_symbol!("point-before-scroll"),
+                        Value::Nil,
+                    );
+                }
                 // "Some of the C code expects that both window markers of
                 // a live window points to that window's buffer.  So since
                 // we just swapped the markers between the two buffers, we

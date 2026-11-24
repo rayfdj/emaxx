@@ -688,55 +688,31 @@ impl Interpreter {
         }
     }
 
+    /// buffer.c:Fbuffer_swap_text's exchange of the two buffers' texts
+    /// and the fields that go with them (`Buffer::swap_text_state'), then
+    /// `swapfield (indirections, ptrdiff_t)'; each buffer then reads its
+    /// point and bounds from the markers it was given unless it is the
+    /// current one.
     pub fn swap_buffer_text_state(&mut self, left_id: u64, right_id: u64) -> Result<(), LispError> {
         if left_id == right_id {
             return Ok(());
         }
-        if left_id == self.current_buffer_id {
-            let pos = self
-                .inactive_buffers
-                .iter()
-                .position(|(buffer_id, _)| *buffer_id == right_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", right_id)))?;
-            let state = &mut **self;
-            let (buffer, inactive_buffers) = (&mut state.buffer, &mut state.inactive_buffers);
-            buffer
-                .borrow_mut()
-                .swap_text_state(&mut inactive_buffers[pos].1.borrow_mut());
-            return Ok(());
-        }
-        if right_id == self.current_buffer_id {
-            let pos = self
-                .inactive_buffers
-                .iter()
-                .position(|(buffer_id, _)| *buffer_id == left_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", left_id)))?;
-            let state = &mut **self;
-            let (buffer, inactive_buffers) = (&mut state.buffer, &mut state.inactive_buffers);
-            buffer
-                .borrow_mut()
-                .swap_text_state(&mut inactive_buffers[pos].1.borrow_mut());
-            return Ok(());
-        }
-
-        let left_index = self
-            .inactive_buffers
-            .iter()
-            .position(|(buffer_id, _)| *buffer_id == left_id)
-            .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", left_id)))?;
-        let right_index = self
-            .inactive_buffers
-            .iter()
-            .position(|(buffer_id, _)| *buffer_id == right_id)
-            .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", right_id)))?;
-        let (first, second) = if left_index < right_index {
-            let (left_slice, right_slice) = self.inactive_buffers.split_at_mut(right_index);
-            (&mut left_slice[left_index].1, &mut right_slice[0].1)
-        } else {
-            let (right_slice, left_slice) = self.inactive_buffers.split_at_mut(left_index);
-            (&mut left_slice[0].1, &mut right_slice[right_index].1)
+        let object = |interp: &Self, id: u64| {
+            interp
+                .buffer_object(id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", id)))
         };
-        first.borrow_mut().swap_text_state(&mut second.borrow_mut());
+        let left = object(self, left_id)?;
+        let right = object(self, right_id)?;
+        left.borrow_mut().swap_text_state(&mut right.borrow_mut());
+        // No indirect buffer is in sight, so both counts are 0.
+        let indirections = left.indirections.get();
+        left.indirections.set(right.indirections.get());
+        right.indirections.set(indirections);
+        for buffer in [left, right] {
+            let current = buffer.ptr_eq(&self.buffer);
+            buffer.borrow_mut().take_swapped_position_markers(current);
+        }
         Ok(())
     }
 

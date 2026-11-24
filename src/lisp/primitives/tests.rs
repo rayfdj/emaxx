@@ -720,6 +720,89 @@ fn a_base_keeps_its_point_and_bounds_after_its_indirect_buffer_dies_as_gnu() {
 }
 
 #[test]
+fn buffer_swap_text_gives_each_buffer_the_other_s_point_markers_as_gnu() {
+    // buffer.c:Fbuffer_swap_text swaps pt_marker, begv_marker and
+    // zv_marker (swapfield_) with the text, whose chain holds them: a
+    // buffer that once had an indirect buffer keeps them, and after a
+    // swap the other buffer has them and, not being current, reads its
+    // point and bounds from them (BUF_PT; fetch_buffer_markers as it
+    // becomes current), even where the current buffer's point moved
+    // after they were last recorded.  The buffer that leaves with no
+    // markers records none.  An unrelated indirect family is alive
+    // throughout; point-before-scroll goes nil in both buffers.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((former (lambda (text tag)
+                          (let ((b (generate-new-buffer tag)))
+                            (with-current-buffer b (insert text)
+                              (kill-buffer (make-indirect-buffer b (concat tag "-i"))))
+                            b)))
+                (plain (lambda (text tag)
+                         (let ((b (generate-new-buffer tag)))
+                           (with-current-buffer b (insert text))
+                           b)))
+                (pos (lambda (b) (with-current-buffer b (list (point) (point-min) (point-max) (buffer-size)))))
+                (alive (make-indirect-buffer (get-buffer-create "sw-unrelated") "sw-unrelated-i"))
+                (r nil))
+           ;; The current buffer once had an indirect buffer.
+           (let ((b (funcall former "0123456789" "sw-b")) (o (funcall plain "abcdefghijklmnopqrst" "sw-o")))
+             (with-current-buffer b (goto-char 4))
+             (with-current-buffer o (goto-char 2))
+             (with-current-buffer b (buffer-swap-text o))
+             (with-current-buffer b (goto-char 15) (narrow-to-region 3 18))
+             (with-current-buffer o (goto-char 1) (insert "XXXXX"))
+             (push (list (funcall pos b) (funcall pos o) (with-current-buffer o (buffer-string))) r))
+           ;; The other buffer did.
+           (let ((b (funcall plain "0123456789" "sw3-b")) (o (funcall former "abcdefghijklmnopqrst" "sw3-o")))
+             (with-current-buffer b (goto-char 4))
+             (with-current-buffer o (goto-char 2))
+             (with-current-buffer b (buffer-swap-text o))
+             (with-current-buffer o (goto-char 8) (narrow-to-region 2 9))
+             (with-current-buffer b (goto-char 1) (insert "XXXXX"))
+             (push (list (funcall pos b) (funcall pos o)) r))
+           ;; Point moved in the current buffer after its markers were last recorded.
+           (let ((b (funcall former "0123456789" "sm-b")) (o (funcall plain "abcdefghijklmnopqrst" "sm-o")))
+             (with-current-buffer b (goto-char 4))
+             (with-current-buffer o (goto-char 2))
+             (push (with-current-buffer b (goto-char 7) (narrow-to-region 2 9) (buffer-swap-text o) (funcall pos b)) r)
+             (push (list (funcall pos b) (funcall pos o)
+                         (with-current-buffer o (goto-char 3) (insert "Z") (funcall pos o)))
+                   r))
+           ;; Both did, and the text is swapped back.
+           (let ((b (funcall former "0123456789" "sb-b")) (o (funcall former "abcdefghijklmnopqrst" "sb-o")))
+             (with-current-buffer b (goto-char 4))
+             (with-current-buffer o (goto-char 9) (narrow-to-region 3 12))
+             (with-current-buffer b (buffer-swap-text o))
+             (push (list (funcall pos b) (funcall pos o)
+                         (with-current-buffer o (buffer-swap-text b) (funcall pos o))
+                         (with-current-buffer b (goto-char 1) (insert "QQ") (funcall pos b))
+                         (funcall pos o))
+                   r))
+           ;; Deletions in the buffer that got the markers.
+           (let ((b (funcall former "0123456789abcdefghijklmnopqrstuvwxyz" "sd-b")) (o (funcall plain "ééééé" "sd-o")))
+             (with-current-buffer b (goto-char 4))
+             (with-current-buffer o (goto-char 2))
+             (with-current-buffer b (buffer-swap-text o))
+             (with-current-buffer o (goto-char 30))
+             (with-current-buffer b (goto-char 4))
+             (with-current-buffer o (delete-region 1 30))
+             (push (list (funcall pos b) (funcall pos o) (with-current-buffer b (buffer-string))) r)
+             (with-current-buffer o (erase-buffer))
+             (garbage-collect)
+             (push (list (funcall pos b) (funcall pos o)) r))
+           ;; point-before-scroll goes nil in both.
+           (let ((b (funcall plain "bbb" "sv-b")) (o (funcall plain "ooooo" "sv-o")))
+             (with-current-buffer b (setq point-before-scroll 2))
+             (with-current-buffer o (setq point-before-scroll 3))
+             (with-current-buffer b (buffer-swap-text o))
+             (push (list (with-current-buffer b point-before-scroll) (with-current-buffer o point-before-scroll)) r))
+           (kill-buffer (buffer-base-buffer alive))
+           (nreverse r))"#,
+        r##"(((15 3 18 20) (6 1 16 15) "XXXXX0123456789") ((6 1 26 25) (8 2 9 10)) (2 1 21 20) ((2 1 21 20) (4 1 11 10) (4 1 12 11)) ((9 3 12 20) (4 1 11 10) (9 3 12 20) (3 1 13 12) (9 3 12 20)) ((4 1 6 5) (1 1 8 7) "ééééé") ((4 1 6 5) (1 1 1 0)) (nil nil))"##,
+        "buffer-swap-text and the point markers",
+    );
+}
+
+#[test]
 fn killed_buffers_keep_what_fkill_buffer_leaves_as_gnu() {
     // buffer.c:Fkill_buffer: the name nil, BUFFER_LIVE_P false; the
     // file name and truename and the directory kept, the other slots as
