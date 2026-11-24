@@ -4956,9 +4956,14 @@ impl LispReachability {
                 }
             }
             Kind::Buffer(buffer) => {
+                // alloc.c:mark_buffer: the buffer's Lisp words and its
+                // base_buffer.
                 buffer
                     .borrow()
                     .visit_lisp_values(&mut |child| self.enqueue(child));
+                if let Some(base) = buffer.base_buffer() {
+                    self.enqueue(&Value::Buffer(base));
+                }
             }
             Kind::Terminal(terminal) => {
                 terminal.visit_lisp_values(&mut |child| self.enqueue(child));
@@ -7055,8 +7060,6 @@ pub struct InterpreterState {
     specpdl: Vec<SpecpdlEntry>,
     /// Marker-tracked labeled restrictions, with the innermost entry last.
     labeled_restrictions: Vec<LabeledRestriction>,
-    /// Indirect buffer mapping: (buffer id, base buffer id).
-    indirect_buffers: Vec<(u64, u64)>,
     /// GNU connect_counter: numbers accepted server-child connections
     /// (unix children are named "NAME <N>" from it).
     pub(crate) network_connect_counter: u64,
@@ -7827,7 +7830,6 @@ impl Interpreter {
             buffer_category_tables: coding::BufferCharTables::default(),
             specpdl: Vec::new(),
             labeled_restrictions: Vec::new(),
-            indirect_buffers: Vec::new(),
             network_connect_counter: 0,
             function_binding_generation: 0,
             current_load_file: None,

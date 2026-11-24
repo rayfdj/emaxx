@@ -41,6 +41,29 @@ impl RecordKey for &RecordRef {
 /// update_mode_lines asking for the windows marked, not all of them.
 pub(crate) const REDISPLAY_SOME: i32 = 2;
 
+/// buffer.c:set_buffer_internal_2's sharing of a base buffer's undo
+/// list: the list of OLD, when indirect, goes back into its base, and
+/// NEW, when indirect, takes its base's.  An indirect buffer or a base
+/// that is killed shares nothing.
+fn share_undo_list_with_base(
+    old: crate::lisp::types::BufferRef,
+    new: crate::lisp::types::BufferRef,
+) {
+    let live_base = |buffer: crate::lisp::types::BufferRef| {
+        buffer
+            .text_base()
+            .filter(crate::lisp::types::BufferRef::is_live)
+    };
+    if let Some(base) = live_base(old) {
+        let list = old.borrow().undo_list();
+        base.borrow_mut().set_undo_list(list);
+    }
+    if let Some(base) = live_base(new) {
+        let list = base.borrow().undo_list();
+        new.borrow_mut().set_undo_list(list);
+    }
+}
+
 impl Interpreter {
     pub(crate) fn inhibit_garbage_collection(&mut self) {
         self.garbage_collection_inhibited = self.garbage_collection_inhibited.saturating_add(1);
@@ -676,42 +699,20 @@ impl Interpreter {
             self.inactive_buffers.push((current_id, current_buffer));
         }
         self.current_buffer_id = id;
-        if !self.indirect_buffers.is_empty() {
-            self.share_undo_list_with_base(current_id, id);
-            // record_buffer_markers of the old buffer, fetch_buffer_markers
-            // of the new.
-            current_buffer.borrow_mut().leave_position_markers();
-            self.buffer.borrow_mut().enter_position_markers();
-        }
+        share_undo_list_with_base(current_buffer, self.buffer);
+        // record_buffer_markers of the old buffer and fetch_buffer_markers
+        // of the new, each for a buffer that has the markers.
+        current_buffer.borrow_mut().leave_position_markers();
+        let mut buffer = self.buffer.borrow_mut();
+        buffer.enter_position_markers();
         // The C variable record_point reads, which a buffer made since its
         // last store has yet to hold.
-        self.buffer
-            .borrow_mut()
-            .set_undo_inhibit_record_point(self.undo_inhibit_record_point);
+        buffer.set_undo_inhibit_record_point(self.undo_inhibit_record_point);
+        drop(buffer);
         // A localized GNU forwarding symbol loads the newly current
         // buffer's cell into its C variable during a buffer switch.
         self.refresh_forwarded_eval_cells_after_switch(current_id);
         Ok(())
-    }
-
-    /// buffer.c:set_buffer_internal_2's sharing of a base buffer's undo
-    /// list: the list of OLD, when indirect, goes back into its base, and
-    /// NEW, when indirect, takes its base's.
-    fn share_undo_list_with_base(&mut self, old: u64, new: u64) {
-        if let Some(base) = self.buffer_base_id(old) {
-            let list = self.get_buffer_by_id(old).map(|buffer| buffer.undo_list());
-            if let Some(list) = list
-                && let Some(mut base) = self.get_buffer_by_id_mut(base)
-            {
-                base.set_undo_list(list);
-            }
-        }
-        if let Some(base) = self.buffer_base_id(new) {
-            let list = self.get_buffer_by_id(base).map(|buffer| buffer.undo_list());
-            if let Some(list) = list {
-                self.buffer.borrow_mut().set_undo_list(list);
-            }
-        }
     }
 
     /// buffer.c:record_buffer: a buffer to the front of the buffer list,
@@ -2699,9 +2700,13 @@ impl Interpreter {
             self.set_symbol_value_cell_resolved(&inhibit_quit, tem);
         }
         self.detach_markers_for_buffer(id);
-        // An indirect buffer stops sharing its base's text (and chain).
-        if let Some(object) = self.buffer_object(id) {
-            object.leave_marker_chain();
+        // An indirect buffer's base has one buffer fewer sharing its text
+        // (once: a window's replacement may have killed it already);
+        // base_buffer stays (Fbuffer_base_buffer of a killed buffer).
+        if let Some(object) = self.buffer_object(id)
+            && object.is_live()
+        {
+            object.note_indirect_killed();
         }
         self.delete_buffer_overlays(id);
         // The always-local slots the bindings hold, and the mark's state,
@@ -2724,8 +2729,6 @@ impl Interpreter {
         self.reset_buffer_category_table(id);
         self.labeled_restrictions
             .retain(|restriction| restriction.buffer_id != id);
-        self.indirect_buffers
-            .retain(|(buffer_id, base_id)| *buffer_id != id && *base_id != id);
         if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
             buffer.set_keymap(Value::Nil);
         }

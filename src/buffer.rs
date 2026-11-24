@@ -132,13 +132,6 @@ pub struct Buffer {
     /// buffer and back records them.
     positions_away: bool,
 
-    /// buffer.h's base_buffer: the buffer whose text an indirect buffer
-    /// was made to share, kept once it is killed (Fbuffer_base_buffer).
-    base_buffer: Option<BufferRef>,
-
-    /// Whether Fkill_buffer killed the buffer (GNU's nil name).
-    pub(crate) killed: bool,
-
     /// BUF_Z - BUF_BEG, BUF_BEGV and BUF_ZV as a killed buffer's freed
     /// text left them: GNU's free_buffer_text frees the text and keeps its
     /// positions.
@@ -264,8 +257,6 @@ impl Clone for Buffer {
             })),
             position_markers: None,
             positions_away: false,
-            base_buffer: None,
-            killed: self.killed,
             killed_size: self.killed_size,
             killed_bounds: self.killed_bounds,
             killed_locals: self.killed_locals.clone(),
@@ -1318,8 +1309,6 @@ impl Buffer {
             text: Rc::new(RefCell::new(text)),
             position_markers: None,
             positions_away: false,
-            base_buffer: None,
-            killed: false,
             killed_size: 0,
             killed_bounds: (1, 1),
             killed_locals: None,
@@ -1405,8 +1394,6 @@ impl Buffer {
             text: Rc::new(RefCell::new(text)),
             position_markers: None,
             positions_away: false,
-            base_buffer: None,
-            killed: false,
             killed_size: 0,
             killed_bounds: (1, 1),
             killed_locals: None,
@@ -2003,16 +1990,10 @@ impl Buffer {
     }
 
     /// Fmake_indirect_buffer's `b->text = b->base_buffer->text': this
-    /// buffer, made empty for it, takes the text of BASE (BASE_OBJECT).
-    pub(crate) fn share_text_of(&mut self, base: &Buffer, base_object: BufferRef) {
+    /// buffer, made empty for it, takes the text of BASE.
+    pub(crate) fn share_text_of(&mut self, base: &Buffer) {
         self.text = Rc::clone(&base.text);
         self.multibyte = base.multibyte;
-        self.base_buffer = Some(base_object);
-    }
-
-    /// b->base_buffer.
-    pub(crate) fn base_buffer(&self) -> Option<BufferRef> {
-        self.base_buffer
     }
 
     /// BVAR (b, pt_marker), begv_marker and zv_marker, when it has them.
@@ -2532,9 +2513,6 @@ impl Buffer {
             for marker in [markers.pt, markers.begv, markers.zv] {
                 visit(&Value::Marker(marker));
             }
-        }
-        if let Some(base) = self.base_buffer {
-            visit(&Value::Buffer(base));
         }
         if let Some(intervals) = &self.text.borrow().intervals {
             for plist in intervals.plists() {
@@ -4393,7 +4371,6 @@ impl Buffer {
     /// retains the buffer object.  GNU Fkill_buffer clears undo, intervals
     /// and overlays and frees text; file slots remain readable afterwards.
     pub(crate) fn release_killed_storage(&mut self) {
-        self.killed = true;
         self.killed_size = self.size_total();
         self.killed_bounds = (self.point_min(), self.point_max());
         // free_buffer_text: the dead buffer leaves its text, which an
@@ -4473,8 +4450,6 @@ impl Buffer {
             })),
             position_markers: None,
             positions_away: false,
-            base_buffer: None,
-            killed: false,
             killed_size: 0,
             killed_bounds: (1, 1),
             killed_locals: None,

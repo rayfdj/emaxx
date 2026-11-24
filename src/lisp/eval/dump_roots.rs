@@ -388,7 +388,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "image_reconstruction_handoff",
         "the startup reconstruction's flag",
     ),
-    ("indirect_buffers", "written as each buffer's base"),
     (
         "network_connect_counter",
         "the running process's connections",

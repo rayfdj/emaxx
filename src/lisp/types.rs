@@ -1060,9 +1060,14 @@ pub struct BufferValue {
     /// Weak chain, as in buffer_text.markers. It does not keep markers alive.
     /// An indirect buffer's markers are on its base's chain, the one text's.
     pub(crate) markers: Cell<Option<MarkerRef>>,
-    /// buffer.h's base_buffer while the buffer shares its base's text:
-    /// whose chain holds its markers.
-    pub(crate) base: Cell<Option<BufferRef>>,
+    /// buffer.h's base_buffer: the buffer whose text an indirect buffer
+    /// was made to share, kept once either is killed (Fbuffer_base_buffer
+    /// of a killed buffer answers it).  A live indirect buffer's text and
+    /// marker chain are its base's.
+    pub(crate) base_buffer: Cell<Option<BufferRef>>,
+    /// buffer.h's indirections: -1 in an indirect buffer; in another, the
+    /// number of indirect buffers that share its text and are not killed.
+    pub(crate) indirections: Cell<i32>,
     /// The editable object, not a name/id proxy for an interpreter-owned copy.
     /// Rust callers must end these borrows before entering Lisp or collecting.
     pub(crate) state: RefCell<crate::buffer::Buffer>,
@@ -1207,7 +1212,8 @@ impl BufferRef {
         Self::allocate(BufferValue {
             id,
             markers: Cell::new(None),
-            base: Cell::new(None),
+            base_buffer: Cell::new(None),
+            indirections: Cell::new(0),
             state: RefCell::new(buffer),
             live: Cell::new(true),
         })

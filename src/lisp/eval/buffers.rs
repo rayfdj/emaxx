@@ -11,10 +11,10 @@ pub(crate) fn decode_live_buffer(value: &Value) -> Option<crate::lisp::types::Bu
 }
 
 impl Interpreter {
-    /// buffer.c:Fmake_indirect_buffer's link to the base, whose undo list
-    /// the new buffer shares (Bug#18180).
-    pub fn register_indirect_buffer(&mut self, buffer_id: u64, base_id: u64) {
-        self.indirect_buffers.push((buffer_id, base_id));
+    /// buffer.c:Fmake_indirect_buffer's `bset_undo_list (b, BVAR
+    /// (b->base_buffer, undo_list))': the new buffer shares its base's
+    /// undo list (Bug#18180).
+    pub fn take_base_undo_list(&mut self, buffer_id: u64, base_id: u64) {
         let base_undo = self.get_buffer_by_id(base_id).map(|base| base.undo_list());
         if let Some(list) = base_undo
             && let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id)
@@ -201,11 +201,13 @@ impl Interpreter {
             .set_point_before_last_command_or_undo(Some(point));
     }
 
+    /// The base of buffer BUFFER_ID, a live indirect buffer, while the
+    /// base is live too.
     pub fn buffer_base_id(&self, buffer_id: u64) -> Option<u64> {
-        self.indirect_buffers
-            .iter()
-            .find(|(id, _)| *id == buffer_id)
-            .map(|(_, base_id)| *base_id)
+        self.buffer_object(buffer_id)?
+            .text_base()
+            .filter(crate::lisp::types::BufferRef::is_live)
+            .map(|base| base.id)
     }
 
     pub fn root_buffer_id(&self, mut buffer_id: u64) -> u64 {
@@ -215,10 +217,19 @@ impl Interpreter {
         buffer_id
     }
 
+    /// The buffers of Vbuffer_alist that share the text of buffer
+    /// BUFFER_ID, in the list's order: its indirect family, or the buffer
+    /// alone when its text is its own (the current buffer counted even
+    /// when the list does not hold it).
     pub fn related_buffer_ids(&self, buffer_id: u64) -> smallvec::SmallVec<[u64; 4]> {
-        if self.indirect_buffers.is_empty() {
-            // Every buffer is its own root: BUFFER_ID's text is its own,
-            // and the current buffer is live.
+        let root = self.buffer_object(buffer_id).and_then(|buffer| {
+            let root = buffer
+                .text_base()
+                .filter(crate::lisp::types::BufferRef::is_live)
+                .unwrap_or(buffer);
+            (root.is_live() && root.indirections() > 0).then_some(root)
+        });
+        let Some(root) = root else {
             if buffer_id == self.current_buffer_id {
                 return smallvec::smallvec![buffer_id];
             }
@@ -228,12 +239,20 @@ impl Interpreter {
                 .map(|(id, _)| *id)
                 .filter(|id| *id == buffer_id)
                 .collect();
-        }
-        let root = self.root_buffer_id(buffer_id);
+        };
+        // insdel.c's FOR_EACH_LIVE_BUFFER walk for the buffers whose
+        // base_buffer is ROOT.
+        let family: smallvec::SmallVec<[u64; 4]> = std::iter::once(self.buffer)
+            .chain(self.inactive_buffers.iter().map(|(_, buffer)| *buffer))
+            .filter(|buffer| {
+                buffer.ptr_eq(&root) || buffer.text_base().is_some_and(|base| base.ptr_eq(&root))
+            })
+            .map(|buffer| buffer.id)
+            .collect();
         self.buffer_list
             .iter()
             .map(|(id, _)| *id)
-            .filter(|id| self.root_buffer_id(*id) == root)
+            .filter(|id| family.contains(id))
             .collect()
     }
 
@@ -301,7 +320,7 @@ impl Interpreter {
     /// of its family shares the text and its markers, and reads its point
     /// and bounds from them.
     pub(crate) fn family_after_in_place_edit(&mut self) {
-        if self.indirect_buffers.is_empty() {
+        if !self.current_buffer().shares_text() {
             return;
         }
         let related = self.related_buffer_ids(self.current_buffer_id());

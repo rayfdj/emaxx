@@ -387,11 +387,11 @@ define_dispatch!(
                 object.replace_state(state);
                 // Use the base buffer's text object, and its chain of
                 // markers.
-                object.share_marker_chain(base_object);
+                object.make_indirect_of(base_object);
                 let base_overlays = {
                     let mut base = base_object.borrow_mut();
                     let mut buffer = object.borrow_mut();
-                    buffer.share_text_of(&base, base_object);
+                    buffer.share_text_of(&base);
                     // GNU indirect buffers never visit their base's file:
                     // make-indirect-buffer clears buffer-file-name and
                     // buffer-file-truename even when CLONE is non-nil.
@@ -439,7 +439,7 @@ define_dispatch!(
                     overlay.set_plist(Value::list(source.plist().to_vec()?));
                     overlay.move_to(object, source.beg(), source.end());
                 }
-                interp.register_indirect_buffer(new_id, base_id);
+                interp.take_base_undo_list(new_id, base_id);
 
                 if clone {
                     interp.clone_buffer_local_state(base_id, new_id);
@@ -600,8 +600,7 @@ define_dispatch!(
                 // current buffer, exactly like an omitted argument.
                 // A killed indirect buffer keeps its base.
                 let buffer = interp.decode_buffer(args.first())?;
-                let base = buffer.borrow().base_buffer();
-                Ok(base.map_or(Value::Nil, Value::Buffer))
+                Ok(buffer.base_buffer().map_or(Value::Nil, Value::Buffer))
             }
             "buffer-swap-text" => {
                 need_args(name, args, 1)?;

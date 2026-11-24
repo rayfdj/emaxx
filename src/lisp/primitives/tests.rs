@@ -670,6 +670,56 @@ fn killed_buffer_holds_no_text_properties_as_gnu() {
 }
 
 #[test]
+fn a_killed_base_is_kept_by_its_killed_indirect_buffers_as_gnu() {
+    // buffer.h's base_buffer stays once either buffer is killed, and
+    // alloc.c:mark_buffer marks it: a killed base that only its killed
+    // indirect buffers reach is still their base after collections.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((ind (make-indirect-buffer (get-buffer-create "s2-base") "s2-ind"))
+                (other (make-indirect-buffer "s2-base" "s2-other")))
+           (with-current-buffer ind (insert "shared"))
+           (kill-buffer other)
+           (let ((r (list (buffer-live-p (buffer-base-buffer other))
+                          (eq (buffer-base-buffer other) (buffer-base-buffer ind)))))
+             (kill-buffer "s2-base")
+             (dotimes (_ 3) (make-list 10000 'x) (garbage-collect))
+             (let ((base (buffer-base-buffer ind)))
+               (append r
+                       (list (bufferp base) (buffer-live-p base) (buffer-name base)
+                             (eq base (buffer-base-buffer other))
+                             (buffer-live-p ind) (buffer-base-buffer base)
+                             (condition-case e (with-current-buffer base (buffer-string)) (error e))
+                             (format "%S" base))))))"#,
+        r##"(t t t nil nil t nil nil (error "Selecting deleted buffer") "#<killed buffer>")"##,
+        "a killed indirect buffer's base",
+    );
+}
+
+#[test]
+fn a_base_keeps_its_point_and_bounds_after_its_indirect_buffer_dies_as_gnu() {
+    // buffer.c:set_buffer_internal_2 records the old buffer's point and
+    // bounds in its pt_marker, begv_marker and zv_marker and fetches the
+    // new one's from them, whenever the buffer has them: a base keeps
+    // them once its indirect buffer is killed, and a later indirect
+    // buffer's edits move them.  Here the base was current when its
+    // first indirect buffer died, then left; its narrowing and point
+    // after an edit in the second are GNU's.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((b (get-buffer-create "st-b")))
+           (with-current-buffer b (insert "0123456789")
+             (kill-buffer (make-indirect-buffer b "st-i1"))
+             (goto-char 5) (narrow-to-region 2 9))
+           (let ((c (make-indirect-buffer b "st-c" t)))
+             (with-current-buffer c (widen) (goto-char 3) (insert "XY"))
+             (prog1 (list (with-current-buffer b (list (point) (point-min) (point-max)))
+                          (with-current-buffer c (list (point) (point-min) (point-max))))
+               (kill-buffer b))))"#,
+        "((7 2 11) (5 1 13))",
+        "a base's markers after its indirect buffer dies",
+    );
+}
+
+#[test]
 fn killed_buffers_keep_what_fkill_buffer_leaves_as_gnu() {
     // buffer.c:Fkill_buffer: the name nil, BUFFER_LIVE_P false; the
     // file name and truename and the directory kept, the other slots as
@@ -25581,6 +25631,93 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
     assert_eq!(killed.vectors, after.vectors);
     assert_eq!(killed.vector_slots, after.vector_slots);
     assert!(matches!(buffer.kind(), Kind::Buffer(_)));
+}
+
+#[test]
+fn an_indirect_buffer_has_one_base_and_its_base_counts_it() {
+    // buffer.h's base_buffer and indirections: Fmake_indirect_buffer sets
+    // the new buffer's base and -1, and counts it on its base;
+    // Fkill_buffer takes a killed indirect buffer off its base's count
+    // and keeps its base_buffer, while its text (and so its marker
+    // chain) is its own again.  The id readers name a base only while
+    // both are live.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let eval = |interp: &mut Interpreter, source: &str| {
+        let form = Reader::new(source)
+            .read()
+            .expect("the form parses")
+            .expect("a form");
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    };
+    let object = |value: Value| match value.kind() {
+        Kind::Buffer(buffer) => buffer,
+        other => panic!("a buffer: {other:?}"),
+    };
+    let base = object(eval(&mut interp, r#"(get-buffer-create "ib-base")"#));
+    let first = object(eval(
+        &mut interp,
+        r#"(make-indirect-buffer "ib-base" "ib-1")"#,
+    ));
+    let second = object(eval(&mut interp, r#"(make-indirect-buffer "ib-1" "ib-2")"#));
+    let plain = object(eval(&mut interp, r#"(get-buffer-create "ib-plain")"#));
+    assert_eq!(
+        [base, first, second, plain].map(|buffer| buffer.indirections()),
+        [2, -1, -1, 0]
+    );
+    assert_eq!(
+        first.base_buffer().map(Value::Buffer),
+        Some(Value::Buffer(base))
+    );
+    assert_eq!(
+        second.base_buffer().map(Value::Buffer),
+        Some(Value::Buffer(base)),
+        "no double indirection"
+    );
+    assert!(base.base_buffer().is_none());
+    assert!(first.chain_owner().ptr_eq(&base));
+    assert!(base.shares_text() && first.shares_text() && !plain.shares_text());
+    assert_eq!(interp.buffer_base_id(first.id), Some(base.id));
+    assert_eq!(
+        interp.related_buffer_ids(second.id).into_vec(),
+        vec![base.id, first.id, second.id]
+    );
+    assert_eq!(
+        interp.related_buffer_ids(plain.id).into_vec(),
+        vec![plain.id]
+    );
+    eval(&mut interp, r#"(kill-buffer "ib-1")"#);
+    assert_eq!([base, first].map(|buffer| buffer.indirections()), [1, -1]);
+    assert_eq!(
+        first.base_buffer().map(Value::Buffer),
+        Some(Value::Buffer(base))
+    );
+    assert!(first.text_base().is_none());
+    assert!(first.chain_owner().ptr_eq(&first));
+    assert_eq!(first.markers().count(), 0);
+    assert_eq!(interp.buffer_base_id(first.id), None);
+    assert_eq!(
+        interp.related_buffer_ids(base.id).into_vec(),
+        vec![base.id, second.id]
+    );
+    // The base's kill kills its indirect buffer first.
+    eval(&mut interp, r#"(kill-buffer "ib-base")"#);
+    assert!(!second.is_live() && !base.is_live());
+    assert_eq!(base.indirections(), 0);
+    assert_eq!(
+        second.base_buffer().map(Value::Buffer),
+        Some(Value::Buffer(base))
+    );
+    eval(&mut interp, "(garbage-collect)");
+    assert_eq!(
+        first.base_buffer().map(Value::Buffer),
+        Some(Value::Buffer(base))
+    );
+    assert_eq!(
+        interp.related_buffer_ids(first.id).into_vec(),
+        Vec::<u64>::new()
+    );
 }
 
 #[test]

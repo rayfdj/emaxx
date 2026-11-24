@@ -3430,7 +3430,8 @@ define_dispatch!(
                 if !interp.has_buffer_id(id) {
                     return Ok(Value::T);
                 }
-                let buffer = interp.buffer_value(id).expect("live buffer object");
+                let object = interp.buffer_object(id).expect("live buffer object");
+                let buffer = Value::Buffer(object);
                 // XWINDOW (minibuf_window)->contents.
                 let minibuffer_buffer = |interp: &Interpreter| {
                     crate::lisp::primitives::window::window_buffer_id(
@@ -3443,8 +3444,9 @@ define_dispatch!(
                 }
                 // A base buffer's indirect buffers are killed first, in the
                 // buffer list's order, so that nothing terrible happens if
-                // they ask questions or their hooks fail.
-                if interp.buffer_base_id(id).is_none() {
+                // they ask questions or their hooks fail: `if
+                // (!b->base_buffer && b->indirections > 0)'.
+                if object.base_buffer().is_none() && object.indirections() > 0 {
                     let indirect: Vec<u64> = interp
                         .buffer_list
                         .iter()
