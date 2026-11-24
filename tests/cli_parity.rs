@@ -1499,6 +1499,62 @@ fn byte_code_called_from_c_defines_and_evaluates_in_its_callers_environment() {
 }
 
 #[test]
+fn dynamic_binding_byte_code_binds_its_formals_then_the_environment() {
+    // eval.c:funcall_lambda binds a dynamic-binding function's formals and
+    // only then specbinds internal-interpreter-environment to its nil
+    // lexenv, when the caller's is another; unbind_to undoes the two in
+    // turn.  A watcher of a formal, at its let and at its unlet, so runs
+    // under the interpreted caller's environment, unsaved: defvar-1 of a
+    // name the caller binds lexically defines it, whether mapcar, funcall,
+    // the interpreter or lexical byte code calls the function.  Lexical
+    // byte code under a lexical caller calling dynamic-binding byte code:
+    // inside the callee the caller's environment is saved (defvar-1
+    // refused); after a return, a signal or a throw out of the callee it
+    // is in effect again (defvar-1 defines).
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "dynenv.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defmacro d17-try (form) `(condition-case e ,form (error (car e))))
+;; A watcher of a dynamic-binding function's formal runs defvar-1 at the
+;; formal's let and unlet, of names the interpreted caller binds lexically.
+(defvar d17-wlog nil)
+(defvar d17-names nil)
+(defvar d17wf nil)
+(add-variable-watcher 'd17wf (byte-compile '(lambda (_s _n op _w)
+  (when (memq op '(let unlet))
+    (push (list op (d17-try (progn (defvar-1 (pop d17-names) 5 nil) 'ok))) d17-wlog)))))
+(defalias 'd17-dynf (let ((lexical-binding nil)) (byte-compile '(lambda (d17wf) d17wf))))
+(defalias 'd17-lexf (byte-compile '(lambda (x) (d17-dynf x))))
+(defmacro d17-watched (names form)
+  `(progn (setq d17-wlog nil d17-names ,names) (list ,form (reverse d17-wlog))))
+(princ (format "1 %S\n" (let ((d17w1 1) (d17w2 2)) (d17-watched '(d17w1 d17w2) (mapcar #'d17-dynf '(1))))))
+(princ (format "2 %S\n" (let ((d17w3 1) (d17w4 2)) (d17-watched '(d17w3 d17w4) (funcall #'d17-dynf 2)))))
+(princ (format "3 %S\n" (let ((d17w5 1) (d17w6 2)) (d17-watched '(d17w5 d17w6) (d17-dynf 3)))))
+(princ (format "4 %S\n" (let ((d17w7 1) (d17w8 2)) (d17-watched '(d17w7 d17w8) (d17-lexf 4)))))
+;; Lexical byte code under a lexical caller calling dynamic-binding byte
+;; code: inside the callee the environment is nil and the caller's saved
+;; (defvar-1 refused); once it returns, or a signal or throw leaves it,
+;; the caller's is in effect again (defvar-1 defines).
+(defalias 'd17-dd (let ((lexical-binding nil)) (byte-compile '(lambda (s) (d17-try (progn (defvar-1 s 5 nil) 'ok))))))
+(defalias 'd17-ds (let ((lexical-binding nil)) (byte-compile '(lambda (s) (if (eq s 'throw) (throw 'd17-tag s) (signal 'error (list s)))))))
+(defalias 'd17-lx (byte-compile '(lambda (a b c d)
+  (list (d17-dd a)
+        (d17-try (progn (defvar-1 b 5 nil) 'ok))
+        (condition-case nil (d17-ds 'sig) (error 'caught))
+        (d17-try (progn (defvar-1 c 5 nil) 'ok))
+        (catch 'd17-tag (d17-ds 'throw))
+        (d17-try (progn (defvar-1 d 5 nil) 'ok))))))
+(princ (format "5 %S\n" (let ((d17a 1) (d17b 2) (d17c 3) (d17d 4)) (list (d17-lx 'd17a 'd17b 'd17c 'd17d) d17a d17b d17c d17d))))
+(princ (format "6 %S\n" (list (mapcar #'special-variable-p '(d17w1 d17w2 d17w3 d17w4 d17w5 d17w6 d17w7 d17w8 d17a d17b d17c d17d)) (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n))))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
 fn the_memory_profiler_files_a_byte_code_callback_under_mapc() {
     // profiler.c's malloc_probe from a byte-code callback that mapc calls:
     // the sample's backtrace holds the callback with mapc as its caller.

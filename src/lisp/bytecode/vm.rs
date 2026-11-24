@@ -984,16 +984,16 @@ fn enter_closure_frame(
 /// funcall_general: funcall_lambda specbinds the formal ARGUMENTS of
 /// FUNCTION (FUNC's function, CALLEE its program) to the arguments from
 /// ARGS_START, runs the code with none (`exec_byte_code (fun, 0, 0,
-/// NULL)') and undoes the bindings with unbind_to when it returns.  When
-/// the binding does nothing else (`plain_dynamic_bindings') and the
-/// caller runs under the nil environment, so that funcall_lambda binds no
-/// internal-interpreter-environment, the callee's frame is entered here
-/// as a lexical function's is (`enter_closure_frame'), its bindings on
-/// the specpdl above the frame's watermark, where Breturn
-/// (`unbind_plain_to') or the unwinding of a signal undoes them; the
-/// backtrace record is below them, as record_in_backtrace leaves it.
-/// Otherwise None, with nothing changed but the stack's TOP, for the full
-/// Call arm to take.
+/// NULL)') and undoes the bindings with unbind_to when it returns; after
+/// the formals it specbinds internal-interpreter-environment to the
+/// function's nil lexenv when the caller's environment is another
+/// (`bind_nil_environment').  When the binding does nothing else
+/// (`plain_dynamic_bindings'), the callee's frame is entered here as a
+/// lexical function's is (`enter_closure_frame'), its bindings on the
+/// specpdl above the frame's watermark, where Breturn (`unbind_plain_to')
+/// or the unwinding of a signal undoes them; the backtrace record is
+/// below them, as record_in_backtrace leaves it.  Otherwise None, with nothing changed
+/// but the stack's TOP, for the full Call arm to take.
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn enter_dynamic_frame(
@@ -1006,9 +1006,6 @@ fn enter_dynamic_frame(
     arguments: Value,
     verified_return: bool,
 ) -> Option<(usize, usize)> {
-    if crate::lisp::types::current_environment(vm.env).is_some() {
-        return None;
-    }
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     // SAFETY: as `enter_closure_frame's: the caller's argument slots stay
     // as they are below the callee's frame until it returns or unwinds.
@@ -1051,6 +1048,7 @@ fn enter_dynamic_frame(
         let (symbol, value) = unsafe { binding.assume_init() };
         interp.specbind_plain_store(&symbol, value);
     }
+    interp.bind_nil_environment(vm.env);
     Some((interp.bc_stack.top, 0))
 }
 
@@ -1166,7 +1164,7 @@ fn return_to_bytecode_frame(
         frame.handlers_len,
         frame.code_changes,
     );
-    if unwinds > unwinds_len && !unbind_plain_to(vm.interp, unwinds_len) {
+    if unwinds > unwinds_len && !unbind_plain_to(vm.interp, vm.env, unwinds_len) {
         return None;
     }
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
@@ -1190,15 +1188,17 @@ fn return_to_bytecode_frame(
 }
 
 /// funcall_lambda's unbind_to (COUNT) of a dynamic-binding function's
-/// argument bindings, for `return_to_bytecode_frame': each entry above
-/// COUNT undone in place while undoing it runs nothing
-/// (`Interpreter::unbind_quiet_innermost'); true with all undone, false
-/// at the first that runs something, the ones above it undone, for the
-/// full return path to undo the rest.
+/// argument bindings and of the environment's above them, for
+/// `return_to_bytecode_frame': each entry above COUNT undone in place
+/// while undoing it runs nothing (`Interpreter::unbind_quiet_innermost',
+/// and `Interpreter::unbind_environment_innermost', which takes the nil
+/// frame off ENV); true with all undone, false at the first that runs
+/// something, the ones above it undone, for the full return path to undo
+/// the rest.
 #[inline(never)]
-fn unbind_plain_to(interp: &mut Interpreter, count: usize) -> bool {
+fn unbind_plain_to(interp: &mut Interpreter, env: &mut Env, count: usize) -> bool {
     while interp.specpdl_index() > count {
-        if !interp.unbind_quiet_innermost() {
+        if !interp.unbind_quiet_innermost() && !interp.unbind_environment_innermost(env) {
             return false;
         }
     }
@@ -4098,7 +4098,10 @@ pub(crate) fn closure_program(
         })
 }
 
-/// Read the actual PVEC_CLOSURE fields and dispatch from its code bytes.
+/// Read the actual PVEC_CLOSURE fields and dispatch from its code bytes,
+/// as Fbyte_code's exec_byte_code runs the closure it makes: a
+/// dynamic-binding argument list is bound with no binding of the
+/// environment (see `funcall_closure' for funcall_lambda's).
 #[inline(always)]
 pub fn execute_closure(
     interp: &mut Interpreter,
@@ -4115,11 +4118,11 @@ pub fn execute_closure(
             return run_entered(interp, *program, Value::Closure(closure), args, env);
         }
         if let Some(arguments) = program.arguments {
-            return run_dynamic(interp, *program, arguments, closure, args, env);
+            return run_dynamic(interp, *program, arguments, closure, args, env, false);
         }
     }
     let program = closure_program(closure)?;
-    run(interp, program, Value::Closure(closure), args, env)
+    run(interp, program, Value::Closure(closure), args, env, false)
 }
 
 /// Ffuncall of a byte-code closure from Rust (`mapatoms', `mapcar', a
@@ -4127,8 +4130,9 @@ pub fn execute_closure(
 /// this one function rather than in `run_entered' below it.  A
 /// lexical-binding function's code runs under the caller's environment,
 /// as funcall_lambda hands a FIXNUMP template's arguments to
-/// exec_byte_code with no specbind; a dynamic-binding function's under
-/// its nil lexenv (`under_nil_environment').
+/// exec_byte_code with no specbind; a dynamic-binding function's formals
+/// are bound and then the environment to its nil lexenv
+/// (`bind_nil_environment'), as funcall_lambda orders them.
 #[inline(never)]
 pub(crate) fn funcall_closure(
     interp: &mut Interpreter,
@@ -4164,8 +4168,8 @@ pub(crate) fn funcall_closure_in_place(
 
 /// The rest of `funcall_closure_in_place', given ENTRY, what
 /// `entry_program' answered for CLOSURE: a dynamic-binding function's
-/// formals bound and its code run under its nil lexenv, or the program
-/// of any other read from the closure and run.
+/// formals bound and then the environment to its nil lexenv, and its code
+/// run, or the program of any other read from the closure and run.
 #[inline(never)]
 fn funcall_closure_otherwise(
     interp: &mut Interpreter,
@@ -4180,37 +4184,11 @@ fn funcall_closure_otherwise(
         // or collects before the copy.
         Some(program) if let Some(arguments) = unsafe { program.as_ref() }.arguments => {
             let program = unsafe { *program.as_ref() };
-            under_nil_environment(env, |env| {
-                run_dynamic(interp, program, arguments, closure, args, env)
-            })
+            run_dynamic(interp, program, arguments, closure, args, env, true)
         }
-        _ => closure_program(closure).and_then(|program| {
-            let function = Value::Closure(closure);
-            if matches!(program.argspec, ArgSpec::Packed { .. }) {
-                run(interp, program, function, args, env)
-            } else {
-                under_nil_environment(env, |env| run(interp, program, function, args, env))
-            }
-        }),
+        _ => closure_program(closure)
+            .and_then(|program| run(interp, program, Value::Closure(closure), args, env, true)),
     }
-}
-
-/// funcall_lambda's `specbind (Qinternal_interpreter_environment,
-/// lexenv)' for a dynamic-binding byte-code function, whose lexenv is
-/// nil: made only over another environment (`!EQ (lexenv,
-/// Vinternal_interpreter_environment)'), a nil frame while BODY runs that
-/// goes when it returns, as the call's unbind_to restores the variable.
-#[inline(always)]
-pub(crate) fn under_nil_environment<T>(env: &mut Env, body: impl FnOnce(&mut Env) -> T) -> T {
-    let depth = env.len();
-    if crate::lisp::types::current_environment(env).is_some() {
-        env.push(crate::lisp::types::EnvFrame::dynamic());
-    }
-    let result = body(env);
-    if env.len() > depth {
-        env.truncate(depth);
-    }
-    result
 }
 
 /// Execute OBJECT with ARGS, returning the value of Breturn.
@@ -4222,19 +4200,22 @@ pub fn execute(
     env: &mut Env,
 ) -> Result<Value, LispError> {
     let program = object.clone();
-    run(interp, program, Value::Nil, args, env)
+    run(interp, program, Value::Nil, args, env, false)
 }
 
 /// One activation entered from Rust (Ffuncall's exec_byte_code call):
 /// the arguments pushed onto the thread's bytecode stack, the frames of
 /// the byte-code functions it calls laid out above them in the loop,
-/// and the stack cut back to the entry mark on the way out.
+/// and the stack cut back to the entry mark on the way out.  LEXENV says
+/// whether funcall_lambda binds a dynamic-binding argument list, and so
+/// the environment after it (`run_frames').
 fn run(
     interp: &mut Interpreter,
     program: ByteCodeObject,
     function: Value,
     args: &[Value],
     env: &mut Env,
+    lexenv: bool,
 ) -> Result<Value, LispError> {
     interp.bc_stack.ensure_allocated();
     let marks = EntryMarks::of(interp);
@@ -4244,10 +4225,10 @@ fn run(
         // Direct Rust execution also roots the code and legacy arglist; a
         // constants-only root cannot keep them alive across a callback.
         interp.with_lisp_stack_roots(&program, |interp| {
-            run_frames(interp, program.clone(), function, args, env)
+            run_frames(interp, program.clone(), function, args, env, lexenv)
         })
     } else {
-        run_frames(interp, program, function, args, env)
+        run_frames(interp, program, function, args, env, lexenv)
     };
     finish_activation(interp, env, result, marks)
 }
@@ -4305,7 +4286,9 @@ fn run_entered_inline(
 /// and verification the frame entry cache holds: the formal ARGUMENTS
 /// bound (`bind_dynamic_arguments') and the code run with an empty frame,
 /// as `exec_byte_code (fun, 0, 0, NULL)'; the activation's exit is the
-/// unbind_to of the bindings.
+/// unbind_to of the bindings.  With LEXENV, funcall_lambda's, the
+/// environment is bound to the function's nil lexenv after the formals
+/// (`bind_nil_environment'); Fbyte_code's exec_byte_code binds none.
 #[inline(never)]
 fn run_dynamic(
     interp: &mut Interpreter,
@@ -4314,10 +4297,15 @@ fn run_dynamic(
     closure: crate::lisp::types::ClosureRef,
     args: &[Value],
     env: &mut Env,
+    lexenv: bool,
 ) -> Result<Value, LispError> {
     let function = Value::Closure(closure);
     run_entered_with(interp, program, function, env, true, |interp, env| {
-        bind_dynamic_arguments(interp, function, arguments, args, env)
+        bind_dynamic_arguments(interp, function, arguments, args, env)?;
+        if lexenv {
+            interp.bind_nil_environment(env);
+        }
+        Ok(())
     })
 }
 
@@ -4515,6 +4503,9 @@ fn finish_activation(
 
 /// `finish_activation's unbind_to. A signal from an unwind form replaces
 /// the one in flight, as in leave_frame; the remaining forms still run.
+/// A dynamic-binding function's binding of the environment over its
+/// formals (`Interpreter::bind_nil_environment') and the bindings below
+/// it are undone in place first, while undoing them runs nothing.
 #[inline(never)]
 fn unwind_activation(
     interp: &mut Interpreter,
@@ -4522,6 +4513,12 @@ fn unwind_activation(
     result: Result<Value, LispError>,
     unwinds_at_entry: usize,
 ) -> Result<Value, LispError> {
+    while interp.specpdl_index() > unwinds_at_entry
+        && (interp.unbind_environment_innermost(env) || unbind_plain(interp))
+    {}
+    if interp.specpdl_index() <= unwinds_at_entry {
+        return result;
+    }
     let balance = interp.with_lisp_stack_roots(&result, |interp| {
         let mut last_error = None;
         while interp.specpdl_index() > unwinds_at_entry {
@@ -4622,13 +4619,16 @@ fn bind_dynamic_arguments(
 /// bytecode.c:exec_byte_code.  The operand stack and the specpdl are the
 /// thread's (`interp.bc_stack', the interpreter's specpdl);
 /// a call to a byte-code function pushes a frame and continues in this
-/// loop (`goto setup_frame'), its return pops it.
+/// loop (`goto setup_frame'), its return pops it.  With LEXENV a
+/// dynamic-binding argument list is funcall_lambda's to bind, and the
+/// environment is bound after it (`bind_nil_environment').
 fn run_frames(
     interp: &mut Interpreter,
     mut program: ByteCodeObject,
     function: Value,
     args: &[Value],
     env: &mut Env,
+    lexenv: bool,
 ) -> Result<Value, LispError> {
     interp.bc_stack.enter_frame(
         program.stack_depth,
@@ -4674,6 +4674,9 @@ fn run_frames(
         // empty stack; the exit balance below is GNU's unbind_to.
         ArgSpec::Legacy(arglist) => {
             bind_dynamic_arguments(interp, function, *arglist, args, env)?;
+            if lexenv {
+                interp.bind_nil_environment(env);
+            }
         }
     }
     // The verifier's result for this code lets the fast loop run it

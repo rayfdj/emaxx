@@ -91,6 +91,12 @@ pub(crate) enum UnwindAction {
     /// editfns.c's record_unwind_protect (unwind_labeled_narrow_to_region,
     /// LABEL): Finternal__labeled_widen (LABEL).
     LabeledWiden(Value),
+    /// funcall_lambda's specbind of internal-interpreter-environment to a
+    /// dynamic-binding byte-code function's nil lexenv
+    /// (`Interpreter::bind_nil_environment'): the interpreter's
+    /// environment, whose frames are not on the specpdl, cut back to its
+    /// first DEPTH, over which the nil frame lay.
+    InterpreterEnvironment(usize),
 }
 
 impl UnwindAction {
@@ -99,7 +105,7 @@ impl UnwindAction {
         match self {
             Self::Excursion(saved) => mark(&Value::Marker(saved.marker_id)),
             Self::Restriction(saved) => saved.mark_values(mark),
-            Self::CurrentBuffer(_) | Self::Redisplay => {}
+            Self::CurrentBuffer(_) | Self::Redisplay | Self::InterpreterEnvironment(_) => {}
             Self::Cleanup { value, .. }
             | Self::KbdMacro(value)
             | Self::RestorePoint(value)
@@ -249,6 +255,47 @@ impl Interpreter {
         true
     }
 
+    /// eval.c:funcall_lambda's `if (!EQ (lexenv,
+    /// Vinternal_interpreter_environment)) specbind
+    /// (Qinternal_interpreter_environment, lexenv)' for a dynamic-binding
+    /// byte-code function, whose lexenv is nil, once its formals are bound:
+    /// over an environment that is not nil, a nil frame on ENV and the
+    /// entry that takes it off on the specpdl, above the formals'
+    /// bindings, as unbind_to undoes them in turn.  The test is inline in
+    /// the call's entry, as the `!EQ' is in funcall_lambda.
+    #[inline(always)]
+    pub(crate) fn bind_nil_environment(&mut self, env: &mut Env) {
+        if crate::lisp::types::current_environment(env).is_some() {
+            self.push_nil_environment(env);
+        }
+    }
+
+    /// `bind_nil_environment' over an environment that is not nil.
+    #[inline(never)]
+    fn push_nil_environment(&mut self, env: &mut Env) {
+        self.record_unwind(UnwindAction::InterpreterEnvironment(env.len()));
+        env.push(EnvFrame::dynamic());
+    }
+
+    /// The undo of the innermost entry when it is `bind_nil_environment's,
+    /// which runs nothing: the nil frame taken off ENV, true; false with
+    /// nothing done otherwise.  Out of line, so that its callers' loops
+    /// read nothing of ENV until an entry is the environment's.
+    #[inline(never)]
+    pub(crate) fn unbind_environment_innermost(&mut self, env: &mut Env) -> bool {
+        let Some(SpecpdlEntry::Unwind(UnwindRecord {
+            action: UnwindAction::InterpreterEnvironment(depth),
+            ..
+        })) = self.specpdl.last()
+        else {
+            return false;
+        };
+        let depth = *depth;
+        self.specpdl.pop();
+        env.truncate(depth);
+        true
+    }
+
     /// Whether undoing each of the innermost COUNT entries runs nothing
     /// (`unbind_quiet_innermost').
     pub(crate) fn innermost_entries_quiet(&self, count: usize) -> bool {
@@ -349,6 +396,10 @@ impl Interpreter {
             }
             UnwindAction::Redisplay => {
                 crate::lisp::primitives::unwind_redisplay();
+                Ok(())
+            }
+            UnwindAction::InterpreterEnvironment(depth) => {
+                env.truncate(depth);
                 Ok(())
             }
             UnwindAction::KbdMacro(info) => self.with_lisp_stack_roots(&info, |interp| {
