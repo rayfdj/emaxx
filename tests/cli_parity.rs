@@ -13781,6 +13781,138 @@ fn a_dumped_session_s_buffer_local_c_variables_are_the_loading_process_s() {
 }
 
 #[test]
+fn a_dumped_sessions_evaluator_c_variables_and_nil_plist_are_the_images() {
+    // pdumper.c dumps a forwarded symbol's C variable with it
+    // (dump_fwd_obj, dump_fwd_int, dump_fwd_bool) and a buffer's local
+    // bindings with the buffer: the process started from the dump has the
+    // dumped values of the evaluator's C variables and acts on them (a
+    // property read through overriding-plist-environment, the nesting
+    // limit), a dumped buffer's own bindings while it is current, the
+    // plists of nil and t, and a private obarray with its symbol.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "dumped-evaluator-variables-probe.el",
+        r#"(defalias 'r0-rec (lambda (k) (if (> k 0) (1+ (r0-rec (1- k))) 0)))
+(princ (format "%S\n"
+  (list throw-on-input overriding-plist-environment (get 'r0-sym 'r0-prop)
+        max-lisp-eval-depth (condition-case e (r0-rec 1300) (error (car e)))
+        undo-inhibit-record-point attempt-orderly-shutdown-on-fatal-signal
+        inhibit-quit quit-flag debug-on-next-call symbols-with-pos-enabled
+        (with-current-buffer "r0-dump"
+          (list inhibit-quit max-lisp-eval-depth (get 'r0-sym 'r0-prop)
+                (condition-case e (r0-rec 400) (error (car e)))))
+        (default-value 'max-lisp-eval-depth) (get nil 'r0-dumped) (get t 'r0-dumped)
+        (obarrayp r0-obarray) (symbol-name (intern-soft "r0-private" r0-obarray))
+        (intern-soft "r0-private"))))
+"#,
+    );
+    let run = |binary: &Path, name: &str| {
+        let image = corpus
+            .directory
+            .join(format!("{name}-dumped-evaluator-variables.pdmp"))
+            .display()
+            .to_string();
+        let dump = corpus.write(
+            &format!("{name}-dump-evaluator-variables.el"),
+            &format!(
+                r#"(setq throw-on-input 'dumped
+      overriding-plist-environment '((r0-sym r0-prop 5))
+      max-lisp-eval-depth 1234
+      undo-inhibit-record-point t
+      attempt-orderly-shutdown-on-fatal-signal nil)
+(put nil 'r0-dumped 'on-nil)
+(put t 'r0-dumped 'on-t)
+(defvar r0-obarray (obarray-make))
+(intern "r0-private" r0-obarray)
+(with-current-buffer (get-buffer-create "r0-dump")
+  (setq-local inhibit-quit 'local-dumped)
+  (setq-local max-lisp-eval-depth 321)
+  (setq-local overriding-plist-environment '((r0-sym r0-prop 6))))
+(let ((load--bin-dest-dir (file-truename invocation-directory))
+      (load--eln-dest-dir (file-truename source-directory)))
+  (dump-emacs-portable "{image}"))
+"#
+            ),
+        );
+        let dumped = corpus.run(binary, &["--batch", "-Q", "-l", &dump]);
+        assert_eq!(dumped.2, Some(0), "{name} did not dump: {dumped:?}");
+        corpus.run(
+            binary,
+            &["--dump-file", &image, "--batch", "-Q", "-l", &probe],
+        )
+    };
+    let expected = run(&oracle(), "gnu");
+    assert_eq!(expected.2, Some(0), "GNU's probe failed: {expected:?}");
+    assert!(
+        expected
+            .0
+            .starts_with("(dumped ((r0-sym r0-prop 5)) 5 1234 excessive-lisp-nesting t nil"),
+        "GNU keeps the dumped C variables: {expected:?}"
+    );
+    assert_eq!(
+        run(emaxx(), "emaxx"),
+        expected,
+        "Emaxx (left) and GNU (right) differ for the dumped evaluator C variables"
+    );
+}
+
+#[test]
+fn dump_emacs_portable_refuses_threads_mutexes_and_configurations_as_gnu() {
+    // pdumper.c:dump_vectorlike signals "unsupported object type in
+    // dump" for a mutex, a condition variable, a window configuration
+    // and a thread other than the main one, each held by a variable when
+    // dump-emacs-portable runs; each refusal leaves the session able to
+    // try the next.  The rest of each message (GNU's pseudovector type
+    // number) is not compared.
+    let corpus = Corpus::new();
+    let run = |binary: &Path, name: &str| {
+        let image = corpus
+            .directory
+            .join(format!("{name}-refused.pdmp"))
+            .display()
+            .to_string();
+        let dump = corpus.write(
+            &format!("{name}-dump-refused.el"),
+            &format!(
+                r#"(defvar r0-held nil)
+(princ (format "%S\n"
+  (mapcar (lambda (make)
+            (setq r0-held (funcall make))
+            (prog1 (condition-case e
+                       (let ((load--bin-dest-dir (file-truename invocation-directory))
+                             (load--eln-dest-dir (file-truename source-directory)))
+                         (dump-emacs-portable "{image}") 'dumped)
+                     (error (list (car e)
+                                  (string-prefix-p "unsupported object type in dump: "
+                                                   (cadr e)))))
+              (setq r0-held nil)))
+          (list (lambda () (make-mutex "r0"))
+                (lambda () (make-condition-variable (make-mutex)))
+                (lambda () (current-window-configuration))
+                (lambda () (let ((th (make-thread #'ignore))) (thread-join th) th))))))
+"#
+            ),
+        );
+        let (stdout, _, status) = corpus.run(binary, &["--batch", "-Q", "-l", &dump]);
+        (stdout.lines().last().unwrap_or("").to_owned(), status)
+    };
+    let expected = run(&oracle(), "gnu");
+    assert_eq!(
+        expected,
+        (
+            "((error t) (error t) (error t) (error t))".to_owned(),
+            Some(0)
+        ),
+        "GNU refuses each object"
+    );
+    assert_eq!(
+        run(emaxx(), "emaxx"),
+        expected,
+        "Emaxx (left) and GNU (right) differ for the refused dumps"
+    );
+}
+
+#[test]
 fn dumped_buffers_keep_their_text_tables_and_indirect_family() {
     // pdumper.c:dump_buffer writes a live buffer with its text, point,
     // local variables (a buffer-local case-fold-search among them), its

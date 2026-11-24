@@ -26515,6 +26515,464 @@ fn buffer_creation_and_kill_cons_their_objects_and_markers() {
 }
 
 #[test]
+fn the_evaluators_c_variables_store_bind_and_convert_as_gnu() {
+    // The C variables eval.c, lread.c, fns.c, data.c, undo.c, keyboard.c,
+    // search.c and syntax.c read (Vquit_flag, Vinhibit_quit,
+    // Vthrow_on_input, Voverriding_plist_environment, Vload_path,
+    // max_lisp_eval_depth, debug_on_next_call, symbols_with_pos_enabled,
+    // undo_inhibit_record_point, attempt_orderly_shutdown_on_fatal_signal,
+    // Vcase_fold_search, parse_sexp_lookup_properties): set, let and
+    // default-value of each, a DEFVAR_BOOL's store kept as t or nil, a
+    // DEFVAR_INT's store refused unless an integer, and what boundp,
+    // special-variable-p and local-variable-if-set-p answer.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil))
+          (dolist (v '(inhibit-quit throw-on-input overriding-plist-environment load-path
+                       case-fold-search))
+            (let ((old (symbol-value v)))
+              (set v 'probe-x)
+              (push (list v (symbol-value v) (default-value v)
+                          (eval `(let ((,v 'probe-y)) (list ,v (symbol-value ',v) (default-value ',v))) t)
+                          (symbol-value v))
+                    r)
+              (set v old)))
+          (dolist (v '(symbols-with-pos-enabled undo-inhibit-record-point
+                       attempt-orderly-shutdown-on-fatal-signal parse-sexp-lookup-properties))
+            (let ((old (symbol-value v)))
+              (push (list v old
+                          (eval `(let ((,v 'probe-y)) (list ,v (default-value ',v))) t)
+                          (progn (set v 'probe-z) (symbol-value v))
+                          (progn (set v nil) (symbol-value v)))
+                    r)
+              (set v old)))
+          (dolist (v '(symbols-with-pos-enabled undo-inhibit-record-point
+                       attempt-orderly-shutdown-on-fatal-signal))
+            (let ((old (default-value v)))
+              (push (list v (progn (set-default v 7) (list (default-value v) (symbol-value v))))
+                    r)
+              (set-default v old)))
+          (push (list (condition-case e (setq max-lisp-eval-depth 'x) (error e))
+                      (condition-case e (setq max-lisp-eval-depth 1.5) (error e))
+                      (let ((max-lisp-eval-depth 3000))
+                        (list max-lisp-eval-depth (default-value 'max-lisp-eval-depth)))
+                      max-lisp-eval-depth
+                      (let ((inhibit-quit t))
+                        (setq quit-flag t)
+                        (prog1 (list quit-flag (default-value 'quit-flag)) (setq quit-flag nil)))
+                      quit-flag)
+                r)
+          (push (mapcar (lambda (v) (list v (boundp v) (special-variable-p v)
+                                          (local-variable-if-set-p v)))
+                        '(quit-flag inhibit-quit throw-on-input overriding-plist-environment load-path
+                          max-lisp-eval-depth debug-on-next-call symbols-with-pos-enabled
+                          undo-inhibit-record-point attempt-orderly-shutdown-on-fatal-signal
+                          case-fold-search parse-sexp-lookup-properties))
+                r)
+          (nreverse r))"#,
+        r#"((inhibit-quit probe-x probe-x (probe-y probe-y probe-y) probe-x) (throw-on-input probe-x probe-x (probe-y probe-y probe-y) probe-x) (overriding-plist-environment probe-x probe-x (probe-y probe-y probe-y) probe-x) (load-path probe-x probe-x (probe-y probe-y probe-y) probe-x) (case-fold-search probe-x t (probe-y probe-y t) probe-x) (symbols-with-pos-enabled nil (t t) t nil) (undo-inhibit-record-point nil (t t) t nil) (attempt-orderly-shutdown-on-fatal-signal t (t t) t nil) (parse-sexp-lookup-properties t (t nil) t nil) (symbols-with-pos-enabled (t t)) (undo-inhibit-record-point (t t)) (attempt-orderly-shutdown-on-fatal-signal (t t)) ((wrong-type-argument integerp x) (wrong-type-argument integerp 1.5) (3000 3000) 1600 (t t) nil) ((quit-flag t t nil) (inhibit-quit t t nil) (throw-on-input t t nil) (overriding-plist-environment t t nil) (load-path t t nil) (max-lisp-eval-depth t t nil) (debug-on-next-call t t nil) (symbols-with-pos-enabled t t nil) (undo-inhibit-record-point t t nil) (attempt-orderly-shutdown-on-fatal-signal t t nil) (case-fold-search t t t) (parse-sexp-lookup-properties t t t)))"#,
+        "evaluator C variables",
+    );
+}
+
+#[test]
+fn the_evaluators_c_variables_follow_the_current_buffers_binding_as_gnu() {
+    // A buffer-local binding of an evaluator C variable is what C reads
+    // while that buffer is current (set_buffer_internal_2 swaps the
+    // binding into the C variable): a load search, a property read
+    // through overriding-plist-environment, the nesting limit and a
+    // search's case folding in the buffer, the defaults elsewhere, and
+    // the defaults again after kill-local-variable; undo-inhibit-record-point
+    // is a permanent local kill-all-local-variables leaves.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((dir (make-temp-file "t1-lp" t))
+               (_ (with-temp-file (expand-file-name "t1-probe-lib.el" dir)
+                    (insert "(provide 't1-probe-lib)\n")))
+               (b (get-buffer-create "t1-b"))
+               (lp0 load-path)
+               (r nil))
+          (defalias 't1-rec (lambda (k) (if (> k 0) (1+ (t1-rec (1- k))) 0)))
+          (with-current-buffer b
+            (setq-local load-path (list dir))
+            (setq-local overriding-plist-environment '((t1-sym t1-prop 42)))
+            (setq-local max-lisp-eval-depth 100)
+            (setq-local inhibit-quit 'b-local)
+            (setq-local case-fold-search nil)
+            (setq-local undo-inhibit-record-point t))
+          (push (list (null (locate-library "t1-probe-lib")) (get 't1-sym 't1-prop) inhibit-quit
+                      case-fold-search max-lisp-eval-depth undo-inhibit-record-point
+                      (condition-case e (t1-rec 150) (error (car e))))
+                r)
+          (with-current-buffer b
+            (push (list (equal (locate-library "t1-probe-lib")
+                               (expand-file-name "t1-probe-lib.el" dir))
+                        (get 't1-sym 't1-prop) inhibit-quit case-fold-search (string-match "a" "A")
+                        max-lisp-eval-depth undo-inhibit-record-point
+                        (condition-case e (t1-rec 150) (error (car e)))
+                        (equal (default-value 'load-path) lp0) (default-value 'inhibit-quit)
+                        (local-variable-p 'inhibit-quit) (local-variable-p 'max-lisp-eval-depth))
+                  r)
+            (set-buffer (get-buffer-create "t1-other"))
+            (push (list inhibit-quit max-lisp-eval-depth (get 't1-sym 't1-prop)
+                        (buffer-local-value 'inhibit-quit b) (buffer-local-value 'max-lisp-eval-depth b))
+                  r))
+          (with-current-buffer b
+            (kill-local-variable 'load-path)
+            (kill-local-variable 'overriding-plist-environment)
+            (kill-local-variable 'max-lisp-eval-depth)
+            (kill-local-variable 'inhibit-quit)
+            (kill-local-variable 'case-fold-search)
+            (push (list (null (locate-library "t1-probe-lib")) (get 't1-sym 't1-prop) inhibit-quit
+                        case-fold-search (string-match "a" "A") max-lisp-eval-depth
+                        (condition-case e (t1-rec 150) (error (car e)))
+                        (local-variable-p 'inhibit-quit) undo-inhibit-record-point)
+                  r)
+            (kill-all-local-variables)
+            (push (list undo-inhibit-record-point (local-variable-p 'undo-inhibit-record-point)) r))
+          (kill-buffer b)
+          (kill-buffer "t1-other")
+          (delete-directory dir t)
+          (nreverse r))"#,
+        r#"((t nil nil t 1600 nil 150) (t 42 b-local nil nil 100 t excessive-lisp-nesting t nil t t) (nil 1600 nil b-local 100) (t nil nil t 0 1600 150 nil t) (nil nil))"#,
+        "buffer-local evaluator C variables",
+    );
+}
+
+#[test]
+fn the_evaluators_c_variables_notify_watchers_and_bind_per_thread_as_gnu() {
+    // A variable watcher hears set, let and unlet of an evaluator C
+    // variable (notify_variable_watchers) and a buffer-local store with
+    // its buffer; a thread's let is its own until it yields back
+    // (specbind's rebind at a thread switch), its nesting limit
+    // included; debug-on-next-call calls the debugger at the next call
+    // with the flag already cleared (call_debugger).
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil) (log nil) (wb (get-buffer-create "t1c-w")))
+          (defalias 't1c-rec (lambda (k) (if (> k 0) (1+ (t1c-rec (1- k))) 0)))
+          (dolist (v '(inhibit-quit load-path max-lisp-eval-depth debug-on-next-call
+                       throw-on-input case-fold-search))
+            (add-variable-watcher v (lambda (s n o w) (push (list s n o w) log))))
+          (setq inhibit-quit nil)
+          (let ((load-path '("/t1c"))) (setq load-path '("/t1c2")))
+          (setq max-lisp-eval-depth 1700)
+          (setq max-lisp-eval-depth 1600)
+          (let ((throw-on-input 'x)) nil)
+          (with-current-buffer wb (setq case-fold-search nil))
+          (setq-default case-fold-search t)
+          (dolist (v '(inhibit-quit load-path max-lisp-eval-depth debug-on-next-call
+                       throw-on-input case-fold-search))
+            (dolist (w (get-variable-watchers v)) (remove-variable-watcher v w)))
+          (kill-buffer wb)
+          (push (mapcar (lambda (e) (list (nth 0 e) (if (stringp (car-safe (nth 1 e))) 'paths (nth 1 e))
+                                          (nth 2 e) (if (bufferp (nth 3 e)) 'buffer (nth 3 e))))
+                        (nreverse log))
+                r)
+          (let* ((th (make-thread (lambda ()
+                                    (let ((inhibit-quit 'thread) (max-lisp-eval-depth 120))
+                                      (thread-yield)
+                                      (list inhibit-quit max-lisp-eval-depth
+                                            (condition-case e (t1c-rec 200) (error (car e)))))))))
+            (thread-yield)
+            (push (list inhibit-quit max-lisp-eval-depth) r)
+            (push (thread-join th) r)
+            (push (list inhibit-quit max-lisp-eval-depth (condition-case e (t1c-rec 200) (error (car e))))
+                  r))
+          (let* ((dlog nil)
+                 (debugger (lambda (&rest args) (push (list (car args) debug-on-next-call) dlog) nil)))
+            (setq debug-on-next-call t)
+            (car '(1))
+            (push (list (nreverse dlog) debug-on-next-call) r))
+          (nreverse r))"#,
+        r#"(((inhibit-quit nil set nil) (load-path paths let nil) (load-path paths set nil) (load-path paths set nil) (load-path paths unlet nil) (max-lisp-eval-depth 1700 set nil) (max-lisp-eval-depth 1600 set nil) (throw-on-input x let nil) (throw-on-input nil set nil) (throw-on-input nil unlet nil) (case-fold-search nil set buffer) (case-fold-search t set nil)) (nil 1600) (thread 120 excessive-lisp-nesting) (nil 1600 200) (((t nil) (exit nil)) nil))"#,
+        "evaluator C variables, watchers and threads",
+    );
+}
+
+#[test]
+fn makunbound_leaves_the_evaluators_c_variables_to_c_as_gnu() {
+    // data.c:set_internal storing Qunbound into a forwarded symbol makes
+    // it SYMBOL_PLAINVAL: the symbol is void, then a plain variable, and
+    // the C variable keeps its last value, which is what C goes on
+    // reading (the nesting limit, quit handling, a property read, the
+    // debugger's entry, case folding, positioned symbols' eq, a load's
+    // search of Vload_path).
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+          (defalias 't1d-rec (lambda (k) (if (> k 0) (1+ (t1d-rec (1- k))) 0)))
+          (list (progn (makunbound 'max-lisp-eval-depth) (boundp 'max-lisp-eval-depth))
+                (condition-case e max-lisp-eval-depth (error e))
+                (progn (setq max-lisp-eval-depth 'not-a-number) max-lisp-eval-depth)
+                (progn (setq max-lisp-eval-depth 10) max-lisp-eval-depth)
+                (condition-case e (t1d-rec 200) (error (car e)))
+                (let ((max-lisp-eval-depth 20)) (condition-case e (t1d-rec 200) (error (car e))))
+                (progn (makunbound 'inhibit-quit) (setq inhibit-quit t)
+                       (condition-case nil (progn (setq quit-flag t) (t1d-rec 3) 'no-quit) (quit 'quit)))
+                (progn (makunbound 'quit-flag) (setq quit-flag t)
+                       (prog1 (condition-case nil (progn (t1d-rec 3) 'no-quit) (quit 'quit))
+                         (setq quit-flag nil)))
+                (progn (makunbound 'overriding-plist-environment)
+                       (setq overriding-plist-environment '((t1d-sym t1d-prop 9)))
+                       (get 't1d-sym 't1d-prop))
+                (progn (makunbound 'throw-on-input) (list (boundp 'throw-on-input) (setq throw-on-input 3)))
+                (let ((dlog nil))
+                  (makunbound 'debug-on-next-call)
+                  (let ((debugger (lambda (&rest args) (push (car args) dlog) nil)))
+                    (setq debug-on-next-call t) (car '(1)))
+                  (list debug-on-next-call dlog))
+                (progn (makunbound 'case-fold-search)
+                       (list (boundp 'case-fold-search) (string-match "a" "A")
+                             (progn (setq case-fold-search nil) (string-match "a" "A"))
+                             (with-temp-buffer (list (boundp 'case-fold-search) (string-match "a" "A")))))
+                (progn (makunbound 'symbols-with-pos-enabled) (setq symbols-with-pos-enabled t)
+                       (eq (position-symbol 'a 5) 'a))
+                (progn (makunbound 'attempt-orderly-shutdown-on-fatal-signal)
+                       (boundp 'attempt-orderly-shutdown-on-fatal-signal))))"#,
+        r#"(nil (void-variable max-lisp-eval-depth) not-a-number 10 200 200 quit no-quit nil (nil 3) (t nil) (nil 0 0 (t 0)) nil nil)"#,
+        "makunbound of evaluator C variables",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dir (make-temp-file "t1d-lp" t)))
+          (with-temp-file (expand-file-name "t1d-lib.el" dir) (insert "(provide 't1d-lib)\n"))
+          (prog1
+              (list (progn (makunbound 'load-path) (boundp 'load-path))
+                    (progn (setq load-path (list dir)) (equal load-path (list dir)))
+                    (condition-case e (progn (load "t1d-lib" nil t) (featurep 't1d-lib)) (error (car e)))
+                    (null (locate-library "t1d-lib")))
+            (delete-directory dir t)))"#,
+        r#"(nil t file-missing nil)"#,
+        "makunbound of load-path",
+    );
+}
+
+#[test]
+fn the_kboard_variables_store_bind_and_notify_as_gnu() {
+    // keyboard.h's DEFVAR_KBOARD variables, the current kboard's fields:
+    // bound, special, never local; set, let, set-default and a watcher's
+    // set and let; a thread's let; make-local-variable refused; and the
+    // command loop's stores of last-command and its kin after a command
+    // of a keyboard macro, inside a let of last-command too.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((vars '(overriding-terminal-local-map last-command real-last-command
+                      keyboard-translate-table last-repeatable-command prefix-arg
+                      last-prefix-arg defining-kbd-macro last-kbd-macro system-key-alist
+                      window-system default-minibuffer-frame input-decode-map
+                      local-function-key-map))
+              (r nil) (log nil))
+          (push (mapcar (lambda (v) (list v (boundp v) (special-variable-p v)
+                                          (local-variable-if-set-p v)
+                                          (let ((x (symbol-value v)))
+                                            (if (or (null x) (symbolp x) (numberp x)) x (type-of x)))
+                                          (eq (symbol-value v) (default-value v))))
+                        vars)
+                r)
+          (push (list (progn (setq last-command 'probe-a) last-command)
+                      (let ((last-command 'probe-b)) (list last-command (default-value 'last-command)))
+                      last-command
+                      (progn (set-default 'prefix-arg 4) prefix-arg)
+                      (let ((real-last-command 'rl)) (setq real-last-command 'rl2) real-last-command)
+                      real-last-command)
+                r)
+          (add-variable-watcher 'last-command (lambda (s n o w) (push (list n o w) log)))
+          (setq last-command 'w1)
+          (let ((last-command 'w2)) nil)
+          (with-temp-buffer (setq last-command 'w3))
+          (remove-variable-watcher 'last-command (car (get-variable-watchers 'last-command)))
+          (push (mapcar (lambda (e) (list (car e) (cadr e) (bufferp (nth 2 e)))) (nreverse log)) r)
+          (let ((th (make-thread (lambda () (let ((last-command 'thread)) (thread-yield) last-command)))))
+            (thread-yield)
+            (push (list last-command (thread-join th) last-command) r))
+          (with-temp-buffer
+            (push (list (condition-case e (make-local-variable 'last-command) (error e))
+                        (local-variable-p 'last-command))
+                  r))
+          (setq last-command nil prefix-arg nil)
+          (nreverse r))"#,
+        r#"(((overriding-terminal-local-map t t nil nil t) (last-command t t nil nil t) (real-last-command t t nil nil t) (keyboard-translate-table t t nil char-table t) (last-repeatable-command t t nil nil t) (prefix-arg t t nil nil t) (last-prefix-arg t t nil nil t) (defining-kbd-macro t t nil nil t) (last-kbd-macro t t nil nil t) (system-key-alist t t nil nil t) (window-system t t nil nil t) (default-minibuffer-frame t t nil nil t) (input-decode-map t t nil cons t) (local-function-key-map t t nil cons t)) (probe-a (probe-b probe-b) probe-a 4 rl2 nil) ((w1 set nil) (w2 let nil) (w1 set nil) (w3 set nil)) (w3 thread w3) ((error "Symbol last-command may not be buffer-local") nil))"#,
+        "KBOARD variables",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-current-buffer (window-buffer)
+          (insert "abcdef") (goto-char 1)
+          (list (progn (execute-kbd-macro (kbd "C-f C-f"))
+                       (list (point) last-command real-last-command last-repeatable-command))
+                (progn (setq last-command 'probe-set) (execute-kbd-macro (kbd "C-f")) last-command)
+                (let ((last-command 'probe-let)) (execute-kbd-macro (kbd "C-b")) last-command)
+                (list (point) last-command real-last-command)))"#,
+        r#"((3 forward-char forward-char forward-char) forward-char backward-char (3 forward-char backward-char))"#,
+        "KBOARD variables after commands",
+    );
+}
+
+#[test]
+fn nil_and_t_are_symbols_with_plists_as_gnu() {
+    // lispsym's first two symbols: their plists, function cells and
+    // value cells, intern and read of their names, printing, keymap keys
+    // and eq hash keys; and Funintern of "nil" and "t", after which
+    // intern and read make new symbols of those names that are not nil
+    // and t.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (get nil 'foo) (progn (put nil 't2-prop 1) (get nil 't2-prop))
+              (plist-get (symbol-plist nil) 't2-prop)
+              (progn (put t 't2-prop 2) (list (get t 't2-prop) (plist-get (symbol-plist t) 't2-prop)))
+              (symbol-function nil) (symbol-function t) (fboundp nil) (fboundp t)
+              (boundp nil) (boundp t) (eq (intern "nil") nil) (eq (intern "t") t)
+              (eq (intern-soft "nil") nil) (intern-soft "nil")
+              (eq (read "nil") nil) (eq (car (read-from-string "(t)")) t)
+              (symbol-name nil) (symbol-name t) (prin1-to-string (list nil t 'nil))
+              (format "%S %s" nil t) (type-of nil) (type-of t) (symbolp nil) (keywordp t)
+              (condition-case e (set nil 1) (error e)) (condition-case e (setq t 1) (error e))
+              (condition-case e (fset nil 'car) (error e))
+              (let ((m (make-sparse-keymap)))
+                (define-key m [t] 'ignore) (define-key m [nil] 'forward-char)
+                (list (lookup-key m [t]) (lookup-key m [nil]) (keymapp m)))
+              (let ((h (make-hash-table :test 'eq)))
+                (puthash nil 1 h) (puthash t 2 h)
+                (list (gethash nil h) (gethash t h) (gethash (intern "nil") h)))
+              (progn (put nil 't2-prop nil) (put t 't2-prop nil)
+                     (list (get nil 't2-prop) (get t 't2-prop))))"#,
+        r#"(nil 1 1 (2 2) nil nil nil nil t t t t t nil t nil "nil" "t" "(nil t nil)" "nil t" symbol symbol t nil (setting-constant nil) (setting-constant t) (setting-constant nil) (ignore forward-char t) (1 2 1) (nil nil))"#,
+        "nil and t",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((old-nil nil))
+          (list (unintern "nil" obarray)
+                (eq (intern-soft "nil") nil)
+                (let ((new (intern "nil")))
+                  (list (eq new nil) (symbolp new) (symbol-name new) (null new)
+                        (prin1-to-string new) (eq new (intern "nil"))
+                        (eq (read "nil") nil) (eq (read "nil") new)))
+                (eq old-nil nil) (null old-nil) (unintern "t" obarray)
+                (let ((nt (intern "t"))) (list (eq nt t) (eq (read "t") t) (eq (read "t") nt)))))"#,
+        r#"(t t (nil t "nil" nil "nil" t nil t) t t t (nil nil t))"#,
+        "nil and t uninterned",
+    );
+}
+
+#[test]
+fn host_objects_type_print_name_and_hash_as_gnu() {
+    // A mutex, a condition variable, a thread, an obarray, a window
+    // configuration and a pipe process: type-of, the printed form's
+    // head, their names, eq hash keys before and after a collection, and
+    // a condition variable's mutex.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((m (make-mutex "t3-m")) (cv (make-condition-variable m "t3-cv"))
+               (th (make-thread #'ignore "t3-th"))
+               (ob (obarray-make)) (wc (current-window-configuration))
+               (p (make-pipe-process :name "t3-p" :buffer nil :noquery t))
+               (h (make-hash-table :test 'eq))
+               (objects (list m cv th ob wc p)))
+          (thread-join th)
+          (dolist (o objects) (puthash o t h))
+          (prog1
+              (list (mapcar #'type-of objects)
+                    (mapcar (lambda (o) (car (split-string (prin1-to-string o) " "))) objects)
+                    (mutex-name m) (condition-name cv) (thread-name th) (process-name p)
+                    (mapcar (lambda (o) (gethash o h)) objects)
+                    (eq (condition-mutex cv) m)
+                    (progn (garbage-collect) (mapcar (lambda (o) (gethash o h)) objects)))
+            (delete-process p)))"#,
+        r##"((mutex condition-variable thread obarray window-configuration process) ("#<mutex" "#<condvar" "#<thread" "#<obarray" "#<window-configuration>" "#<process") "t3-m" "t3-cv" "t3-th" "t3-p" (t t t t t t) t (t t t t t t))"##,
+        "host objects",
+    );
+}
+
+#[test]
+fn host_object_constructors_count_their_vector_cells() {
+    // memory-use-counts' vector-cells consed by make-mutex,
+    // make-condition-variable with its mutex, obarray-make and
+    // current-window-configuration, less what an empty function conses.
+    // GNU allocates thread.h's, lisp.h's and window.c's structs (Lisp_Mutex
+    // 9 words after the header, a condition variable 17 with its mutex,
+    // Lisp_Obarray 2, a configuration 121 with its saved windows); here
+    // each is a host record (6 cells) and a configuration conses 60: the
+    // records of the mirrors plan's R6 and R8 are what change these.
+    let program = r#"(let ((delta (lambda (f)
+                       (garbage-collect)
+                       (let* ((a (memory-use-counts)) (x (funcall f)) (b (memory-use-counts)) (r nil))
+                         (ignore x)
+                         (while b (push (- (pop b) (pop a)) r))
+                         (nreverse r)))))
+          (let ((base (funcall delta (lambda () nil))))
+            (mapcar (lambda (f) (let ((d (funcall delta f)) (r nil) (b base))
+                                  (while d (push (- (pop d) (pop b)) r))
+                                  (nth 2 (nreverse r))))
+                    (list (lambda () (make-mutex))
+                          (lambda () (make-condition-variable (make-mutex)))
+                          (lambda () (obarray-make))
+                          (lambda () (current-window-configuration))))))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(9 17 2 121)");
+    assert_interpreter_prints(program, "(6 12 6 60)", "host object counts");
+}
+
+#[test]
+fn mapatoms_and_all_completions_walk_while_the_callback_interns() {
+    // A mapatoms callback and an all-completions predicate that intern
+    // new symbols: the walks end, and the symbols they interned are in
+    // the obarray afterwards.  Whether the walk itself meets them (GNU's
+    // map_obarray walks the buckets live and meets them) is not recorded.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((n 0) (seen nil))
+          (mapatoms (lambda (s) (when (= n 0) (dotimes (k 50) (intern (format "t4-new-%d" k))))
+                      (setq n (1+ n))
+                      (when (string-prefix-p "t4-new-" (symbol-name s)) (setq seen t))))
+          (intern "t4-cand-0")
+          (let ((c 0))
+            (all-completions "t4-cand" obarray
+                             (lambda (s) (when (= c 0) (dotimes (k 20) (intern (format "t4-cand-y%d" k))))
+                               (setq c (1+ c)) t))
+            (list (length (all-completions "t4-new-" obarray))
+                  (length (all-completions "t4-cand" obarray))
+                  (> n 0) (> c 0))))"#,
+        r#"(50 21 t t)"#,
+        "mapatoms while interning",
+    );
+}
+
+#[test]
+fn garbage_collect_reports_nine_kinds_as_gnu() {
+    // alloc.c:garbage_collect's value: the nine kinds in GNU's order,
+    // each with its size, its used count and (but for string-bytes,
+    // vectors and buffers) its free count, every count a natural number.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((g (garbage-collect)))
+          (list (length g) (mapcar #'car g)
+                (mapcar #'length g)
+                (let ((ok t))
+                  (dolist (e g) (dolist (x (cdr e)) (unless (and (integerp x) (>= x 0)) (setq ok nil))))
+                  ok)
+                (let ((c (assq 'conses g))) (list (nth 1 c) (length c)))))"#,
+        r#"(9 (conses symbols strings string-bytes vectors vector-slots floats intervals buffers) (4 4 4 3 3 4 4 4 3) t (16 4))"#,
+        "garbage-collect",
+    );
+}
+
+#[test]
+fn an_unbound_ert_test_leaves_its_body_to_the_collector() {
+    // ert-make-test-unbound removes the test's `ert--test' property
+    // (cl-remprop): in GNU nothing then holds the test or its body, and
+    // a weak-key table that held both is empty after a collection.  Here
+    // the body stays, held by the evaluator's copy of the test registry
+    // (`ert_tests'), which the mirrors plan's R5 removes.
+    let program = r#"(progn
+          (require 'ert)
+          (defvar t6-w (make-hash-table :test 'eq :weakness 'key))
+          (defalias 't6-define
+            (lambda ()
+              (eval '(ert-deftest t6-probe-test () (should (equal (list 1 2) (list 1 2)))) t)
+              (puthash (get 't6-probe-test 'ert--test) 'test t6-w)
+              (puthash (ert-test-body (get 't6-probe-test 'ert--test)) 'body t6-w)
+              nil))
+          (defalias 't6-unbind (lambda () (ert-make-test-unbound 't6-probe-test) nil))
+          (t6-define)
+          (let ((before (list (ert-test-boundp 't6-probe-test) (hash-table-count t6-w))))
+            (t6-unbind)
+            (dotimes (_ 3) (garbage-collect))
+            (list before (ert-test-boundp 't6-probe-test) (get 't6-probe-test 'ert--test)
+                  (hash-table-count t6-w))))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "((t 2) nil nil 0)");
+    assert_interpreter_prints(program, "((t 2) nil nil 1)", "unbound ERT test");
+}
+
+#[test]
 fn bytecode_calls_observe_gc_hook_redefinition_and_gnu_collection_completion() {
     assert_oracle_contract_matches_interpreter(
         include_str!("../../../tests/fixtures/call-after-gc-redefinition.el"),
