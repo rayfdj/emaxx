@@ -22,7 +22,7 @@ use std::cell::{Cell, UnsafeCell};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
 use std::sync::OnceLock;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[repr(C)]
 pub(crate) struct StringCell {
@@ -358,7 +358,51 @@ fn empty_string(multibyte: bool) -> StringObjectRef {
     unsafe { StringObjectRef::from_raw(address as *mut StringCell) }
 }
 
-static FREE_LIST: AtomicPtr<StringCell> = AtomicPtr::new(std::ptr::null_mut());
+thread_local! {
+    /// alloc.c's `string_free_list', and `string_block' with
+    /// `string_block_index': the cells of the OS thread that holds the
+    /// runtime (see `alloc::Frontier').
+    static FREE_LIST: Cell<*mut StringCell> = const { Cell::new(std::ptr::null_mut()) };
+    static BUMP_NEXT: Cell<usize> = const { Cell::new(0) };
+    static BUMP_END: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The strings' share of `alloc::Frontier': the headers' and the current
+/// small data blocks'.
+pub(super) struct Frontier([usize; 3], data::Frontier);
+
+impl Frontier {
+    pub(super) const EMPTY: Self = Self([0; 3], data::Frontier::EMPTY);
+
+    pub(super) fn take() -> Self {
+        Self(
+            [
+                FREE_LIST.replace(std::ptr::null_mut()) as usize,
+                BUMP_NEXT.replace(0),
+                BUMP_END.replace(0),
+            ],
+            data::Frontier::take(),
+        )
+    }
+
+    /// The cells it gives next (the free list's head, the bump region's)
+    /// and the current small data blocks.
+    #[cfg(test)]
+    pub(super) fn cells(&self) -> [usize; 5] {
+        let [free, next, end] = self.0;
+        let [small, pure, image] = self.1.blocks();
+        [free, if next < end { next } else { 0 }, small, pure, image]
+    }
+
+    pub(super) fn install(self) {
+        let [free, next, end] = self.0;
+        FREE_LIST.set(free as *mut StringCell);
+        BUMP_NEXT.set(next);
+        BUMP_END.set(end);
+        self.1.install();
+    }
+}
+
 /// How many times a string whose bytes were verified as code has been
 /// borrowed to change (its state `Current' turned `Stale'): a cache of
 /// programs that holds the count it was filled at holds only current code
@@ -370,16 +414,14 @@ static CODE_CHANGES: AtomicUsize = AtomicUsize::new(0);
 pub(crate) fn code_changes() -> usize {
     CODE_CHANGES.load(Ordering::Relaxed)
 }
-static BUMP_NEXT: AtomicUsize = AtomicUsize::new(0);
-static BUMP_END: AtomicUsize = AtomicUsize::new(0);
 static LIVE_STRINGS: AtomicUsize = AtomicUsize::new(0);
 static LIVE_BYTES: AtomicUsize = AtomicUsize::new(0);
 static LIVE_SPANS: AtomicUsize = AtomicUsize::new(0);
 
 /// The next string header takes a new block (see `ImageRegion').
 pub(super) fn abandon_allocation_frontier() {
-    FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
-    BUMP_NEXT.store(BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
+    FREE_LIST.set(std::ptr::null_mut());
+    BUMP_NEXT.set(BUMP_END.get());
 }
 
 /// Ordinary constructors canonicalize empties; restoration and purecopy
@@ -409,9 +451,8 @@ impl Drop for StringConstruction {
             let cell = self.0;
             std::ptr::drop_in_place((*cell).state.get());
             (*cell).mark.set_raw(FREE_MARK);
-            cell.cast::<*mut StringCell>()
-                .write(FREE_LIST.load(Ordering::Relaxed));
-            FREE_LIST.store(cell, Ordering::Relaxed);
+            cell.cast::<*mut StringCell>().write(FREE_LIST.get());
+            FREE_LIST.set(cell);
         }
     }
 }
@@ -480,27 +521,21 @@ pub(crate) fn allocate_string<E>(
 /// block.
 #[inline(always)]
 fn take_cell() -> *mut StringCell {
-    let head = FREE_LIST.load(Ordering::Relaxed);
+    let head = FREE_LIST.get();
     if head.is_null() {
-        let next = BUMP_NEXT.load(Ordering::Relaxed);
-        if next < BUMP_END.load(Ordering::Relaxed) {
-            BUMP_NEXT.store(next + STRING_CELL_SIZE, Ordering::Relaxed);
+        let next = BUMP_NEXT.get();
+        if next < BUMP_END.get() {
+            BUMP_NEXT.set(next + STRING_CELL_SIZE);
             next as *mut StringCell
         } else {
             let block = new_block(BlockKind::String);
-            BUMP_NEXT.store(block + STRING_CELL_SIZE, Ordering::Relaxed);
-            BUMP_END.store(
-                block + STRINGS_PER_BLOCK * STRING_CELL_SIZE,
-                Ordering::Relaxed,
-            );
+            BUMP_NEXT.set(block + STRING_CELL_SIZE);
+            BUMP_END.set(block + STRINGS_PER_BLOCK * STRING_CELL_SIZE);
             block as *mut StringCell
         }
     } else {
         // SAFETY: a free cell's first word is the free list link.
-        FREE_LIST.store(
-            unsafe { head.cast::<*mut StringCell>().read() },
-            Ordering::Relaxed,
-        );
+        FREE_LIST.set(unsafe { head.cast::<*mut StringCell>().read() });
         head
     }
 }
@@ -685,12 +720,11 @@ pub(crate) fn sweep_strings(epoch: u32) {
             }
             continue;
         }
-        let limit =
-            if BUMP_END.load(Ordering::Relaxed) == start + STRINGS_PER_BLOCK * STRING_CELL_SIZE {
-                (BUMP_NEXT.load(Ordering::Relaxed) - start) / STRING_CELL_SIZE
-            } else {
-                STRINGS_PER_BLOCK
-            };
+        let limit = if BUMP_END.get() == start + STRINGS_PER_BLOCK * STRING_CELL_SIZE {
+            (BUMP_NEXT.get() - start) / STRING_CELL_SIZE
+        } else {
+            STRINGS_PER_BLOCK
+        };
         let previous_chain = free_list;
         let mut block_free = 0;
         for index in 0..limit {
@@ -741,7 +775,7 @@ pub(crate) fn sweep_strings(epoch: u32) {
             free_count += block_free;
         }
     }
-    FREE_LIST.store(free_list, Ordering::Relaxed);
+    FREE_LIST.set(free_list);
     if !image_unchanged {
         super::IMAGE_STRINGS.set_live(image_live);
     }

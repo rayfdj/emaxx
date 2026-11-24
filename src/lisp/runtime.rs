@@ -23,6 +23,9 @@ struct RuntimeState {
     /// A panic left a scoped entry that held the runtime: the heap is not
     /// trusted after that.
     poisoned: bool,
+    /// The allocation frontier while no OS thread holds the runtime; the
+    /// holder has it in its thread-local cells (see `alloc::Frontier').
+    frontier: crate::lisp::alloc::Frontier,
 }
 
 /// The state is locked only while the runtime is taken or given back, not
@@ -38,6 +41,7 @@ static RUNTIME: GlobalLock = GlobalLock {
         holder: None,
         waiters: 0,
         poisoned: false,
+        frontier: crate::lisp::alloc::Frontier::EMPTY,
     }),
     released: Condvar::new(),
 };
@@ -128,12 +132,15 @@ impl GlobalLock {
             state.waiters -= 1;
         }
         state.holder = Some(me);
+        std::mem::replace(&mut state.frontier, crate::lisp::alloc::Frontier::EMPTY).install();
         state.poisoned
     }
 
-    /// thread.c:release_global_lock.
+    /// thread.c:release_global_lock.  The frontier goes back before the
+    /// runtime does, so the next holder is given it.
     fn release(&self, poison: bool) {
         let mut state = self.state();
+        state.frontier = crate::lisp::alloc::Frontier::take();
         state.holder = None;
         state.poisoned |= poison;
         if state.waiters > 0 {
@@ -156,6 +163,16 @@ fn report_wait(line: &str) {
     crate::lisp::primitives::batch_stdout::stderr_write(line.as_bytes());
 }
 
+/// The name of the OS thread that holds the runtime, if one does.
+#[cfg(test)]
+pub(crate) fn holder_name() -> Option<String> {
+    RUNTIME
+        .state()
+        .holder
+        .as_ref()
+        .map(|holder| holder.name().unwrap_or("<unnamed>").to_owned())
+}
+
 /// thread.c:in_current_thread: whether this OS thread holds the runtime.
 #[inline]
 pub(crate) fn held() -> bool {
@@ -173,11 +190,26 @@ pub(crate) fn ensure_held() {
     }
 }
 
+/// An allocator's cold path: whether this OS thread has just taken the
+/// runtime, a tenure, so that the allocation is made again from the
+/// frontier it was given.
+#[inline]
+pub(crate) fn took_runtime() -> bool {
+    if held() {
+        return false;
+    }
+    take_tenure();
+    true
+}
+
 #[cold]
 #[inline(never)]
 fn take_tenure() {
-    // Its destructor gives the runtime back when the thread exits.
-    TENURE.with(|_| ());
+    // Its destructor gives the runtime back when the thread exits.  A
+    // thread-local destructor that runs after it finds it gone.
+    TENURE
+        .try_with(|_| ())
+        .expect("the Lisp runtime is taken after its thread's tenure ended");
     // A tenure does not refuse a runtime a scoped entry's panic poisoned:
     // production never takes one, and one failed test must not fail every
     // test after it.
@@ -293,8 +325,9 @@ pub(crate) fn with_runtime<R: Send>(body: impl FnOnce() -> R) -> R {
 
 #[cfg(test)]
 mod tests {
-    use super::{RUNTIME, ensure_held, held, release_while, with_runtime};
+    use super::{RUNTIME, ensure_held, held, holder_name, release_while, with_runtime};
     use crate::lisp::eval::continuations::current_stack_base;
+    use crate::lisp::types::{Kind, Value};
     use std::sync::{
         Arc, Barrier,
         atomic::{AtomicUsize, Ordering},
@@ -529,5 +562,195 @@ mod tests {
         assert!(!held());
         assert_eq!(release_while(|| 7), 7);
         assert!(!held());
+    }
+
+    /// FIRST_USE, on a thread without the runtime while another thread
+    /// holds it, does not return until the holder has exited.
+    fn waits_for_the_holder(first_use: fn() -> bool) {
+        let (held_tx, held_rx) = mpsc::channel();
+        let (finish_tx, finish_rx) = mpsc::channel::<()>();
+        let holder = std::thread::Builder::new()
+            .name("frontier-holder-probe".into())
+            .spawn(move || {
+                let kept = Value::cons(Value::Integer(7), Value::Nil);
+                assert!(held(), "the first allocation took the runtime");
+                held_tx.send(()).expect("announce the tenure");
+                finish_rx.recv().expect("wait to finish");
+                assert_eq!(kept.car().expect("a cons"), Value::Integer(7));
+            })
+            .expect("spawn the holder");
+        held_rx.recv().expect("the holder allocates");
+        let (done_tx, done_rx) = mpsc::channel();
+        let waiter = std::thread::spawn(move || {
+            assert!(!held());
+            let made = first_use();
+            assert!(held(), "the first allocation took the runtime");
+            done_tx.send(made).expect("announce the allocation");
+        });
+        assert!(
+            done_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "no allocation is made while another thread holds the runtime"
+        );
+        assert_eq!(holder_name().as_deref(), Some("frontier-holder-probe"));
+        finish_tx.send(()).expect("let the holder finish");
+        holder.join().expect("the holder exits");
+        assert!(
+            done_rx
+                .recv_timeout(Duration::from_secs(60))
+                .expect("the allocation is made once the holder has exited")
+        );
+        waiter.join().expect("the waiter exits");
+    }
+
+    #[test]
+    fn a_thread_without_the_runtime_waits_at_its_first_allocation() {
+        // Its frontier cells are empty, so its first cons reaches the cold
+        // path, which takes the runtime before it reads any shared state.
+        waits_for_the_holder(|| Value::cons(Value::Nil, Value::Nil).is_cons());
+    }
+
+    #[test]
+    fn a_thread_without_the_runtime_waits_at_its_first_intern() {
+        // A name no symbol has yet: interning it makes its string and its
+        // symbol.
+        waits_for_the_holder(|| Value::symbol("runtime-frontier-intern-probe").is_symbol());
+    }
+
+    /// This thread's newest cons: its cell, the cell its frontier gives
+    /// next, the live conses and the mark epoch.
+    fn cons_here() -> (usize, Option<usize>, usize, u32) {
+        let cell = Value::cons(Value::Nil, Value::Nil);
+        let Kind::Cons(cell) = cell.kind() else {
+            unreachable!("a cons")
+        };
+        (
+            cell.as_ptr() as usize,
+            crate::lisp::alloc::next_cons_cell(),
+            crate::lisp::alloc::live_conses(),
+            crate::lisp::types::current_mark_epoch(),
+        )
+    }
+
+    /// Whether the cons made at AFTER is the one the frontier at BEFORE gave
+    /// next, as it must be when nothing else consed or collected between.
+    fn continued(
+        before: (usize, Option<usize>, usize, u32),
+        after: (usize, Option<usize>, usize, u32),
+    ) {
+        if after.2 == before.2 + 1 && after.3 == before.3 && before.1.is_some() {
+            assert_eq!(
+                Some(after.0),
+                before.1,
+                "the next cell of the same frontier"
+            );
+        }
+    }
+
+    #[test]
+    fn the_frontier_continues_across_os_threads() {
+        // One heap, as GNU's is: a thread that exits returns its frontier
+        // before another can take the runtime, and the next holder's first
+        // cons is the cell the first thread's frontier would have given;
+        // a thread that lends the runtime returns its frontier, its cells
+        // left empty, and is given back the one its borrower returned.
+        // (A thread whose first allocation takes the runtime makes a new
+        // block for it; these take the runtime first.)
+        let first = std::thread::spawn(cons_here)
+            .join()
+            .expect("the first holder");
+        let second = std::thread::spawn(|| {
+            ensure_held();
+            let second = cons_here();
+            let lent = std::thread::spawn(|| {
+                ensure_held();
+                cons_here()
+            });
+            let borrowed = release_while(|| {
+                assert!(
+                    crate::lisp::alloc::frontier_addresses().is_empty(),
+                    "a lender keeps no frontier"
+                );
+                lent.join()
+            })
+            .expect("the borrower");
+            continued(second, borrowed);
+            continued(borrowed, cons_here());
+            second
+        })
+        .join()
+        .expect("the second holder");
+        continued(first, second);
+        // A scoped entry's thread keeps no frontier once it returns.
+        std::thread::spawn(|| {
+            with_runtime(|| {
+                cons_here();
+            });
+            assert!(crate::lisp::alloc::frontier_addresses().is_empty());
+        })
+        .join()
+        .expect("the scoped entry's thread");
+    }
+
+    #[test]
+    fn mem_find_rejects_the_bump_and_free_list_words() {
+        // A spawned thread's static thread-locals lie in its stack's
+        // mapping, where the conservative scan can read the frontier's
+        // words: none of them may be taken for an object.
+        std::thread::spawn(|| {
+            let mut interp = crate::lisp::eval::Interpreter::new();
+            let garbage = "(let ((i 0)) (while (< i 2000) (cons i (number-to-string i)) \
+                           (make-vector 3 i) (make-symbol \"probe\") (* 1.5 i) \
+                           (setq i (1+ i))) i)";
+            assert_eq!(fixnum(&mut interp, garbage), 2000);
+            assert_eq!(fixnum(&mut interp, "(progn (garbage-collect) 0)"), 0);
+            assert_eq!(fixnum(&mut interp, garbage), 2000);
+            let words = crate::lisp::alloc::frontier_addresses();
+            assert!(!words.is_empty());
+            for word in words {
+                // SAFETY: this thread holds the runtime; nothing collects.
+                assert!(
+                    unsafe { crate::lisp::alloc::mem_find(word) }.is_none(),
+                    "{word:#x} is a frontier word, not an object"
+                );
+            }
+        })
+        .join()
+        .expect("the frontier's thread completes");
+    }
+
+    #[test]
+    fn four_test_threads_share_one_heap_in_turn() {
+        // Each builds an editor, allocates 50,000 conses and strings,
+        // collects and reads them back; they hold the runtime one at a
+        // time, each from its first allocation until it exits.
+        let start = Arc::new(Barrier::new(4));
+        let workers: Vec<_> = (0..4)
+            .map(|worker| {
+                let start = Arc::clone(&start);
+                std::thread::spawn(move || {
+                    start.wait();
+                    let mut interp = crate::lisp::eval::Interpreter::new();
+                    let program = format!(
+                        "(let ((l nil) (i 0) (ok t))
+                           (while (< i 50000)
+                             (setq l (cons (cons i (number-to-string (+ i {worker}))) l))
+                             (setq i (1+ i)))
+                           (garbage-collect)
+                           (while l
+                             (setq i (1- i))
+                             (if (and (= (car (car l)) i)
+                                      (equal (cdr (car l)) (number-to-string (+ i {worker}))))
+                                 nil
+                               (setq ok nil))
+                             (setq l (cdr l)))
+                           (if (and ok (= i 0)) 1 0))"
+                    );
+                    fixnum(&mut interp, &program)
+                })
+            })
+            .collect();
+        for worker in workers {
+            assert_eq!(worker.join().expect("a worker"), 1);
+        }
     }
 }

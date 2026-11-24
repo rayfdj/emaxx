@@ -41,7 +41,7 @@ pub(crate) use strings::{
     live_string_object_census, retire_string_data, string_data_size, sweep_strings,
 };
 pub(crate) mod vectors;
-use std::sync::atomic::{AtomicBool, AtomicPtr, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
 pub use symbols::{SymbolCell, SymbolRef};
 /// The actual header cells this allocator holds, as charged to collection.
 pub(crate) const SYMBOL_CELL_BYTES: usize = symbols::SYMBOL_CELL_SIZE;
@@ -337,10 +337,10 @@ fn forget_image_live() {
 /// behind stay free and return to the free lists at the next sweep (or, in
 /// an image block, stay unused).
 fn abandon_allocation_frontiers() {
-    FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
-    BUMP_NEXT.store(BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
-    FLOAT_FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
-    FLOAT_BUMP_NEXT.store(FLOAT_BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
+    FREE_LIST.set(std::ptr::null_mut());
+    BUMP_NEXT.set(BUMP_END.get());
+    FLOAT_FREE_LIST.set(std::ptr::null_mut());
+    FLOAT_BUMP_NEXT.set(FLOAT_BUMP_END.get());
     symbols::abandon_allocation_frontier();
     strings::abandon_allocation_frontier();
     vectors::abandon_allocation_frontier();
@@ -350,20 +350,123 @@ fn abandon_allocation_frontiers() {
 static LIVE_CONSES: AtomicUsize = AtomicUsize::new(0);
 static FREE_CONSES: AtomicUsize = AtomicUsize::new(0);
 
-/// alloc.c's `cons_free_list', and `cons_block' with `cons_block_index'
-/// as the bump region of the newest block: plain globals there, read and
-/// written without a lock by the one Lisp thread that runs; relaxed
-/// atomics here for the same access (never contended, see above).
-static FREE_LIST: AtomicPtr<ConsCell> = AtomicPtr::new(std::ptr::null_mut());
-static BUMP_NEXT: AtomicUsize = AtomicUsize::new(0);
-static BUMP_END: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// alloc.c's `cons_free_list', and `cons_block' with `cons_block_index'
+    /// as the bump region of the newest block: plain globals there, read
+    /// and written without a lock by the thread that holds global_lock;
+    /// here the cells of the OS thread that holds the runtime (see
+    /// `Frontier'), reached as directly as a static.
+    static FREE_LIST: Cell<*mut ConsCell> = const { Cell::new(std::ptr::null_mut()) };
+    static BUMP_NEXT: Cell<usize> = const { Cell::new(0) };
+    static BUMP_END: Cell<usize> = const { Cell::new(0) };
+    /// alloc.c's `float_block', `float_free_list' and `float_block_index'.
+    static FLOAT_FREE_LIST: Cell<*mut FloatCell> = const { Cell::new(std::ptr::null_mut()) };
+    static FLOAT_BUMP_NEXT: Cell<usize> = const { Cell::new(0) };
+    static FLOAT_BUMP_END: Cell<usize> = const { Cell::new(0) };
+}
 /// The last serial given a cons for `WeakConsRef' (see `ConsMark::serial').
 static SERIAL: AtomicU64 = AtomicU64::new(0);
 
-/// alloc.c's `float_block', `float_free_list' and `float_block_index'.
-static FLOAT_FREE_LIST: AtomicPtr<FloatCell> = AtomicPtr::new(std::ptr::null_mut());
-static FLOAT_BUMP_NEXT: AtomicUsize = AtomicUsize::new(0);
-static FLOAT_BUMP_END: AtomicUsize = AtomicUsize::new(0);
+/// alloc.c's allocation frontier: the cons, float, symbol and string free
+/// lists and the bump regions of their newest blocks, the current blocks
+/// of small string data and the vector free lists.  GNU's are globals that
+/// the thread holding global_lock reads and writes.  These are the
+/// thread-local cells of the OS thread that holds the runtime: the runtime
+/// keeps the frontier while no thread holds it, a thread that takes the
+/// runtime is given it (`install'), and one that gives the runtime back
+/// returns it (`take') before another thread can take the runtime.  A
+/// thread without the runtime has empty cells, so its first allocation
+/// reaches a new block's path (`new_block', `allocate_vector_block', a
+/// large object's, the small string data's), which takes the runtime
+/// before it reads any shared state.  The block that allocation then makes
+/// is its own, and the bump region the thread was given is left, its cells
+/// returned to the free lists at the next sweep (as
+/// `abandon_allocation_frontiers' leaves one); the free lists it was given
+/// are kept, and small string data goes in the newest block it was given
+/// while that has room.
+pub(crate) struct Frontier {
+    conses: [usize; 3],
+    floats: [usize; 3],
+    symbols: symbols::Frontier,
+    strings: strings::Frontier,
+    vectors: vectors::Frontier,
+}
+
+impl Frontier {
+    /// The frontier before the first block of any kind.
+    pub(crate) const EMPTY: Self = Self {
+        conses: [0; 3],
+        floats: [0; 3],
+        symbols: symbols::Frontier::EMPTY,
+        strings: strings::Frontier::EMPTY,
+        vectors: vectors::Frontier::EMPTY,
+    };
+
+    /// This OS thread's frontier, its cells left empty.
+    pub(crate) fn take() -> Self {
+        Self {
+            conses: [
+                FREE_LIST.replace(std::ptr::null_mut()) as usize,
+                BUMP_NEXT.replace(0),
+                BUMP_END.replace(0),
+            ],
+            floats: [
+                FLOAT_FREE_LIST.replace(std::ptr::null_mut()) as usize,
+                FLOAT_BUMP_NEXT.replace(0),
+                FLOAT_BUMP_END.replace(0),
+            ],
+            symbols: symbols::Frontier::take(),
+            strings: strings::Frontier::take(),
+            vectors: vectors::Frontier::take(),
+        }
+    }
+
+    /// Make this the frontier of this OS thread, whose cells are empty.
+    pub(crate) fn install(self) {
+        let [free, next, end] = self.conses;
+        FREE_LIST.set(free as *mut ConsCell);
+        BUMP_NEXT.set(next);
+        BUMP_END.set(end);
+        let [free, next, end] = self.floats;
+        FLOAT_FREE_LIST.set(free as *mut FloatCell);
+        FLOAT_BUMP_NEXT.set(next);
+        FLOAT_BUMP_END.set(end);
+        self.symbols.install();
+        self.strings.install();
+        self.vectors.install();
+    }
+}
+
+/// What this OS thread's frontier points into: the cells it gives next of
+/// every kind (each free list's head and each bump region's next cell)
+/// and the current small string-data blocks; none for a thread without
+/// the runtime.
+#[cfg(test)]
+pub(crate) fn frontier_addresses() -> Vec<usize> {
+    let frontier = Frontier::take();
+    let bump = |[free, next, end]: [usize; 3]| [free, if next < end { next } else { 0 }];
+    let words = (bump(frontier.conses).into_iter())
+        .chain(bump(frontier.floats))
+        .chain(frontier.symbols.cells())
+        .chain(frontier.strings.cells())
+        .chain(frontier.vectors.cells().iter().copied())
+        .filter(|&word| word != 0)
+        .collect();
+    frontier.install();
+    words
+}
+
+/// The cell this OS thread's next cons is taken from, unless its frontier
+/// has none (a thread without the runtime, or a full newest block).
+#[cfg(test)]
+pub(crate) fn next_cons_cell() -> Option<usize> {
+    let head = FREE_LIST.get();
+    if !head.is_null() {
+        return Some(head as usize);
+    }
+    let next = BUMP_NEXT.get();
+    (next < BUMP_END.get()).then_some(next)
+}
 /// gcstat's `total_floats' and `total_free_floats'.
 static LIVE_FLOATS: AtomicUsize = AtomicUsize::new(0);
 static FREE_FLOATS: AtomicUsize = AtomicUsize::new(0);
@@ -583,13 +686,13 @@ struct FreeFloat {
 /// newest float block.
 #[inline]
 pub(crate) fn allocate_float(value: f64) -> FloatRef {
-    let head = FLOAT_FREE_LIST.load(Ordering::Relaxed);
+    let head = FLOAT_FREE_LIST.get();
     let slot = if head.is_null() {
         bump_float()
     } else {
         // SAFETY: a free cell's first word is the free-list link.
         let next = unsafe { (*head.cast::<FreeFloat>()).next };
-        FLOAT_FREE_LIST.store(next, Ordering::Relaxed);
+        FLOAT_FREE_LIST.set(next);
         FREE_FLOATS.store(
             FREE_FLOATS.load(Ordering::Relaxed).saturating_sub(1),
             Ordering::Relaxed,
@@ -608,26 +711,23 @@ pub(crate) fn allocate_float(value: f64) -> FloatRef {
 }
 
 fn bump_float() -> *mut FloatCell {
-    let next = FLOAT_BUMP_NEXT.load(Ordering::Relaxed);
-    let end = FLOAT_BUMP_END.load(Ordering::Relaxed);
+    let next = FLOAT_BUMP_NEXT.get();
+    let end = FLOAT_BUMP_END.get();
     if next < end {
-        FLOAT_BUMP_NEXT.store(next + FLOAT_CELL_SIZE, Ordering::Relaxed);
+        FLOAT_BUMP_NEXT.set(next + FLOAT_CELL_SIZE);
         return next as *mut FloatCell;
     }
     let block = new_block(BlockKind::Float);
     let first = float_cell(block, 0);
-    FLOAT_BUMP_NEXT.store(first as usize + FLOAT_CELL_SIZE, Ordering::Relaxed);
-    FLOAT_BUMP_END.store(
-        float_cell(block, FLOATS_PER_BLOCK) as usize,
-        Ordering::Relaxed,
-    );
+    FLOAT_BUMP_NEXT.set(first as usize + FLOAT_CELL_SIZE);
+    FLOAT_BUMP_END.set(float_cell(block, FLOATS_PER_BLOCK) as usize);
     first
 }
 
 /// alloc.c:sweep_floats, as `sweep_conses' below.
 pub(crate) fn sweep_floats(epoch: u32) -> usize {
-    let bump_next = FLOAT_BUMP_NEXT.load(Ordering::Relaxed);
-    let bump_end = FLOAT_BUMP_END.load(Ordering::Relaxed);
+    let bump_next = FLOAT_BUMP_NEXT.get();
+    let bump_end = FLOAT_BUMP_END.get();
     let mut free_list: *mut FloatCell = std::ptr::null_mut();
     let mut num_free = 0usize;
     let mut num_used = 0usize;
@@ -688,7 +788,7 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
             num_free += this_free;
         }
     }
-    FLOAT_FREE_LIST.store(free_list, Ordering::Relaxed);
+    FLOAT_FREE_LIST.set(free_list);
     for start in released {
         release_block(start, BlockKind::Float);
     }
@@ -1712,18 +1812,18 @@ struct FreeCell {
 pub(crate) fn allocate_cons(cell: ConsCell) -> ConsRef {
     // alloc.c:Fcons: the free list's head, else the next cell of the
     // newest block.
-    let head = FREE_LIST.load(Ordering::Relaxed);
+    let head = FREE_LIST.get();
     let slot = if head.is_null() {
-        let next = BUMP_NEXT.load(Ordering::Relaxed);
-        if next >= BUMP_END.load(Ordering::Relaxed) {
+        let next = BUMP_NEXT.get();
+        if next >= BUMP_END.get() {
             return allocate_cons_in_new_block(cell);
         }
-        BUMP_NEXT.store(next + CELL_SIZE, Ordering::Relaxed);
+        BUMP_NEXT.set(next + CELL_SIZE);
         next as *mut ConsCell
     } else {
         // SAFETY: a free cell's first word is the free-list link.
         let next = unsafe { (*head.cast::<FreeCell>()).next };
-        FREE_LIST.store(next, Ordering::Relaxed);
+        FREE_LIST.set(next);
         head
     };
     // SAFETY: SLOT is a free cell of a block.
@@ -1790,11 +1890,8 @@ pub(crate) unsafe fn adopt_image_cons_blocks(start: *mut u8, count: usize) {
 fn allocate_cons_in_new_block(cell: ConsCell) -> ConsRef {
     let block = new_block(BlockKind::Cons);
     let first = cons_cell(block, 0);
-    BUMP_NEXT.store(first as usize + CELL_SIZE, Ordering::Relaxed);
-    BUMP_END.store(
-        cons_cell(block, CELLS_PER_BLOCK) as usize,
-        Ordering::Relaxed,
-    );
+    BUMP_NEXT.set(first as usize + CELL_SIZE);
+    BUMP_END.set(cons_cell(block, CELLS_PER_BLOCK) as usize);
     // SAFETY: the new block's first cell is free.
     unsafe { fill_cons(first, cell) }
 }
@@ -1834,6 +1931,9 @@ fn release_block(start: usize, kind: BlockKind) {
 
 /// alloc.c's `lisp_align_malloc' of a block of KIND: every cell free.
 fn new_block(kind: BlockKind) -> usize {
+    // A thread without the runtime has an empty frontier, so it reaches
+    // here at its first allocation (see `Frontier').
+    crate::lisp::runtime::ensure_held();
     let block = arena::allocate_block(block_bytes(kind), block_alignment(kind));
     assert!(!block.is_null(), "out of memory for a block");
     let start = block as usize;
@@ -2016,8 +2116,8 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
     if verify_heap_enabled() {
         verify_marking(epoch);
     }
-    let bump_next = BUMP_NEXT.load(Ordering::Relaxed);
-    let bump_end = BUMP_END.load(Ordering::Relaxed);
+    let bump_next = BUMP_NEXT.get();
+    let bump_end = BUMP_END.get();
     let mut free_list: *mut ConsCell = std::ptr::null_mut();
     let mut num_free = 0usize;
     let mut num_used = 0usize;
@@ -2096,7 +2196,7 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
             num_free += this_free;
         }
     }
-    FREE_LIST.store(free_list, Ordering::Relaxed);
+    FREE_LIST.set(free_list);
     for start in released {
         release_block(start, BlockKind::Cons);
     }

@@ -19,7 +19,7 @@ use super::super::types::{MarkBit, SymbolName, Value};
 use super::{BlockKind, FREE_MARK, SYMBOLS_PER_BLOCK, new_block, release_block, sweep_blocks_of};
 use std::cell::Cell;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 
 /// The host text a symbol keeps beside its Lisp name, written once and
 /// never changed after: a box the cell owns and frees with it, text of
@@ -1132,11 +1132,45 @@ pub(crate) unsafe fn adopt_image_symbol_blocks(start: *mut u8, count: usize) {
 pub(super) const SYMBOL_CELL_SIZE: usize = std::mem::size_of::<SymbolCell>();
 const _: () = assert!(SYMBOL_CELL_SIZE == 64);
 
-/// alloc.c's `symbol_free_list', `symbol_block' with `symbol_block_index',
-/// and gcstat's `total_symbols' and `total_free_symbols'.
-static SYMBOL_FREE_LIST: AtomicPtr<SymbolCell> = AtomicPtr::new(std::ptr::null_mut());
-static SYMBOL_BUMP_NEXT: AtomicUsize = AtomicUsize::new(0);
-static SYMBOL_BUMP_END: AtomicUsize = AtomicUsize::new(0);
+thread_local! {
+    /// alloc.c's `symbol_free_list', and `symbol_block' with
+    /// `symbol_block_index': the cells of the OS thread that holds the
+    /// runtime (see `alloc::Frontier').
+    static SYMBOL_FREE_LIST: Cell<*mut SymbolCell> = const { Cell::new(std::ptr::null_mut()) };
+    static SYMBOL_BUMP_NEXT: Cell<usize> = const { Cell::new(0) };
+    static SYMBOL_BUMP_END: Cell<usize> = const { Cell::new(0) };
+}
+
+/// The symbols' share of `alloc::Frontier'.
+pub(super) struct Frontier([usize; 3]);
+
+impl Frontier {
+    pub(super) const EMPTY: Self = Self([0; 3]);
+
+    pub(super) fn take() -> Self {
+        Self([
+            SYMBOL_FREE_LIST.replace(std::ptr::null_mut()) as usize,
+            SYMBOL_BUMP_NEXT.replace(0),
+            SYMBOL_BUMP_END.replace(0),
+        ])
+    }
+
+    /// The cells it gives next: the free list's head, the bump region's.
+    #[cfg(test)]
+    pub(super) fn cells(&self) -> [usize; 2] {
+        let [free, next, end] = self.0;
+        [free, if next < end { next } else { 0 }]
+    }
+
+    pub(super) fn install(self) {
+        let [free, next, end] = self.0;
+        SYMBOL_FREE_LIST.set(free as *mut SymbolCell);
+        SYMBOL_BUMP_NEXT.set(next);
+        SYMBOL_BUMP_END.set(end);
+    }
+}
+
+/// gcstat's `total_symbols' and `total_free_symbols'.
 static LIVE_SYMBOLS: AtomicUsize = AtomicUsize::new(0);
 static FREE_SYMBOLS: AtomicUsize = AtomicUsize::new(0);
 
@@ -1202,13 +1236,13 @@ impl std::ops::Deref for SymbolRef {
 /// alloc.c's `Fmake_symbol' storage: the free list's head, else the next
 /// cell of the newest block.
 pub(crate) fn allocate_symbol(cell: SymbolCell) -> SymbolRef {
-    let head = SYMBOL_FREE_LIST.load(Ordering::Relaxed);
+    let head = SYMBOL_FREE_LIST.get();
     let slot = if head.is_null() {
         bump_symbol()
     } else {
         // SAFETY: a free cell's first word is the free-list link.
         let next = unsafe { (*head.cast::<FreeSymbol>()).next };
-        SYMBOL_FREE_LIST.store(next, Ordering::Relaxed);
+        SYMBOL_FREE_LIST.set(next);
         FREE_SYMBOLS.store(
             FREE_SYMBOLS.load(Ordering::Relaxed).saturating_sub(1),
             Ordering::Relaxed,
@@ -1233,23 +1267,20 @@ pub(crate) fn allocate_symbol(cell: SymbolCell) -> SymbolRef {
 
 /// The next symbol takes a new block (see `ImageRegion').
 pub(super) fn abandon_allocation_frontier() {
-    SYMBOL_FREE_LIST.store(std::ptr::null_mut(), Ordering::Relaxed);
-    SYMBOL_BUMP_NEXT.store(SYMBOL_BUMP_END.load(Ordering::Relaxed), Ordering::Relaxed);
+    SYMBOL_FREE_LIST.set(std::ptr::null_mut());
+    SYMBOL_BUMP_NEXT.set(SYMBOL_BUMP_END.get());
 }
 
 fn bump_symbol() -> *mut SymbolCell {
-    let next = SYMBOL_BUMP_NEXT.load(Ordering::Relaxed);
-    let end = SYMBOL_BUMP_END.load(Ordering::Relaxed);
+    let next = SYMBOL_BUMP_NEXT.get();
+    let end = SYMBOL_BUMP_END.get();
     if next < end {
-        SYMBOL_BUMP_NEXT.store(next + SYMBOL_CELL_SIZE, Ordering::Relaxed);
+        SYMBOL_BUMP_NEXT.set(next + SYMBOL_CELL_SIZE);
         return next as *mut SymbolCell;
     }
     let block = new_block(BlockKind::Symbol);
-    SYMBOL_BUMP_NEXT.store(block + SYMBOL_CELL_SIZE, Ordering::Relaxed);
-    SYMBOL_BUMP_END.store(
-        block + SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE,
-        Ordering::Relaxed,
-    );
+    SYMBOL_BUMP_NEXT.set(block + SYMBOL_CELL_SIZE);
+    SYMBOL_BUMP_END.set(block + SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE);
     block as *mut SymbolCell
 }
 
@@ -1292,8 +1323,8 @@ pub(super) unsafe fn live_symbol_holding(start: usize, address: usize) -> Option
 /// holding nothing but free cells is given back once more than a block's
 /// worth of free cells is at hand.  Returns gcstat's `total_symbols'.
 pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) -> usize {
-    let bump_next = SYMBOL_BUMP_NEXT.load(Ordering::Relaxed);
-    let bump_end = SYMBOL_BUMP_END.load(Ordering::Relaxed);
+    let bump_next = SYMBOL_BUMP_NEXT.get();
+    let bump_end = SYMBOL_BUMP_END.get();
     let mut free_list: *mut SymbolCell = std::ptr::null_mut();
     let mut num_free = 0usize;
     let mut num_used = 0usize;
@@ -1370,7 +1401,7 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
             num_free += this_free;
         }
     }
-    SYMBOL_FREE_LIST.store(free_list, Ordering::Relaxed);
+    SYMBOL_FREE_LIST.set(free_list);
     if !image_unchanged {
         super::IMAGE_SYMBOLS.set_live(image_live);
     }
@@ -1385,8 +1416,8 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
 /// The allocated symbol cells that are uninterned, live or not yet swept.
 #[cfg(test)]
 pub(crate) fn allocated_uninterned_symbols() -> usize {
-    let bump_next = SYMBOL_BUMP_NEXT.load(Ordering::Relaxed);
-    let bump_end = SYMBOL_BUMP_END.load(Ordering::Relaxed);
+    let bump_next = SYMBOL_BUMP_NEXT.get();
+    let bump_end = SYMBOL_BUMP_END.get();
     let mut count = 0;
     for (start, _) in sweep_blocks_of(BlockKind::Symbol) {
         let lim = if bump_end == start + SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE {

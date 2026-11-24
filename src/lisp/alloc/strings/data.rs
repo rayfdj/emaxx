@@ -5,6 +5,7 @@
 use super::{SharedStringState, StringCell};
 use crate::lisp::types::string_data::StringError;
 use std::alloc::{Layout, alloc, dealloc};
+use std::cell::Cell;
 use std::ptr::{self, NonNull};
 use std::sync::atomic::{AtomicBool, AtomicPtr, Ordering};
 
@@ -30,32 +31,71 @@ pub(crate) fn string_data_size(bytes: usize) -> usize {
     (PREFIX + bytes + 1).max(2 * ALIGN).next_multiple_of(ALIGN)
 }
 
+/// A chain of small-data blocks from its oldest; its newest, the block
+/// that takes new entries, is its CURRENT cell.
 struct SmallBlocks {
     oldest: AtomicPtr<Block>,
-    current: AtomicPtr<Block>,
+    current: &'static std::thread::LocalKey<Cell<*mut Block>>,
 }
 
 impl SmallBlocks {
-    const fn new() -> Self {
+    const fn new(current: &'static std::thread::LocalKey<Cell<*mut Block>>) -> Self {
         Self {
             oldest: AtomicPtr::new(ptr::null_mut()),
-            current: AtomicPtr::new(ptr::null_mut()),
+            current,
         }
     }
 }
 
-static SMALL: SmallBlocks = SmallBlocks::new();
+thread_local! {
+    /// alloc.c's `current_sblock', for SMALL, PURE_SMALL and IMAGE_SMALL:
+    /// the cells of the OS thread that holds the runtime (see
+    /// `alloc::Frontier').  The chains themselves are reached only on a
+    /// path that holds the runtime.
+    static SMALL_CURRENT: Cell<*mut Block> = const { Cell::new(ptr::null_mut()) };
+    static PURE_SMALL_CURRENT: Cell<*mut Block> = const { Cell::new(ptr::null_mut()) };
+    static IMAGE_SMALL_CURRENT: Cell<*mut Block> = const { Cell::new(ptr::null_mut()) };
+}
+
+/// The string data's share of `alloc::Frontier'.
+pub(super) struct Frontier([usize; 3]);
+
+impl Frontier {
+    pub(super) const EMPTY: Self = Self([0; 3]);
+
+    pub(super) fn take() -> Self {
+        Self([
+            SMALL_CURRENT.replace(ptr::null_mut()) as usize,
+            PURE_SMALL_CURRENT.replace(ptr::null_mut()) as usize,
+            IMAGE_SMALL_CURRENT.replace(ptr::null_mut()) as usize,
+        ])
+    }
+
+    #[cfg(test)]
+    pub(super) fn blocks(&self) -> [usize; 3] {
+        self.0
+    }
+
+    pub(super) fn install(self) {
+        let [small, pure, image] = self.0;
+        SMALL_CURRENT.set(small as *mut Block);
+        PURE_SMALL_CURRENT.set(pure as *mut Block);
+        IMAGE_SMALL_CURRENT.set(image as *mut Block);
+    }
+}
+
+static SMALL: SmallBlocks = SmallBlocks::new(&SMALL_CURRENT);
 static LARGE: AtomicPtr<Block> = AtomicPtr::new(ptr::null_mut());
 // Pure data is packed separately, remains immovable and is not collected,
 // as GNU pure storage is. This does not implement a shared pure arena for
 // other object kinds or claim complete physical allocation accounting.
-static PURE_SMALL: SmallBlocks = SmallBlocks::new();
+static PURE_SMALL: SmallBlocks = SmallBlocks::new(&PURE_SMALL_CURRENT);
 static PURE_LARGE: AtomicPtr<Block> = AtomicPtr::new(ptr::null_mut());
 /// The small data of strings allocated while an image loads, packed apart
 /// and never compacted, as GNU's dumped strings keep their data in the
 /// dump, which compact_small_strings never reads. A dead image string's
 /// entry is retired in place; its block stays.
-static IMAGE_SMALL: SmallBlocks = SmallBlocks::new();
+static IMAGE_SMALL: SmallBlocks = SmallBlocks::new(&IMAGE_SMALL_CURRENT);
 /// An entry has been retired since the small blocks were last compacted,
 /// or a compaction held a block back: the next one has entries to squeeze
 /// out. Without a dead entry compact_small_strings moves nothing (it
@@ -78,6 +118,52 @@ unsafe fn new_block(bytes: usize) -> Result<*mut Block, StringError> {
         });
     }
     Ok(block)
+}
+
+/// Whether BLOCK has room for an entry of NEEDED bytes.
+///
+/// # Safety
+/// BLOCK is a small block.
+#[inline(always)]
+unsafe fn fits(block: *mut Block, needed: usize) -> bool {
+    // SAFETY: the caller's contract.
+    unsafe { (*block).next_free.offset_from(block.cast()) as usize + needed <= BLOCK_BYTES }
+}
+
+/// The block of CHAIN an entry of NEEDED bytes goes in when its newest,
+/// BLOCK, is full or none: a new block, linked after it (null when none
+/// can be allocated).  A thread without the runtime has no newest block
+/// (see `alloc::Frontier'): it takes the runtime, and the chain's newest
+/// block with it, first.
+///
+/// # Safety
+/// BLOCK is null or this thread's newest block of CHAIN.
+#[cold]
+#[inline(never)]
+unsafe fn next_small_block(
+    chain: &SmallBlocks,
+    mut block: *mut Block,
+    needed: usize,
+) -> *mut Block {
+    if crate::lisp::runtime::took_runtime() {
+        block = chain.current.get();
+        // SAFETY: the chain's newest block, given with the runtime.
+        if !block.is_null() && unsafe { fits(block, needed) } {
+            return block;
+        }
+    }
+    // SAFETY: the serialized runtime exclusively mutates the block links.
+    let Ok(next) = (unsafe { new_block(BLOCK_BYTES) }) else {
+        return ptr::null_mut();
+    };
+    if block.is_null() {
+        chain.oldest.store(next, Ordering::Relaxed);
+    } else {
+        // SAFETY: the caller's contract.
+        unsafe { (*block).next = next };
+    }
+    chain.current.set(next);
+    next
 }
 
 /// An allocation not yet installed in its stable header. An unwinding
@@ -104,31 +190,25 @@ impl PendingStringData {
         // block links and unused storage. Existing contents do not move.
         let entry = unsafe {
             let block = if bytes > LARGE_BYTES {
+                crate::lisp::runtime::ensure_held();
                 let chain = if pure { &PURE_LARGE } else { &LARGE };
                 let block = new_block(HEADER + needed)?;
                 (*block).next = chain.load(Ordering::Relaxed);
                 chain.store(block, Ordering::Relaxed);
                 block
             } else {
-                let chain = if pure {
-                    &PURE_SMALL
+                let (chain, mut block) = if pure {
+                    (&PURE_SMALL, PURE_SMALL_CURRENT.get())
                 } else if super::super::image_region_open() {
-                    &IMAGE_SMALL
+                    (&IMAGE_SMALL, IMAGE_SMALL_CURRENT.get())
                 } else {
-                    &SMALL
+                    (&SMALL, SMALL_CURRENT.get())
                 };
-                let mut block = chain.current.load(Ordering::Relaxed);
-                if block.is_null()
-                    || (*block).next_free.offset_from(block.cast()) as usize + needed > BLOCK_BYTES
-                {
-                    let next = new_block(BLOCK_BYTES)?;
+                if block.is_null() || !fits(block, needed) {
+                    block = next_small_block(chain, block, needed);
                     if block.is_null() {
-                        chain.oldest.store(next, Ordering::Relaxed);
-                    } else {
-                        (*block).next = next;
+                        return Err(StringError::AllocationFailed(BLOCK_BYTES));
                     }
-                    chain.current.store(next, Ordering::Relaxed);
-                    block = next;
                 }
                 block
             };
@@ -320,14 +400,11 @@ pub(super) fn sweep() {
             (*held.last).next = moving.first;
             SMALL.oldest.store(held.first, Ordering::Relaxed);
         }
-        SMALL.current.store(
-            if moving.last.is_null() {
-                held.last
-            } else {
-                moving.last
-            },
-            Ordering::Relaxed,
-        );
+        SMALL_CURRENT.set(if moving.last.is_null() {
+            held.last
+        } else {
+            moving.last
+        });
     }
 }
 
