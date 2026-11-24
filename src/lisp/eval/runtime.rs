@@ -666,8 +666,16 @@ impl Interpreter {
         // so neither a `let' in the creating buffer nor a `setq-default'
         // (buffer_defaults) reaches it.
         self.reset_always_local_slots(id, inherited_directory);
-        primitives::casetab::reset_buffer_case_tables(self, id);
+        self.reset_buffer_char_tables(id);
         id
+    }
+
+    /// reset_buffer_local_variables's char-tables: buffer ID's syntax,
+    /// category and case tables are buffer_defaults' standard ones.
+    pub(crate) fn reset_buffer_char_tables(&mut self, id: u64) {
+        self.reset_buffer_syntax_table(id);
+        self.reset_buffer_category_table(id);
+        primitives::casetab::reset_buffer_case_tables(self, id);
     }
 
     /// indent.c:invalidate_current_column: no recorded column answers.
@@ -2724,7 +2732,9 @@ impl Interpreter {
         }
         // reset_buffer_local_variables (b, 1).
         self.remove_buffer_locals(id);
-        self.buffer_case_tables.remove(id);
+        if let Some(buffer) = self.buffer_object(id) {
+            buffer.set_case_tables(self.standard_case_tables);
+        }
         self.reset_buffer_syntax_table(id);
         self.reset_buffer_category_table(id);
         self.labeled_restrictions

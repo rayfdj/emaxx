@@ -1068,6 +1068,17 @@ pub struct BufferValue {
     /// buffer.h's indirections: -1 in an indirect buffer; in another, the
     /// number of indirect buffers that share its text and are not killed.
     pub(crate) indirections: Cell<i32>,
+    /// BVAR (b, syntax_table), category_table, downcase_table,
+    /// upcase_table, case_canon_table and case_eqv_table: the buffer's
+    /// char-tables, buffer_defaults' standard ones from
+    /// reset_buffer_local_variables on.  A buffer made without it (an
+    /// image's killed buffer) holds nil, read as the standard table.
+    pub(crate) syntax_table: Cell<Value>,
+    pub(crate) category_table: Cell<Value>,
+    pub(crate) downcase_table: Cell<Value>,
+    pub(crate) upcase_table: Cell<Value>,
+    pub(crate) case_canon_table: Cell<Value>,
+    pub(crate) case_eqv_table: Cell<Value>,
     /// The editable object, not a name/id proxy for an interpreter-owned copy.
     /// Rust callers must end these borrows before entering Lisp or collecting.
     pub(crate) state: RefCell<crate::buffer::Buffer>,
@@ -1214,6 +1225,12 @@ impl BufferRef {
             markers: Cell::new(None),
             base_buffer: Cell::new(None),
             indirections: Cell::new(0),
+            syntax_table: Cell::new(Value::Nil),
+            category_table: Cell::new(Value::Nil),
+            downcase_table: Cell::new(Value::Nil),
+            upcase_table: Cell::new(Value::Nil),
+            case_canon_table: Cell::new(Value::Nil),
+            case_eqv_table: Cell::new(Value::Nil),
             state: RefCell::new(buffer),
             live: Cell::new(true),
         })
@@ -1282,6 +1299,66 @@ impl BufferRef {
         self.borrow().char_at(pos)
     }
 
+    /// BVAR (b, syntax_table), when the buffer holds one.
+    #[inline]
+    pub(crate) fn syntax_table(&self) -> Option<CharTableRef> {
+        char_table_slot(&self.syntax_table)
+    }
+
+    /// bset_syntax_table.
+    #[inline]
+    pub(crate) fn set_syntax_table(&self, table: CharTableRef) {
+        self.syntax_table.set(Value::CharTable(table));
+    }
+
+    /// BVAR (b, category_table), when the buffer holds one.
+    #[inline]
+    pub(crate) fn category_table(&self) -> Option<CharTableRef> {
+        char_table_slot(&self.category_table)
+    }
+
+    /// bset_category_table, of TABLE or nil.
+    #[inline]
+    pub(crate) fn set_category_table(&self, table: Option<CharTableRef>) {
+        self.category_table
+            .set(table.map_or(Value::Nil, Value::CharTable));
+    }
+
+    /// BVAR (b, downcase_table) and the three after it, when the buffer
+    /// holds them.
+    #[inline]
+    pub(crate) fn case_tables(&self) -> Option<crate::lisp::eval::coding::CaseTables> {
+        Some(crate::lisp::eval::coding::CaseTables {
+            down: char_table_slot(&self.downcase_table)?,
+            up: char_table_slot(&self.upcase_table)?,
+            canon: char_table_slot(&self.case_canon_table)?,
+            eqv: char_table_slot(&self.case_eqv_table)?,
+        })
+    }
+
+    /// bset_downcase_table and the three after it, of TABLES or nil.
+    pub(crate) fn set_case_tables(&self, tables: Option<crate::lisp::eval::coding::CaseTables>) {
+        let tables = tables.map(|tables| tables.each().map(Value::CharTable));
+        let [down, up, canon, eqv] = tables.unwrap_or([Value::Nil; 4]);
+        self.downcase_table.set(down);
+        self.upcase_table.set(up);
+        self.case_canon_table.set(canon);
+        self.case_eqv_table.set(eqv);
+    }
+
+    /// The six char-table words, as alloc.c:mark_buffer marks them.
+    pub(crate) fn char_table_words(&self) -> [Value; 6] {
+        [
+            &self.syntax_table,
+            &self.category_table,
+            &self.downcase_table,
+            &self.upcase_table,
+            &self.case_canon_table,
+            &self.case_eqv_table,
+        ]
+        .map(Cell::get)
+    }
+
     pub fn borrow(&self) -> std::cell::Ref<'_, crate::buffer::Buffer> {
         self.state.borrow()
     }
@@ -1297,6 +1374,15 @@ impl BufferRef {
         let mut state = self.borrow_mut();
         *state = buffer;
         state.install_mark_object(*self, None);
+    }
+}
+
+/// The char-table a buffer's table word holds, None for nil.
+#[inline]
+fn char_table_slot(slot: &Cell<Value>) -> Option<CharTableRef> {
+    match slot.get().kind() {
+        Kind::CharTable(table) => Some(table),
+        _ => None,
     }
 }
 

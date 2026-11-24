@@ -842,6 +842,111 @@ fn kill_buffer_kills_the_indirect_buffers_its_hooks_make_as_gnu() {
 }
 
 #[test]
+fn a_buffers_syntax_category_and_case_tables_are_its_own_as_gnu() {
+    // buffer.h's syntax_table, category_table and four case-table slots:
+    // the standard tables from reset_buffer_local_variables on;
+    // set-syntax-table, set-category-table and set-case-table store the
+    // current buffer's, with-syntax-table for its body; an indirect
+    // buffer starts from the standard ones and a clone copies its base's
+    // (clone_per_buffer_values); set-standard-case-table reaches the
+    // buffers made after it and kill-all-local-variables, and each other
+    // buffer keeps the tables it holds; the type checks.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((a (generate-new-buffer "tb-a")) (b (generate-new-buffer "tb-b"))
+                (st (make-syntax-table)) (ct (make-category-table))
+                (case (copy-case-table (standard-case-table)))
+                (r nil))
+           (modify-syntax-entry ?_ "w" st)
+           (define-category ?Z "zed" ct)
+           (modify-category-entry ?q ?Z ct)
+           (set-case-syntax-pair ?Q ?z case)
+           (with-current-buffer a
+             (insert "a_b Qq")
+             (push (list (eq (syntax-table) (standard-syntax-table))
+                         (eq (category-table) (standard-category-table))
+                         (eq (current-case-table) (standard-case-table)))
+                   r)
+             (set-syntax-table st) (set-category-table ct) (set-case-table case)
+             (push (list (eq (syntax-table) st) (eq (category-table) ct) (eq (current-case-table) case)
+                         (string (char-syntax ?_)) (category-set-mnemonics (char-category-set ?q))
+                         (downcase ?Q) (upcase ?z) (progn (goto-char 1) (forward-word) (point)))
+                   r))
+           (with-current-buffer b
+             (push (list (eq (syntax-table) (standard-syntax-table)) (string (char-syntax ?_))
+                         (category-set-mnemonics (char-category-set ?q)) (downcase ?Q)
+                         (with-syntax-table st (list (eq (syntax-table) st) (string (char-syntax ?_))))
+                         (eq (syntax-table) (standard-syntax-table))
+                         (with-current-buffer a (eq (syntax-table) st)))
+                   r))
+           (let ((i (make-indirect-buffer a "tb-i")) (c (make-indirect-buffer a "tb-c" t)))
+             (push (list (with-current-buffer i (list (eq (syntax-table) (standard-syntax-table))
+                                                      (eq (current-case-table) (standard-case-table))))
+                         (with-current-buffer c (list (eq (syntax-table) st) (eq (category-table) ct)
+                                                      (eq (current-case-table) case) (downcase ?Q))))
+                   r)
+             (kill-buffer i) (kill-buffer c))
+           (let ((old (standard-case-table)) (new (copy-case-table (standard-case-table))))
+             (set-case-syntax-pair ?R ?y new)
+             (unwind-protect
+                 (progn
+                   (set-standard-case-table new)
+                   (let ((d (generate-new-buffer "tb-d")))
+                     (push (list (with-current-buffer b (list (eq (current-case-table) old) (downcase ?R)))
+                                 (with-current-buffer d (list (eq (current-case-table) new) (downcase ?R)))
+                                 (with-current-buffer a (eq (current-case-table) case))
+                                 (with-current-buffer b (kill-all-local-variables) (eq (current-case-table) new)))
+                           r)
+                     (kill-buffer d)))
+               (set-standard-case-table old)))
+           (with-current-buffer a
+             (kill-all-local-variables)
+             (push (list (eq (syntax-table) (standard-syntax-table))
+                         (eq (category-table) (standard-category-table))
+                         (eq (current-case-table) (standard-case-table))
+                         (string (char-syntax ?_)) (downcase ?Q))
+                   r))
+           (with-current-buffer a (set-syntax-table st))
+           (dotimes (_ 3) (make-list 5000 'x) (garbage-collect))
+           (push (with-current-buffer a (list (eq (syntax-table) st) (string (char-syntax ?_)))) r)
+           (push (list (condition-case e (set-syntax-table 3) (error e))
+                       (condition-case e (set-category-table (make-char-table 'foo)) (error (list (car e) (cadr e))))
+                       (condition-case e (set-case-table (make-char-table 'syntax-table)) (error (list (car e) (cadr e)))))
+                 r)
+           (kill-buffer a) (kill-buffer b)
+           (nreverse r))"#,
+        r##"((t t t) (t t t "w" "Z" 122 81 4) (t "_" ".Lalr" 113 (t "w") t t) ((t t) (t t t 122)) ((t 114) (t 121) t t) (t t t "_" 113) (t "w") ((wrong-type-argument syntax-table-p 3) (wrong-type-argument category-table-p) (wrong-type-argument case-table-p)))"##,
+        "buffer char-tables",
+    );
+}
+
+#[test]
+fn a_buffers_own_tables_survive_collections_as_gnu() {
+    // alloc.c:mark_buffer marks each of the buffer's Lisp words: tables
+    // that only the buffer holds work after collections.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((b (generate-new-buffer "gt-b")))
+           (with-current-buffer b
+             (insert "a_b q Q")
+             (set-syntax-table (let ((st (make-syntax-table))) (modify-syntax-entry ?_ "w" st) st))
+             (set-category-table (let ((ct (make-category-table)))
+                                   (define-category ?Z "zed" ct) (modify-category-entry ?q ?Z ct) ct))
+             (set-case-table (let ((case (copy-case-table (standard-case-table))))
+                               (set-case-syntax-pair ?Q ?z case) case)))
+           (dotimes (_ 4) (make-list 20000 'x) (make-vector 3000 nil) (garbage-collect))
+           (prog1
+               (with-current-buffer b
+                 (list (string (char-syntax ?_)) (category-set-mnemonics (char-category-set ?q))
+                       (downcase ?Q) (upcase ?z) (char-table-p (char-table-extra-slot (current-case-table) 0))
+                       (progn (goto-char 1) (forward-word) (point))
+                       (progn (goto-char 1) (let ((case-fold-search t)) (search-forward "z" nil t)))
+                       (upcase "qz") (char-table-p (char-table-extra-slot (current-case-table) 2))))
+             (kill-buffer b)))"#,
+        r##"("w" "Z" 122 81 t 4 6 "QQ" t)"##,
+        "buffer char-tables across collections",
+    );
+}
+
+#[test]
 fn killed_buffers_keep_what_fkill_buffer_leaves_as_gnu() {
     // buffer.c:Fkill_buffer: the name nil, BUFFER_LIVE_P false; the
     // file name and truename and the directory kept, the other slots as

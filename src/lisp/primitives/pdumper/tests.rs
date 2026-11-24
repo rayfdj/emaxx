@@ -3120,3 +3120,94 @@ fn image_killed_buffers_and_the_buffers_image_buffers_replace_are_not_live() {
         assert!(target.current_buffer().is_live());
     }
 }
+
+#[test]
+fn image_buffers_hold_the_images_standard_tables_or_their_own() {
+    // pdumper.c:dump_buffer writes each of the buffer's char-table words,
+    // the standard tables' too, so a loaded buffer holds the image's
+    // standard tables (the objects standard-syntax-table and the others
+    // answer in the loaded session) or its own.
+    fn eval(interp: &mut Interpreter, source: &str) -> Value {
+        let form = crate::lisp::reader::Reader::new(source)
+            .read()
+            .expect("the form parses")
+            .expect("a form");
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    }
+    let mut source = Interpreter::new();
+    let graph = eval(
+        &mut source,
+        r#"(progn
+             (standard-category-table)
+             (let ((plain (get-buffer-create "tt-plain"))
+                   (own (get-buffer-create "tt-own")))
+               (save-current-buffer
+                 (set-buffer own)
+                 (set-syntax-table (make-char-table 'syntax-table))
+                 (set-category-table (make-category-table)))
+               (vector plain own)))"#,
+    );
+    source.set_global_binding("tt-image", graph);
+    let mut ctx = DumpContext::new(false, source.main_thread_record_id());
+    if let Err(error) = write_image(&mut ctx, &source, RootSource::Interpreter) {
+        match error {
+            super::context::DumpError::Unsupported(unsupported) => {
+                panic!("unsupported: {}", unsupported.message)
+            }
+            super::context::DumpError::Lisp(error) => panic!("dump: {error:?}"),
+        }
+    }
+    let bytes = ctx.buffer().to_vec();
+    let mut target = Interpreter::for_image();
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    target
+        .install_image(
+            &image,
+            crate::lisp::eval::PdumperLoadRecord {
+                filename: "tt.pdmp".into(),
+                load_time: std::time::Duration::ZERO,
+                dump_size: bytes.len() as u64,
+            },
+        )
+        .expect("install the image's symbols");
+    target
+        .init_after_pdump_load()
+        .expect("initialize the loaded process");
+    let answer = eval(
+        &mut target,
+        r#"(let ((plain (aref tt-image 0)) (own (aref tt-image 1))
+                 (tables (function (lambda (b)
+                                     (save-current-buffer
+                                       (set-buffer b)
+                                       (list (syntax-table) (category-table)
+                                             (current-case-table)))))))
+             (list (equal (funcall tables plain)
+                          (list (standard-syntax-table) (standard-category-table)
+                                (standard-case-table)))
+                   (mapcar (function (lambda (pair) (eq (car pair) (cdr pair))))
+                           (list (cons (car (funcall tables plain)) (standard-syntax-table))
+                                 (cons (nth 1 (funcall tables plain)) (standard-category-table))
+                                 (cons (nth 2 (funcall tables plain)) (standard-case-table))
+                                 (cons (car (funcall tables own)) (standard-syntax-table))
+                                 (cons (nth 1 (funcall tables own)) (standard-category-table))
+                                 (cons (nth 2 (funcall tables own)) (standard-case-table))))
+                   (char-table-subtype (car (funcall tables own)))))"#,
+    );
+    assert_eq!(
+        answer,
+        Value::list([
+            Value::T,
+            Value::list([
+                Value::T,
+                Value::T,
+                Value::T,
+                Value::Nil,
+                Value::Nil,
+                Value::T
+            ]),
+            Value::symbol("syntax-table"),
+        ])
+    );
+}

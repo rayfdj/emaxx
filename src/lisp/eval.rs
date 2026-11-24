@@ -1,6 +1,6 @@
 use crate::file_system as fs;
 use crate::lisp::types::{CharTableRef, LispRecordRef, RecordRef};
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::collections::{BTreeSet, HashMap, HashSet};
 use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
@@ -4291,6 +4291,16 @@ impl ImageGraphCopier {
                 object.live.set(buffer.is_live());
                 let copied = Value::Buffer(object);
                 self.buffers.insert(buffer.identity(), copied);
+                for (slot, table) in [
+                    (&object.syntax_table, &buffer.syntax_table),
+                    (&object.category_table, &buffer.category_table),
+                    (&object.downcase_table, &buffer.downcase_table),
+                    (&object.upcase_table, &buffer.upcase_table),
+                    (&object.case_canon_table, &buffer.case_canon_table),
+                    (&object.case_eqv_table, &buffer.case_eqv_table),
+                ] {
+                    slot.set(self.copy(&table.get()));
+                }
                 if let Some(mark) = buffer.mark_object() {
                     let Kind::Marker(mark) = self.copy(&Value::Marker(mark)).kind() else {
                         unreachable!()
@@ -4956,11 +4966,14 @@ impl LispReachability {
                 }
             }
             Kind::Buffer(buffer) => {
-                // alloc.c:mark_buffer: the buffer's Lisp words and its
-                // base_buffer.
+                // alloc.c:mark_buffer: the buffer's Lisp words (its six
+                // char-tables among them) and its base_buffer.
                 buffer
                     .borrow()
                     .visit_lisp_values(&mut |child| self.enqueue(child));
+                for table in buffer.char_table_words() {
+                    self.enqueue(&table);
+                }
                 if let Some(base) = buffer.base_buffer() {
                     self.enqueue(&Value::Buffer(base));
                 }
@@ -5345,32 +5358,36 @@ impl Interpreter {
             .unwrap_or_default()
     }
 
-    /// BVAR (b, syntax_table) when the buffer has set one.
+    /// BVAR (b, syntax_table) of buffer ID.
     pub(crate) fn buffer_syntax_table_id(&self, id: u64) -> Option<CharTableRef> {
-        self.buffer_syntax_tables.get(id)
+        self.buffer_object(id)?.syntax_table()
     }
 
     /// reset_buffer_local_variables's syntax table: BUFFER's slot returns
-    /// to buffer_defaults' (the standard table), which nothing then roots
-    /// for it.
+    /// to buffer_defaults' (the standard table).
     pub(crate) fn reset_buffer_syntax_table(&mut self, id: u64) {
-        self.buffer_syntax_tables.remove(id);
+        if let Some(buffer) = self.buffer_object(id) {
+            buffer.set_syntax_table(self.standard_syntax_table_id);
+        }
     }
 
-    /// BVAR (b, category_table) when the buffer has set one.
+    /// BVAR (b, category_table) of buffer ID.
     pub(crate) fn buffer_category_table_id(&self, id: u64) -> Option<CharTableRef> {
-        self.buffer_category_tables.get(id)
+        self.buffer_object(id)?.category_table()
     }
 
     /// reset_buffer_local_variables's category table: as the syntax
-    /// table's, BUFFER's slot returns to buffer_defaults'.
+    /// table's, BUFFER's slot returns to buffer_defaults' (none before the
+    /// standard table is made).
     pub(crate) fn reset_buffer_category_table(&mut self, id: u64) {
-        self.buffer_category_tables.remove(id);
+        if let Some(buffer) = self.buffer_object(id) {
+            buffer.set_category_table(self.standard_category_table_id);
+        }
     }
 
-    /// BUFFER's four case tables when they are not the standard ones.
+    /// BVAR (b, downcase_table) and the three after it, of buffer ID.
     pub(crate) fn buffer_case_tables(&self, id: u64) -> Option<coding::CaseTables> {
-        self.buffer_case_tables.get(id)
+        self.buffer_object(id)?.case_tables()
     }
 
     /// alloc.c's `finalizers' list in order (head.next first).
@@ -5519,15 +5536,21 @@ impl Interpreter {
     }
 
     pub(crate) fn install_buffer_syntax_table(&mut self, id: u64, table: CharTableRef) {
-        self.buffer_syntax_tables.insert(id, table);
+        if let Some(buffer) = self.buffer_object(id) {
+            buffer.set_syntax_table(table);
+        }
     }
 
     pub(crate) fn install_buffer_category_table(&mut self, id: u64, table: CharTableRef) {
-        self.buffer_category_tables.insert(id, table);
+        if let Some(buffer) = self.buffer_object(id) {
+            buffer.set_category_table(Some(table));
+        }
     }
 
     pub(crate) fn install_buffer_case_tables(&mut self, id: u64, tables: coding::CaseTables) {
-        self.buffer_case_tables.install(id, tables);
+        if let Some(buffer) = self.buffer_object(id) {
+            buffer.set_case_tables(Some(tables));
+        }
     }
 
     /// Mark actual roots, then iterate weak-table reachability to a fixed
@@ -5755,17 +5778,9 @@ impl Interpreter {
         for table in self.standard_category_table_id.into_iter().chain(
             self.standard_case_tables
                 .iter()
-                .chain(self.buffer_case_tables.iter().map(|(_, tables)| tables))
                 .flat_map(|tables| tables.each()),
         ) {
             mark(&Value::CharTable(table));
-        }
-        for table in self
-            .buffer_syntax_tables
-            .values()
-            .chain(self.buffer_category_tables.values())
-        {
-            mark(&Value::CharTable(*table));
         }
         // Vcharset_hash_table's keys: each charset's name and alias.
         for (name, _) in &self.charset_ids {
@@ -6270,15 +6285,6 @@ impl Interpreter {
             clone.standard_case_tables = clone
                 .standard_case_tables
                 .map(|tables| tables.map(|table| copy_table(c, table)));
-            for table in clone.buffer_syntax_tables.values_mut() {
-                *table = copy_table(c, *table);
-            }
-            for table in clone.buffer_category_tables.values_mut() {
-                *table = copy_table(c, *table);
-            }
-            for (_, tables) in clone.buffer_case_tables.iter_mut() {
-                *tables = tables.map(|table| copy_table(c, table));
-            }
             for (name, plist) in &mut clone.charset_plists {
                 *name = c.copy_symbol(*name);
                 *plist = c.copy(plist);
@@ -6976,9 +6982,6 @@ pub struct InterpreterState {
     /// casetab.c's Vascii_downcase_table, Vascii_upcase_table,
     /// Vascii_canon_table and Vascii_eqv_table.
     standard_case_tables: Option<coding::CaseTables>,
-    /// buffer.h's four case-table slots of each live buffer whose four are
-    /// not the standard ones; a buffer without an entry holds those.
-    buffer_case_tables: coding::BufferCaseTables,
     /// Allocated record objects, by id (see `record_registry').
     records: record_registry::RecordRegistry,
     /// This state's id space, for the records' `owner'.
@@ -7048,13 +7051,6 @@ pub struct InterpreterState {
     /// Each plain buffer-local variable's binding last read or stored, by
     /// buffer (data.c's blv `where' and `valcell').
     loaded_bindings: LoadedBindings,
-    /// BVAR (b, syntax_table) for each buffer whose table is not the
-    /// standard one (buffer_defaults'), keyed by buffer id.
-    buffer_syntax_tables: coding::BufferCharTables,
-    /// BVAR (b, category_table) for each buffer whose table is not the
-    /// standard one (buffer_defaults'), keyed by buffer id: a slot, not a
-    /// Lisp variable.
-    buffer_category_tables: coding::BufferCharTables,
     /// eval.c's specpdl: the dynamic bindings and native code's unwind
     /// records, innermost last.
     specpdl: Vec<SpecpdlEntry>,
@@ -7796,7 +7792,6 @@ impl Interpreter {
             input_interrupt_mode: true,
             standard_category_table_id: None,
             standard_case_tables: None,
-            buffer_case_tables: coding::BufferCaseTables::default(),
             records: record_registry::RecordRegistry::from([
                 (main_thread_id, main_thread),
                 (standard_obarray_id, standard_obarray),
@@ -7826,8 +7821,6 @@ impl Interpreter {
             pdumper_loaded: None,
             buffer_locals: HashMap::default(),
             loaded_bindings: LoadedBindings::default(),
-            buffer_syntax_tables: coding::BufferCharTables::default(),
-            buffer_category_tables: coding::BufferCharTables::default(),
             specpdl: Vec::new(),
             labeled_restrictions: Vec::new(),
             network_connect_counter: 0,
@@ -7954,6 +7947,15 @@ impl Interpreter {
         // fontset.c:syms_of_fontset: Vfontset_table with the default
         // fontset at id 0.
         interp.fontset_table = crate::lisp::primitives::fontset::make_fontset_table(&mut interp);
+        // buffer.c:init_buffer_once, after init_syntax_once and
+        // init_casetab_once: the first buffers' char-tables are the
+        // standard ones (reset_buffer_local_variables).
+        let first_buffers = std::iter::once(interp.current_buffer_id)
+            .chain(interp.inactive_buffers.iter().map(|(id, _)| *id))
+            .collect::<Vec<_>>();
+        for id in first_buffers {
+            interp.reset_buffer_char_tables(id);
+        }
 
         interp.register_state_as_root();
         for (name, plist) in builtin_symbol_properties() {
