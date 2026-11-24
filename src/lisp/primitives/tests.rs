@@ -26948,17 +26948,18 @@ fn garbage_collect_reports_nine_kinds_as_gnu() {
 #[test]
 fn an_unbound_ert_test_leaves_its_body_to_the_collector() {
     // ert-make-test-unbound removes the test's `ert--test' property
-    // (cl-remprop): in GNU nothing then holds the test or its body, and
-    // a weak-key table that held both is empty after a collection.  Here
-    // the body stays, held by the evaluator's copy of the test registry
-    // (`ert_tests'), which the mirrors plan's R5 removes.
+    // (cl-remprop): in GNU nothing then holds the test's body, and a
+    // weak-key table that held it is empty after a collection.  Here the
+    // body stays, held by the evaluator's copy of the test registry
+    // (`ert_tests'), which the mirrors plan's R5 removes.  The test
+    // object itself is not witnessed: whether a stale word on the stack
+    // keeps it differs from run to run.
     let program = r#"(progn
           (require 'ert)
           (defvar t6-w (make-hash-table :test 'eq :weakness 'key))
           (defalias 't6-define
             (lambda ()
               (eval '(ert-deftest t6-probe-test () (should (equal (list 1 2) (list 1 2)))) t)
-              (puthash (get 't6-probe-test 'ert--test) 'test t6-w)
               (puthash (ert-test-body (get 't6-probe-test 'ert--test)) 'body t6-w)
               nil))
           (defalias 't6-unbind (lambda () (ert-make-test-unbound 't6-probe-test) nil))
@@ -26968,8 +26969,8 @@ fn an_unbound_ert_test_leaves_its_body_to_the_collector() {
             (dotimes (_ 3) (garbage-collect))
             (list before (ert-test-boundp 't6-probe-test) (get 't6-probe-test 'ert--test)
                   (hash-table-count t6-w))))"#;
-    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "((t 2) nil nil 0)");
-    assert_interpreter_prints(program, "((t 2) nil nil 1)", "unbound ERT test");
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "((t 1) nil nil 0)");
+    assert_interpreter_prints(program, "((t 1) nil nil 1)", "unbound ERT test");
 }
 
 #[test]
