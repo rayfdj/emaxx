@@ -1743,6 +1743,33 @@ impl Interpreter {
         }
     }
 
+    /// pdumper.c dumps an int or bool C variable only through a symbol
+    /// forwarded to it (dump_fwd_int, dump_fwd_bool): one of
+    /// `FORWARDED_EVAL_CELLS' whose image record is plain has none, and in
+    /// the loading process it is zero, as static storage starts (a
+    /// DEFVAR_LISP's is staticpro'd and dumped: its root installs it).
+    pub(super) fn forget_undumped_c_variable(&mut self, symbol: &SymbolName) {
+        let Some(index) = FORWARDED_EVAL_CELLS
+            .iter()
+            .position(|key| key.with(|key| key == symbol))
+        else {
+            return;
+        };
+        let c = &self.c_variables;
+        // In FORWARDED_EVAL_CELLS' order.
+        match index {
+            5 => c.max_lisp_eval_depth.set(0),
+            6 => c.debug_on_next_call.set(false),
+            7 => self.globals.symbols_with_pos_enabled().set(false),
+            8 => self.set_undo_inhibit_record_point(false),
+            9 => crate::lisp::primitives::attempt_orderly_shutdown_variable()
+                .store(false, Ordering::Relaxed),
+            11 => c.parse_sexp_lookup_properties.set(false),
+            _ => {}
+        }
+        self.refresh_call_depth_gate();
+    }
+
     pub(crate) fn forwarded_eval_cell_value(&self, name: &str) -> Option<Value> {
         let truth = |flag: bool| if flag { Value::T } else { Value::Nil };
         let c = &self.c_variables;

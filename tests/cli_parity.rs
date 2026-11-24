@@ -13857,6 +13857,103 @@ fn a_dumped_sessions_evaluator_c_variables_and_nil_plist_are_the_images() {
 }
 
 #[test]
+fn a_c_variable_makunbound_detached_stays_plain_in_the_image_as_gnu() {
+    // pdumper.c dumps a symbol's redirect as it is: one makunbound made
+    // SYMBOL_PLAINVAL (data.c:set_internal) and setq gave a value is a
+    // plain symbol in the process started from the dump, with that value,
+    // and its C variable is the one the dump has: a DEFVAR_LISP's is
+    // staticpro'd and dumped, a DEFVAR_INT's or DEFVAR_BOOL's is dumped
+    // only through a forwarded symbol and is zero.  So the twelve
+    // evaluator C variables and a KBOARD one, after the load: their
+    // values, and what C does with its own (no quit pending, no property
+    // from overriding-plist-environment, the nesting limit, no debugger
+    // call, eq of a positioned symbol, the undo list, case folding, a
+    // syntax-table property); and load-path alone, which startup and the
+    // probe's load read.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "detached-c-variables-probe.el",
+        r#"(defvar pd-n 0)
+(defalias 'pd-rec (lambda () (setq pd-n (1+ pd-n)) (pd-rec)))
+(defalias 'pd-nop (lambda (x) x))
+(princ (format "%S\n"
+  (list
+   (mapcar (lambda (v) (list v (boundp v) (and (boundp v) (symbol-value v))))
+           '(quit-flag inhibit-quit throw-on-input overriding-plist-environment
+             max-lisp-eval-depth debug-on-next-call symbols-with-pos-enabled
+             undo-inhibit-record-point attempt-orderly-shutdown-on-fatal-signal
+             case-fold-search parse-sexp-lookup-properties last-command))
+   (condition-case nil (progn (pd-nop 1) 'no-quit) (quit 'quit))
+   (get 'pd-sym 'pd-prop)
+   (progn (setq pd-n 0) (condition-case e (pd-rec) (error (list (car e) pd-n))))
+   (let* ((dlog nil) (debugger (lambda (&rest args) (push (car args) dlog) nil)))
+     (pd-nop 1) dlog)
+   (eq (read-positioning-symbols "pm-foo") 'pm-foo)
+   (with-temp-buffer
+     (buffer-enable-undo) (insert "abc") (undo-boundary) (goto-char 2) (insert "x")
+     (length buffer-undo-list))
+   (string-match "abc" "ABC")
+   (with-temp-buffer (insert "(ab)") (put-text-property 1 2 'syntax-table (string-to-syntax "."))
+     (scan-sexps 1 1))
+   (condition-case nil (let ((inhibit-quit t)) (setq quit-flag t) (prog1 'held (setq quit-flag nil)))
+     (quit 'quit)))))
+"#,
+    );
+    let run = |binary: &Path, name: &str, detached: &str| {
+        let image = corpus
+            .directory
+            .join(format!("{name}-detached.pdmp"))
+            .display()
+            .to_string();
+        let dump = corpus.write(
+            &format!("{name}-dump-detached.el"),
+            &format!(
+                r#"(dolist (entry '{detached})
+  (makunbound (car entry))
+  (set (car entry) (cdr entry)))
+(put 'pd-sym 'pd-prop 1)
+(let ((load--bin-dest-dir (file-truename invocation-directory))
+      (load--eln-dest-dir (file-truename source-directory)))
+  (dump-emacs-portable "{image}"))
+"#
+            ),
+        );
+        let dumped = corpus.run(binary, &["--batch", "-Q", "-l", &dump]);
+        assert_eq!(dumped.2, Some(0), "{name} did not dump: {dumped:?}");
+        let (stdout, _, status) = corpus.run(
+            binary,
+            &["--dump-file", &image, "--batch", "-Q", "-l", &probe],
+        );
+        (stdout, status)
+    };
+    let detached = "((quit-flag . pd-x) (inhibit-quit . pd-x) (throw-on-input . pd-x)
+                     (overriding-plist-environment . ((pd-sym pd-prop 9)))
+                     (max-lisp-eval-depth . 300) (debug-on-next-call . pd-x)
+                     (symbols-with-pos-enabled . t) (undo-inhibit-record-point . t)
+                     (attempt-orderly-shutdown-on-fatal-signal . nil)
+                     (case-fold-search . nil) (parse-sexp-lookup-properties . t)
+                     (last-command . pd-x))";
+    let expected = run(&oracle(), "gnu", detached);
+    assert_eq!(expected.1, Some(0), "GNU's probe failed: {expected:?}");
+    assert!(
+        expected.0.contains(") no-quit 1 (excessive-lisp-nesting "),
+        "GNU keeps the symbols plain and the C variables its own: {expected:?}"
+    );
+    assert_eq!(
+        run(emaxx(), "emaxx", detached),
+        expected,
+        "Emaxx (left) and GNU (right) differ for the detached C variables"
+    );
+    let load_path = "((load-path . (\"/pd-lp\")))";
+    let expected = run(&oracle(), "gnu-load-path", load_path);
+    assert_eq!(
+        run(emaxx(), "emaxx-load-path", load_path),
+        expected,
+        "Emaxx (left) and GNU (right) differ for a detached load-path"
+    );
+}
+
+#[test]
 fn dump_emacs_portable_refuses_threads_mutexes_and_configurations_as_gnu() {
     // pdumper.c:dump_vectorlike signals "unsupported object type in
     // dump" for a mutex, a condition variable, a window configuration

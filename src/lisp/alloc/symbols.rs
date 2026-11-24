@@ -761,6 +761,21 @@ impl SymbolCell {
         self.bits.set(self.bits.get() & !KBOARD_OFFSET_BITS);
     }
 
+    /// The symbol made void and plain, whatever it forwarded to, the C
+    /// variable left as it is: pdumper.c dumps a symbol's redirect as it
+    /// is, so an image's SYMBOL_PLAINVAL record of a C variable's symbol
+    /// (`makunbound' detached it) installs a plain symbol, which the
+    /// loading process forwarded when it defined its C variables.
+    pub(crate) fn release_forward(&self) {
+        if self.state.get() & (FORWARD | KBOARD_FORWARD) == 0 {
+            return;
+        }
+        self.payload.set(SymbolPayload::unbound());
+        self.state
+            .set(self.state.get() & !(VALUE_PRESENT | FORWARD | KBOARD_FORWARD));
+        self.clear_forward_bits();
+    }
+
     /// The symbol's value made its cell's own, as the C variable holds it,
     /// and the forward gone: data.c:make_blv's default cell for a variable
     /// made local in a buffer (`localize_forward'), or a symbol whose C

@@ -278,6 +278,16 @@ impl Interpreter {
                 flags |= flag;
             }
         }
+        // pdumper.c dumps the symbol's redirect as it is: a record that is
+        // not SYMBOL_FORWARDED (`makunbound' detached the symbol from its C
+        // variable) installs a plain symbol, which this process forwarded
+        // when it defined its C variables, and leaves the C variable alone
+        // (a DEFVAR_LISP's has its dumped value from its root; an int's or
+        // bool's is not dumped).
+        if redirect != SYMBOL_FORWARDED && name.cell().has_c_slot() {
+            name.cell().release_forward();
+            self.forget_undumped_c_variable(&name);
+        }
         self.globals.install_cell(
             &name,
             SymbolCellSnapshot {
@@ -335,6 +345,7 @@ impl Interpreter {
                 self.c_variables.overriding_plist_environment.set(*value);
             }
             RootSlot::LoadPath => self.c_variables.load_path.set(*value),
+            RootSlot::CaseFoldSearch => self.c_variables.case_fold_search.set(*value),
             RootSlot::LoadsInProgress => self.loads_in_progress = *value,
             RootSlot::LocalTimeZoneRule => self.local_time_zone_rule = *value,
             RootSlot::FrameAndBufferState => self.frame_and_buffer_state = *value,

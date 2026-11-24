@@ -586,6 +586,9 @@ pub(crate) enum RootSlot {
     Prin1ToStringBuffer = 63,
     /// minibuf.c's staticpro'd Vminibuffer_list.
     MinibufferList = 64,
+    /// buffer.c's staticpro'd Vcase_fold_search (DEFVAR_LISP), the C
+    /// variable's own value, which a symbol `makunbound' detached keeps.
+    CaseFoldSearch = 65,
 }
 
 impl RootSlot {
@@ -650,6 +653,7 @@ impl RootSlot {
             62 => Self::EmacsMuleCharsetList,
             63 => Self::Prin1ToStringBuffer,
             64 => Self::MinibufferList,
+            65 => Self::CaseFoldSearch,
             _ => return None,
         })
     }

@@ -5180,6 +5180,10 @@ impl Interpreter {
                 self.c_variables.overriding_plist_environment.get(),
             ),
             (RootSlot::LoadPath, self.c_variables.load_path.get()),
+            (
+                RootSlot::CaseFoldSearch,
+                self.c_variables.case_fold_search.get(),
+            ),
             (RootSlot::LoadsInProgress, self.loads_in_progress),
             (RootSlot::LocalTimeZoneRule, self.local_time_zone_rule),
             (RootSlot::FrameAndBufferState, self.frame_and_buffer_state),
@@ -5531,11 +5535,11 @@ impl Interpreter {
             locals.insert(&symbol, value, &self.loaded_bindings);
         }
         self.remove_buffer_locals(id);
+        // The C variables take the current buffer's bindings once the
+        // image's symbols are installed and its detached C variables
+        // known (install_image's `refresh_forwarded_eval_cells').
         if !locals.is_empty() {
             self.buffer_locals.insert(id, locals);
-            if id == self.current_buffer_id() {
-                self.refresh_forwarded_eval_cells();
-            }
         }
     }
 
