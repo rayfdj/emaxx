@@ -23742,6 +23742,19 @@ ert-tests as a whole 26,307 ms against 27,211.
   library tests, the seven integration targets (219) and the binaries'
   tests (61), none failed.
 
+**On `13cf476`** (round 382): the frozen run (run 45331209962) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 52.7 s against 45.5 s (1.159), test bodies 230.3 s
+  against 219.5 s (1.049), in all 1.068 (GNU's suite took 265 s), so
+  round 381's 1.120 was its slow runner's (ert-tests, the file new among
+  its gaps, runs as long on the builds of rounds 379 and 381 here).  The
+  widest body gaps are tramp-tests (14.9 s against 13.4 s),
+  semantic-utest-ia (2.62 against 1.88), process-tests (2.19 against
+  1.47), comp-tests (10.9 against 10.2), mule-tests (1.91 against 1.28)
+  and package-tests (5.86 against 5.42).  The Rust gate (run
+  45331205154) passed: 3,600 library tests, the seven integration
+  targets (220) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 383 and its review), outside the
   round and in no milestone.**  One line each: after an in-place
