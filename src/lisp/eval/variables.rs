@@ -127,8 +127,13 @@ impl InterpreterState {
         self.globals.symbols_with_pos_enabled().get()
     }
 
+    /// `NILP (Vquit_flag)': Ffuncall's depth gate is below every depth
+    /// while the quit flag is set (every store of it refreshes the gate,
+    /// `refresh_call_depth_gate'), so a gate of zero or more answers for
+    /// it without a read of the variable.
+    #[inline]
     pub(crate) fn quit_flag_is_nil(&self) -> bool {
-        self.c_variables.quit_flag.get().is_nil()
+        self.call_depth_gate >= 0 || self.c_variables.quit_flag.get().is_nil()
     }
 
     #[inline]
@@ -136,8 +141,13 @@ impl InterpreterState {
         self.c_variables.max_lisp_eval_depth.get()
     }
 
+    /// eval.c's debug_on_next_call, as the call entries read it: Ffuncall's
+    /// depth gate is below every depth while it is set (every store of it
+    /// refreshes the gate, `refresh_call_depth_gate'), so a gate of zero or
+    /// more answers for it without a read of the variable.
+    #[inline]
     pub(crate) fn debug_on_next_call(&self) -> bool {
-        self.c_variables.debug_on_next_call.get()
+        self.call_depth_gate < 0 && self.c_variables.debug_on_next_call.get()
     }
 
     /// The forwards of this editor's symbols into its own C variables

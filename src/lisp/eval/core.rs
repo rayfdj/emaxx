@@ -351,9 +351,12 @@ impl Interpreter {
         state.lisp_eval_depth += 1;
         // The depth counts frames on this stack, far below i64::MAX: the
         // compare is GNU's intmax_t one without a saturating conversion.
-        if state.lisp_eval_depth as i64 > state.max_lisp_eval_depth_value()
-            && self.lisp_eval_depth_exceeded()
-        {
+        // The gate is at most max_lisp_eval_depth (or below every depth),
+        // refreshed by every store of it, so a depth within the gate is
+        // within the bound; past it, `lisp_eval_depth_exceeded' compares
+        // with max_lisp_eval_depth itself (a hook maybe_gc ran may have
+        // stored it).
+        if state.lisp_eval_depth as i64 > state.call_depth_gate && self.lisp_eval_depth_exceeded() {
             return Err(self.excessive_lisp_nesting(env));
         }
         let result = self.eval_cons(expr, cell, env);
@@ -2705,9 +2708,9 @@ impl InterpreterState {
         self.c_stack_safe_depth = self
             .c_stack_safe_depth
             .min(continuations::c_stack_safe_depth());
-        self.call_depth_gate = if !self.quit_flag_is_nil()
+        self.call_depth_gate = if !self.c_variables.quit_flag.get().is_nil()
             || self.pending_termination.is_some()
-            || self.debug_on_next_call()
+            || self.c_variables.debug_on_next_call.get()
             || profiling()
         {
             i64::MIN

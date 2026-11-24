@@ -2204,8 +2204,10 @@ fn run_verified(
             }
             // Bvarref of a variable whose cell holds its value: the
             // SYMBOL_PLAINVAL case, and SYMBOL_FORWARDED to an object slot
-            // (`unlocalized_value'); any other variable's read in
-            // `varref_redirected', and a void one's signal in the full arm.
+            // (`unlocalized_value'), or to a DEFVAR_LISP read through its
+            // forward (`forwarded_object_value'); any other variable's read
+            // in `varref_redirected', and a void one's signal in the full
+            // arm.
             macro_rules! varref {
                 ($index:expr) => {{
                     let index = usize::from($index);
@@ -2214,12 +2216,21 @@ fn run_verified(
                     let Kind::Symbol(name) = symbol.kind() else {
                         slow!()
                     };
-                    let value = match name.cell().unlocalized_value() {
+                    let cell = name.cell();
+                    let value = match cell.unlocalized_value() {
                         Some(value) => value,
-                        None => match varref_redirected(vm.interp, &name) {
-                            Some(value) => value,
-                            None => slow!(),
-                        },
+                        None => {
+                            // A plain variable's read is the one to keep
+                            // first.
+                            std::hint::cold_path();
+                            match cell.forwarded_object_value() {
+                                Some(value) => value,
+                                None => match varref_redirected(vm.interp, &name) {
+                                    Some(value) => value,
+                                    None => slow!(),
+                                },
+                            }
+                        }
                     };
                     push!(value);
                 }};

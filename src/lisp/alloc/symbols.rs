@@ -287,6 +287,19 @@ const KIND_STATIC_BOOL: u8 = 4 << FWD_KIND_SHIFT;
 /// (Lisp_Kboard_Objfwd's `offset'), meaningless without KBOARD_FORWARD.
 const KBOARD_OFFSET_BITS: u8 = 15 << FWD_KIND_SHIFT;
 
+/// The state bits a read in line (`unlocalized_value') tests, and the
+/// test of the flags, bits and state as one word (`SymbolCell::header'):
+/// localized in no buffer, and a value in the cell, or a forward to a
+/// DEFVAR_LISP.  A symbol that forwards nowhere has its kind and offset
+/// bits clear (`clear_forward_bits'), so one masked word tells the two
+/// cases apart.
+const INLINE_READ_STATE: u16 = VALUE_PRESENT | ALIAS | FORWARD | KBOARD_FORWARD | BUFFER_SLOT;
+const INLINE_READ_TEST: u32 = crate::lisp::eval::symbol_cell_flags::LOCALIZED as u32
+    | (KBOARD_OFFSET_BITS as u32) << 8
+    | (INLINE_READ_STATE as u32) << 16;
+const UNLOCALIZED_PLAIN: u32 = (VALUE_PRESENT as u32) << 16;
+const FORWARDED_OBJECT: u32 = (KIND_OBJ as u32) << 8 | ((VALUE_PRESENT | FORWARD) as u32) << 16;
+
 /// lisp.h's `union Lisp_Fwd' for the C variables a symbol forwards to:
 /// Lisp_Intfwd (one of alloc.c's process-wide counters, or an editor's
 /// DEFVAR_INT), Lisp_Objfwd (a DEFVAR_LISP) and Lisp_Boolfwd (an editor's
@@ -493,6 +506,7 @@ impl SymbolCell {
         }
         let value = self.value();
         self.state.set(self.state.get() & !KBOARD_FORWARD);
+        self.clear_forward_bits();
         match value {
             Some(value) => self.payload.set(SymbolPayload { value }),
             None => self.payload.set(SymbolPayload::unbound()),
@@ -501,38 +515,48 @@ impl SymbolCell {
 
     /// data.c:find_symbol_value of a bound symbol that is no alias and not
     /// localized in any buffer, whose value is the one its cell holds: a
-    /// plain symbol, or a C variable whose value is its cell's; or one
-    /// forwarded to a DEFVAR_LISP, a DEFVAR_BOOL or a field of
-    /// current_kboard, read through the forward (do_symval_forwarding).
-    /// An integer's or a buffer-held variable's value is read elsewhere.  Any other symbol,
-    /// or a void one, answers None.
+    /// plain symbol, or a C variable whose value is its cell's.  A
+    /// forwarded variable's value is read through its forward
+    /// (`forwarded_object_value', `value'), a buffer-held variable's
+    /// elsewhere.  Any other symbol, or a void one, answers None.
     #[inline(always)]
     pub(crate) fn unlocalized_value(&self) -> Option<Value> {
-        use crate::lisp::eval::symbol_cell_flags::LOCALIZED;
-        let state =
-            self.state.get() & (VALUE_PRESENT | ALIAS | FORWARD | KBOARD_FORWARD | BUFFER_SLOT);
-        if state == VALUE_PRESENT && self.flags.get() & LOCALIZED == 0 {
+        if self.header() & INLINE_READ_TEST == UNLOCALIZED_PLAIN {
             // SAFETY: VALUE_PRESENT without FORWARD selects the value member.
             return Some(unsafe { self.payload.get().value });
         }
-        if state & (FORWARD | KBOARD_FORWARD) == 0 {
-            return None;
-        }
-        self.unlocalized_redirected_value(state)
+        None
     }
 
-    /// `unlocalized_value' of a forwarded symbol: its DEFVAR_LISP's,
-    /// DEFVAR_BOOL's or kboard field's value, none for an integer's.
-    #[inline(never)]
-    fn unlocalized_redirected_value(&self, state: u16) -> Option<Value> {
-        use crate::lisp::eval::symbol_cell_flags::LOCALIZED;
-        if state == VALUE_PRESENT | KBOARD_FORWARD {
-            return Some(self.kboard_value());
+    /// The flags, the bits and the state as one word, lowest first (the
+    /// fields are at offsets 56, 57 and 58: see the layout's assertions),
+    /// for the tests of the reads that answer in line.
+    #[inline(always)]
+    fn header(&self) -> u32 {
+        // SAFETY: the reference covers the whole cell, and the word at
+        // offset 56 is its flags, bits and state, four bytes of Cells
+        // aligned to four, which nothing writes while this one thread
+        // reads them.
+        u32::from_le(unsafe {
+            std::ptr::from_ref(self)
+                .cast::<u8>()
+                .add(std::mem::offset_of!(SymbolCell, flags))
+                .cast::<u32>()
+                .read()
+        })
+    }
+
+    /// data.c:find_symbol_value of a symbol SYMBOL_FORWARDED to a
+    /// DEFVAR_LISP and localized in no buffer: `*XOBJFWD (valcontents)->
+    /// objvar', the C variable's value.  Any other symbol answers None.
+    #[inline(always)]
+    pub(crate) fn forwarded_object_value(&self) -> Option<Value> {
+        if self.header() & INLINE_READ_TEST == FORWARDED_OBJECT {
+            // SAFETY: KIND_OBJ is set only with the objvar member, whose
+            // variable outlives the forward (`LispFwd').
+            return Some(unsafe { self.payload.get().objvar.as_ref().get() });
         }
-        (state == VALUE_PRESENT | FORWARD
-            && self.flags.get() & LOCALIZED == 0
-            && self.forwards_object_or_bool())
-        .then(|| self.forwarded_value())
+        None
     }
 
     /// Whether the forward of a FORWARD symbol is a Lisp_Objfwd or a
@@ -728,6 +752,13 @@ impl SymbolCell {
         self.payload.set(SymbolPayload::unbound());
         self.state
             .set(self.state.get() & !(VALUE_PRESENT | FORWARD));
+        self.clear_forward_bits();
+    }
+
+    /// The kind and offset bits of a forward cleared, for a symbol that
+    /// forwards nowhere now (`INLINE_READ_TEST').
+    fn clear_forward_bits(&self) {
+        self.bits.set(self.bits.get() & !KBOARD_OFFSET_BITS);
     }
 
     /// The symbol's value made its cell's own, as the C variable holds it,
@@ -741,6 +772,7 @@ impl SymbolCell {
         }
         let value = self.forwarded_value();
         self.state.set(self.state.get() & !FORWARD);
+        self.clear_forward_bits();
         self.payload.set(SymbolPayload { value });
     }
 
@@ -838,6 +870,7 @@ impl SymbolCell {
 
     pub(crate) fn set_alias(&self, target: SymbolName) {
         self.payload.set(SymbolPayload { alias: target });
+        self.clear_forward_bits();
         self.state.set(
             (self.state.get() & !(VALUE_PRESENT | PLAIN_STORE | FORWARD | KBOARD_FORWARD)) | ALIAS,
         );
