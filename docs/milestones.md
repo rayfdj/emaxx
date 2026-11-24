@@ -49,6 +49,10 @@ Exit test: the remaining representation, collector and ownership engineering
 is done, the recorded per-call excesses are removed where GNU does less, and
 all 16 locked workloads have their upper 95% bound at or under 1.03 of GNU in
 a diagnostic run of the locked suite on the profile-guided build.
+Judged on a noisy host (decided 24 November 2026): each workload's median at
+or under 1.00 of GNU in that run, and the bound of 1.03 applied to each
+workload that the same session's run of GNU against itself resolves (its
+interval within 0.97 and 1.03).
 
 - A2.3: No unnecessary GNU-absent mechanisms (parallel object models, shadow
   state, synchronization layers, identity caches, registries, replacement
@@ -112,6 +116,8 @@ a diagnostic run of the locked suite on the profile-guided build.
   **Done** (round 376: 634.0 against 636.2 a level of the recursion).
 - D13: looking-at ~250 instructions over GNU around the match (rounds 174-176,
   296)
+  In progress (round 381: the current buffer is its object; one liveness
+  and one base_buffer, as buffer.h's).
 - D14: make-symbol ~690 instructions (round 173)
   **Done** (round 379: 1,280 against 1,965 a call).
 - D17: Rust-to-byte-code call ~120 instructions over GNU (rounds 167, 297).

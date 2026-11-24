@@ -34,7 +34,7 @@ A round's review answers whether the round cheats or breaks something; it does
 not survey the neighbourhood of the change. Current user instructions take
 precedence over this plan as over everything here.
 
-### M2: structure and performance — 2 of 30 done
+### M2: structure and performance — 5 of 30 done
 
 **Baseline of 23 November 2026**, on `394d57de` (round 366's source) under
 Rust 1.100.0, with GNU 30.2 on this host as the oracle.
@@ -157,6 +157,19 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   plan (docs/plans/d14-symbols.md: one name for the host text, identity
   carried as text and the comparisons with literals made symbols and
   keys, the host text deleted) belongs to A3.6 and is not done.
+- **How the exit test is judged on a noisy host** (decided 24
+  November 2026): each workload's median at or under 1.00 of GNU in
+  the diagnostic run, and the bound of 1.03 applied to each workload
+  that the same session's run of GNU against itself resolves (its
+  interval within 0.97 and 1.03).
+- **In progress: D13 and A3.6** (buffers).  Round 381: the plan
+  (docs/plans/d13-buffers.md) and its first three stages; the current
+  buffer is its object, a buffer has one liveness and buffer.h's one
+  base_buffer with its `indirections' count.  `set-buffer' 703.6
+  instructions a switch against GNU's 515.0 (697.6 before),
+  `buffer-name' 382.6 against 355.0 (407.6), `looking-at' 1,387.6
+  against 1,147.0 (unchanged; the tables, the forwarded words and the
+  text as buffer_text take it down).
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -20107,6 +20120,97 @@ setup_process_coding_systems's check now refuses). A 13-form
   validation; probes are not built or tested).  The round audit reports
   no hard finding, 55 changed lines with one test and two assertions
   added.
+- **Round 381: the current buffer is its object, and a buffer has one
+  liveness and one base, as buffer.h's (M2, the first stages of D13
+  and A3.6; neither closed).**  The first three stages of the buffers
+  plan (docs/plans/d13-buffers.md), with two fixes the review asked
+  for.  **The tests first**: oracle forms of GNU 30.2 for buffer
+  creation, killing, indirect families, markers, narrowing,
+  `save-current-buffer' and the tables, the census of a buffer pinned
+  as formulas of the object's size, and an image whose buffer numbers
+  collide with the loading process's own (the counterpart of D119:
+  it does not crash).  **The current buffer is an object**: the
+  interpreter holds it as one, and the 426 places that read its point,
+  bounds and text through a borrow of the interpreter's buffer state
+  (dispatch 178, primitives 205, the evaluator and byte code 24, the
+  terminal 19) read them through it.  **One liveness**: a buffer is
+  live while it is registered, and the object's flag is that, where a
+  separate `killed' flag was written and never read and the object's
+  flag could disagree with the registry for three image-related
+  objects.  **One base**: the base was kept three times, in the object
+  while the text was shared, in the buffer state after a kill, and in
+  the interpreter's table of (buffer, base) numbers that every switch
+  of buffer tested; it is now buffer.h's base_buffer with its lifetime
+  and an `indirections' count (-1 in an indirect buffer, the number of
+  its live indirect buffers in a base), the collector marks it as
+  mark_buffer does, the table is gone, and set_buffer_internal_2
+  records the old buffer's point and bound markers and fetches the new
+  one's whenever the buffer has them, as GNU does, not only while some
+  indirect buffer existed.  **The review's two fixes**:
+  `buffer-swap-text' exchanges the point, begv and zv markers and the
+  `indirections' count with the text (swapfield_), the buffer that is
+  not current reading its point and bounds from the markers it was
+  given (BUF_PT), and sets `point-before-scroll' nil in both buffers;
+  `kill-buffer' of a base walks the buffer list as each kill leaves
+  it, after the hooks, so that an indirect buffer a hook makes during
+  the base's kill dies with the base (FOR_EACH_LIVE_BUFFER), and
+  `make-indirect-buffer' refuses a killed base and takes GNU's base of
+  an indirect one.  **Lisp sees these changes, each now GNU's**: a
+  killed buffer read from an image answers nil to `buffer-live-p' (it
+  answered t); `set-buffer' of the current buffer after `kill-buffer'
+  killed it signals "Selecting deleted buffer"; the loading process's
+  own buffers that an image's buffers replace are dead; a base that
+  was current when its last indirect buffer died, given a new
+  indirect buffer whose edit moved its markers, reads its point and
+  bounds right ((7 2 11) where it read (13 1 13)); after
+  `buffer-swap-text' between buffers of which one had had an indirect
+  buffer, each buffer's point, bounds and size are GNU's ((15 3 18)
+  where the build before read (20 8 21) while any indirect buffer was
+  alive, and the second stage alone always);
+  an indirect buffer made by a hook during its base's kill is killed
+  with the base (it outlived it), and an indirect buffer of it signals
+  "Base buffer has been killed".  GNU swaps four bidi variables'
+  per-buffer values without their local flags in `buffer-swap-text',
+  which the per-buffer variable store cannot hold until the plan's
+  last stage; Emaxx swaps them neither before nor after.  **Counts**
+  (callgrind, the release build; before = round 379's build, round 380
+  having changed no buffer code): `set-buffer' 697.6 instructions a
+  switch, 703.6 after (GNU 515.0): the registry scan of the lookup is
+  gone (-52) and the markers are recorded and fetched at every switch
+  under a borrow of the buffer state (+46), which the plan's sixth
+  stage removes with the borrow; `buffer-name' 407.6 to 382.6 (GNU
+  355.0); `point' from native code 75.1 to 70.2 (GNU 57.0); `insert'
+  2,079.7 to 2,093.7 (GNU 3,692.5), the 14 in the family lookup an
+  insertion makes, which now finds the buffer by number before it can
+  tell the buffer has none (GNU's insdel.c makes no such lookup; the
+  next stage removes it); `looking-at' 1,387.6 (GNU 1,147.0) and
+  `string-match' 1,374.6 (GNU 1,148.0) unchanged, their excess being
+  in the next stages; the call and interpreter guards unchanged (a
+  byte-code recursion 357.1 lexical and 631.0 dynamic, a `mapc'
+  callback 415.7, six window accessors 318.4, the interpreted loop
+  2,752.7 and 2,753.1).  The independent review (the one question: does
+  the round cheat or break something) read the funnel and its
+  conversions, the base's lifetime and marking, the switch's record
+  and fetch, the loader and the swap, and ran buffer probes on GNU, the
+  build before and this one.  It found two breaks, both fixed above:
+  after the second stage `buffer-swap-text' left each buffer's point
+  and bound markers in the other's text, so a buffer that had ever had
+  an indirect buffer read wrong positions after a swap; and an indirect
+  buffer made during its base's kill outlived the base, older than the
+  round but extended by it.  The fixes' review ran its probes again
+  and variants (a swap with either buffer current, then motion and
+  narrowing in the other; a sibling killed by a hook during the base's
+  kill; indirect buffers of indirect buffers, cloned and not) and found
+  every answer GNU's, no cheat and no new break.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,584 passed, 0 failed, 2 ignored
+  (seventeen library tests more); cli 30, cli_parity 176, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings'
+  and rustfmt clean.  The round audit reports no hard finding, 2,598
+  changed lines with 18 tests and 59 assertions added and 12
+  assertions changed (the conversion of tests reading the current
+  buffer's point through a borrow to reading it through the object).
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23467,6 +23571,29 @@ ert-tests as a whole 26,307 ms against 27,211.
   failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 381, its review and the plan of
+  the thread items made beside it), outside the round and in no
+  milestone.**  One line each: `save-excursion' and `save-restriction'
+  around `buffer-swap-text' restore into the buffer they saved, where
+  GNU's saved markers have gone with the text to the other buffer and
+  restore there (wrong before and after the round, differently when
+  the buffers have point markers); a killed buffer written to an image
+  loses its file name and a killed indirect buffer its base (GNU keeps
+  both); the buffer printer decides by registration, so the loading
+  process's replaced `*scratch*' prints as a live buffer; `kill-buffer'
+  goes on after `replace-buffer-in-windows' has killed the buffer,
+  where GNU returns; the initial window holds its buffer as a number
+  (the buffers plan's holder stage takes it); finding 157's recorded
+  cause no longer holds (Lisp runs on the main thread, and both editors
+  answer ("R" 1 t) to the probe of `process-attributes'), so its row in
+  the honesty audit is stale; `.cargo/config.toml' sets two test
+  threads with a comment that the tests share no interpreter state, and
+  docs/testing.md describes two gate groups as run on two threads that
+  tools/grouped_gate.py runs on one.  The thread plan also found that
+  Lisp objects kept in thread-locals (the profiler's log, the atimers,
+  the echo area) are marked only by the thread that collects, a
+  use-after-free a second thread reaches through the public API; that
+  is A2.5's and C5.3's, already in M2.
 - **Found after the scope lock (round 379, its review and the plans
   made beside it), outside the round and in no milestone.**  One line
   each: a buffer killed before `dump-emacs-portable' answers t to
