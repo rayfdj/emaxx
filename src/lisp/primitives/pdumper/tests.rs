@@ -2820,3 +2820,202 @@ fn image_nilled_windows_are_dead_windows_of_their_own_in_the_new_process() {
         "nilled objects are not live frame roots"
     );
 }
+
+#[test]
+fn image_buffers_take_the_places_of_the_loading_process_buffers_of_their_ids() {
+    // The image's buffers carry the ids the dumping process gave them,
+    // and the process that loads the image made its own *scratch* and
+    // *Messages*, with the same ids, before it read the image:
+    // install_buffer puts the image's buffer in the place of the
+    // process's.  GNU's process has no buffer of its own then (pdumper
+    // loads before init_buffer), so what must hold is that the loaded
+    // session sees the image's buffers alone -- current, in its window,
+    // by name and in the list -- and that the replaced objects, which
+    // nothing of the session names, select nothing.  The first window
+    // holds its buffer by id from before the load (make_leaf_window), so
+    // it shows the image's *scratch*.  A buffer made after the load is a
+    // new object.  Both constructors are checked: the one a process that
+    // loads an image starts from, and the one the tests load into.
+    fn eval(interp: &mut Interpreter, source: &str) -> Value {
+        let form = crate::lisp::reader::Reader::new(source)
+            .read()
+            .expect("the form parses")
+            .expect("a form");
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    }
+    fn printed(interp: &mut Interpreter, value: &Value) -> String {
+        let value = crate::lisp::native_comp::call_c_primitive(
+            interp,
+            &mut crate::lisp::types::Env::new(),
+            "prin1-to-string",
+            std::slice::from_ref(value),
+        )
+        .unwrap_or_else(|error| panic!("prin1-to-string: {error:?}"));
+        string_like(&value).expect("a string").text
+    }
+    // The dumped session: its *scratch* with text, a base with a local
+    // case-fold-search, its own syntax and case tables and an indirect
+    // buffer, a killed buffer and a killed indirect buffer.
+    let setup = r#"
+      (let* ((scratch (current-buffer))
+             (messages (get-buffer "*Messages*"))
+             (base (get-buffer-create "t5-base"))
+             (ind (make-indirect-buffer base "t5-ind"))
+             (killed (get-buffer-create "t5-killed"))
+             (kind (make-indirect-buffer base "t5-kind")))
+        (save-current-buffer
+          (set-buffer base)
+          (insert "Base TEXT")
+          (set (make-local-variable 'case-fold-search) nil)
+          (let ((table (make-char-table 'syntax-table)))
+            (set-char-table-parent table (standard-syntax-table))
+            (modify-syntax-entry ?_ "w" table)
+            (set-syntax-table table))
+          (let ((table (copy-sequence (standard-case-table))))
+            (aset table ?X ?y)
+            (set-char-table-extra-slot table 0 nil)
+            (set-char-table-extra-slot table 1 nil)
+            (set-char-table-extra-slot table 2 nil)
+            (set-case-table table)))
+        (kill-buffer killed)
+        (kill-buffer kind)
+        (save-current-buffer (set-buffer scratch) (insert "image scratch"))
+        (vector scratch messages base ind killed kind))"#;
+    for image_process in [true, false] {
+        let mut source = Interpreter::new();
+        let graph = eval(&mut source, setup);
+        source.set_global_binding("t5-image", graph);
+        let mut ctx = DumpContext::new(false, source.main_thread_record_id());
+        if let Err(error) = write_image(&mut ctx, &source, RootSource::Interpreter) {
+            match error {
+                super::context::DumpError::Unsupported(unsupported) => {
+                    panic!("unsupported: {}", unsupported.message)
+                }
+                super::context::DumpError::Lisp(error) => panic!("dump: {error:?}"),
+            }
+        }
+        let bytes = ctx.buffer().to_vec();
+
+        let mut target = if image_process {
+            Interpreter::for_image()
+        } else {
+            Interpreter::new()
+        };
+        // The loading process's own first buffers, with the ids of the
+        // image's *scratch* and *Messages*.
+        let own_scratch = target
+            .buffer_object(target.current_buffer_id())
+            .expect("the process's *scratch*");
+        let own_messages = target
+            .buffer_object(target.find_buffer_id("*Messages*").expect("*Messages*"))
+            .expect("the process's *Messages*");
+        let image =
+            load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+        target
+            .install_image(
+                &image,
+                crate::lisp::eval::PdumperLoadRecord {
+                    filename: "t5.pdmp".into(),
+                    load_time: std::time::Duration::ZERO,
+                    dump_size: bytes.len() as u64,
+                },
+            )
+            .expect("install the image's symbols");
+        if image_process {
+            target
+                .init_after_pdump_load()
+                .expect("initialize the loaded process");
+        }
+        let Some(Kind::Vector(loaded)) = target.symbol_value("t5-image").map(|value| value.kind())
+        else {
+            panic!("the image's vector")
+        };
+        let loaded = loaded.slots().collect::<Vec<_>>();
+        for (index, own) in [own_scratch, own_messages].into_iter().enumerate() {
+            assert_ne!(
+                loaded[index],
+                Value::Buffer(own),
+                "the image's buffer is its own"
+            );
+        }
+        target.set_global_binding("t5-own-scratch", Value::Buffer(own_scratch));
+        target.set_global_binding("t5-own-messages", Value::Buffer(own_messages));
+        let probe = r#"
+          (let ((scratch (aref t5-image 0)) (messages (aref t5-image 1))
+                (base (aref t5-image 2)) (ind (aref t5-image 3))
+                (killed (aref t5-image 4)) (kind (aref t5-image 5))
+                (live (function (lambda (b) (and (memq b (buffer-list)) t))))
+                (selects (function (lambda (b)
+                                     (condition-case err
+                                         (save-current-buffer (set-buffer b) (buffer-string))
+                                       (error err))))))
+            (list
+             (list (eq scratch (current-buffer)) (eq scratch (window-buffer (selected-window)))
+                   (eq scratch (get-buffer "*scratch*")) (eq messages (get-buffer "*Messages*"))
+                   (funcall live scratch) (buffer-live-p scratch) (funcall selects scratch))
+             (list (buffer-name base) (funcall selects base) (funcall live base)
+                   (save-current-buffer
+                     (set-buffer base)
+                     (list case-fold-search (local-variable-p 'case-fold-search)
+                           (char-syntax ?_) (downcase ?X) (downcase ?Y))))
+             (list (buffer-name ind) (eq (buffer-base-buffer ind) base) (funcall live ind)
+                   (funcall selects ind)
+                   (save-current-buffer
+                     (set-buffer ind)
+                     (list case-fold-search (char-syntax ?_) (downcase ?X))))
+             (mapcar (function (lambda (b) (list (bufferp b) (buffer-name b) (funcall live b)
+                                                (funcall selects b))))
+                     (list killed kind t5-own-scratch t5-own-messages))
+             (list (eq t5-own-scratch (current-buffer))
+                   (eq t5-own-scratch (window-buffer (selected-window))))))"#;
+        let expected = |text: &str| {
+            [
+                "((t t t t t t \"image scratch\")".to_string(),
+                format!(" (\"t5-base\" \"{text}\" t (nil t 119 121 121))"),
+                format!(" (\"t5-ind\" t t \"{text}\" (t 95 120))"),
+                " ((t nil nil (error \"Selecting deleted buffer\"))".to_string(),
+                " (t nil nil (error \"Selecting deleted buffer\"))".to_string(),
+                " (t nil nil (error \"Selecting deleted buffer\"))".to_string(),
+                " (t nil nil (error \"Selecting deleted buffer\")))".to_string(),
+                " (nil nil))".to_string(),
+            ]
+            .concat()
+        };
+        let answer = eval(&mut target, probe);
+        assert_eq!(
+            printed(&mut target, &answer),
+            expected("Base TEXT"),
+            "image process {image_process}"
+        );
+        // An edit through the indirect buffer is the base's, and every
+        // answer is the same after a collection; a buffer made after the
+        // load is none of the image's or the process's.
+        eval(
+            &mut target,
+            "(save-current-buffer (set-buffer (aref t5-image 3)) (goto-char (point-max)) (insert \"!\"))",
+        );
+        eval(&mut target, "(garbage-collect)");
+        let answer = eval(&mut target, probe);
+        assert_eq!(
+            printed(&mut target, &answer),
+            expected("Base TEXT!"),
+            "image process {image_process}, after a collection"
+        );
+        let fresh = eval(
+            &mut target,
+            r#"(let ((fresh (get-buffer-create "t5-fresh")))
+                 (save-current-buffer (set-buffer fresh) (insert "fresh"))
+                 (list (buffer-name fresh) (buffer-live-p fresh)
+                       (let ((same nil) (tail (append t5-image (list t5-own-scratch t5-own-messages))))
+                         (while tail (if (eq (car tail) fresh) (setq same t)) (setq tail (cdr tail)))
+                         same)
+                       (save-current-buffer (set-buffer (aref t5-image 0)) (buffer-string))))"#,
+        );
+        assert_eq!(
+            printed(&mut target, &fresh),
+            "(\"t5-fresh\" t nil \"image scratch\")"
+        );
+    }
+}

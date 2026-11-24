@@ -670,6 +670,358 @@ fn killed_buffer_holds_no_text_properties_as_gnu() {
 }
 
 #[test]
+fn killed_buffers_keep_what_fkill_buffer_leaves_as_gnu() {
+    // buffer.c:Fkill_buffer: the name nil, BUFFER_LIVE_P false; the
+    // file name and truename and the directory kept, the other slots as
+    // reset_buffer_local_variables (b, 1) leaves them and the local
+    // bindings gone; every marker of a killed buffer with its own text
+    // detached, only its own of an indirect one; base_buffer kept, even
+    // once the base is killed; set_buffer_internal refuses it.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((b (get-buffer-create "t1-b"))
+                (m (with-current-buffer b (insert "hello") (copy-marker 3)))
+                (mk (with-current-buffer b (set-mark 2) (mark-marker)))
+                (base (get-buffer-create "t1-base"))
+                (ind (make-indirect-buffer base "t1-ind"))
+                (im (with-current-buffer ind (insert "xyz") (copy-marker 2)))
+                (bm (with-current-buffer base (copy-marker 3))))
+           (with-current-buffer b
+             (setq buffer-file-name "/tmp/t1-file"
+                   buffer-file-truename "/tmp/t1-true"
+                   default-directory "/tmp/t1-dir/"
+                   major-mode 'text-mode mode-name "T1")
+             (setq-local t1-var 7))
+           (kill-buffer b)
+           (kill-buffer ind)
+           (list (buffer-name b) (buffer-file-name b) (buffer-live-p b) (bufferp b)
+                 (buffer-local-value 'buffer-file-truename b)
+                 (buffer-local-value 'default-directory b)
+                 (buffer-local-value 'major-mode b)
+                 (buffer-local-value 'mode-name b)
+                 (condition-case e (buffer-local-value 't1-var b) (error e))
+                 (marker-buffer m) (marker-position m) (marker-buffer mk)
+                 (buffer-base-buffer ind) (buffer-live-p ind) (buffer-name ind)
+                 (marker-buffer im) (eq (marker-buffer bm) base) (marker-position bm)
+                 (buffer-modified-p b) (buffer-size b)
+                 (condition-case e (with-current-buffer b 1) (error e))
+                 (condition-case e (set-buffer ind) (error e))
+                 (format "%S" b)
+                 (progn (kill-buffer base) (list (buffer-base-buffer ind) (buffer-live-p base) (buffer-name base)))))"#,
+        r##"(nil "/tmp/t1-file" nil t "/tmp/t1-true" "/tmp/t1-dir/" fundamental-mode "Fundamental" (void-variable t1-var) nil nil nil #<killed buffer> nil nil nil t 3 t 5 (error "Selecting deleted buffer") (error "Selecting deleted buffer") "#<killed buffer>" (#<killed buffer> nil nil))"##,
+        "killed buffers",
+    );
+}
+
+#[test]
+fn an_indirect_family_shares_edits_markers_and_the_undo_list_as_gnu() {
+    // An indirect family has one buffer_text: an edit in any member moves
+    // the others' point and bounds (their pt_marker...zv_marker) and
+    // markers; set_buffer_internal_2 hands the undo list to the base and
+    // back, so each member records into the one list; Fkill_buffer of the
+    // base kills the indirect buffers first, their markers detached.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((base (get-buffer-create "t2-base"))
+                (_ (with-current-buffer base (insert "abcdef") (buffer-enable-undo) (undo-boundary)))
+                (i1 (make-indirect-buffer base "t2-i1"))
+                (i2 (make-indirect-buffer base "t2-i2"))
+                (m1 (with-current-buffer i1 (goto-char 4) (copy-marker 5)))
+                (m2 (with-current-buffer i2 (goto-char 6) (copy-marker 3 t)))
+                (r nil))
+           (with-current-buffer base (goto-char 2) (insert "XY"))
+           (push (list (with-current-buffer i1 (point)) (with-current-buffer i2 (point))
+                       (marker-position m1) (marker-position m2) (with-current-buffer base (point))) r)
+           (with-current-buffer i2 (goto-char 1) (delete-char 3))
+           (push (list (with-current-buffer i1 (point)) (with-current-buffer i2 (point))
+                       (marker-position m1) (marker-position m2) (with-current-buffer base (point))
+                       (with-current-buffer base (buffer-string))) r)
+           (with-current-buffer i1 (undo-boundary) (goto-char (point-max)) (insert "Q") (undo-boundary))
+           (push (list (equal (with-current-buffer base buffer-undo-list) (with-current-buffer i1 buffer-undo-list))
+                       (eq (with-current-buffer base buffer-undo-list) (with-current-buffer i2 buffer-undo-list))
+                       (with-current-buffer i2 (car buffer-undo-list))
+                       (with-current-buffer i2 (cadr buffer-undo-list))) r)
+           (with-current-buffer i2 (setq buffer-undo-list (cons 'i2-entry buffer-undo-list)))
+           (push (list (with-current-buffer base (car buffer-undo-list))
+                       (with-current-buffer i1 (car buffer-undo-list))) r)
+           (with-current-buffer base (primitive-undo 1 (cdr buffer-undo-list)))
+           (push (with-current-buffer i1 (buffer-string)) r)
+           (kill-buffer base)
+           (push (list (buffer-live-p i1) (buffer-live-p i2) (buffer-base-buffer i1) (marker-buffer m1) (marker-buffer m2)) r)
+           (nreverse r))"#,
+        r##"((6 8 7 5 4) (3 1 4 2 1 "bcdef") (t t nil (6 . 7)) (i2-entry i2-entry) "bcdefQ" (nil nil #<killed buffer> nil nil))"##,
+        "indirect family",
+    );
+}
+
+#[test]
+fn save_current_buffer_after_a_kill_and_a_collection_as_gnu() {
+    // editfns.c:save_current_buffer's unwind, set_buffer_if_live: a
+    // buffer killed in the body is not selected again (the current one
+    // stays), and a collection in the body changes nothing; a current
+    // buffer that kill-buffer kills is replaced by other-buffer first.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((outer (get-buffer-create "t3-outer"))
+                (r nil))
+           (set-buffer outer)
+           (push (save-current-buffer
+                   (let ((b (get-buffer-create "t3-in")))
+                     (set-buffer b) (kill-buffer outer) (garbage-collect)
+                     (buffer-name)))
+                 r)
+           (push (list (buffer-name) (buffer-live-p outer)) r)
+           (let ((o2 (get-buffer-create "t3-o2")))
+             (set-buffer o2)
+             (push (save-current-buffer
+                     (set-buffer (get-buffer-create "t3-in2"))
+                     (kill-buffer (current-buffer))
+                     (garbage-collect)
+                     (list (buffer-live-p (current-buffer)) (buffer-name)))
+                   r)
+             (push (list (eq (current-buffer) o2) (buffer-name)) r)
+             (push (with-current-buffer (get-buffer-create "t3-in3")
+                     (kill-buffer o2) (garbage-collect) (buffer-name))
+                   r)
+             (push (list (buffer-name) (buffer-live-p o2)) r))
+           (push (save-excursion
+                   (set-buffer (get-buffer-create "t3-ex"))
+                   (insert "abc")
+                   (let ((cur (current-buffer)))
+                     (set-buffer "*scratch*")
+                     (kill-buffer cur)
+                     (garbage-collect)
+                     (buffer-name)))
+                 r)
+           (push (buffer-name) r)
+           (nreverse r))"#,
+        r##"("t3-in" ("t3-in" nil) (t "*Messages*") (t "t3-o2") "t3-in3" ("t3-in3" nil) "*scratch*" "t3-in3")"##,
+        "save-current-buffer and kill-buffer",
+    );
+}
+
+#[test]
+fn a_thread_keeps_its_current_buffer_across_a_kill_and_a_collection_as_gnu() {
+    // thread.c: each thread's m_current_buffer, which Fkill_buffer
+    // refuses to kill (thread_check_current_buffer) and post_acquire_global_lock
+    // selects again; a buffer the thread is not in at the moment is killed,
+    // and its save-current-buffer does not come back to it.  Collections
+    // run while the other thread is parked on a condition variable.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((b (get-buffer-create "t4-b"))
+                (c (get-buffer-create "t4-c"))
+                (m (make-mutex)) (cv (make-condition-variable m))
+                (go nil) (inside nil) (log nil)
+                (th (make-thread
+                     (lambda ()
+                       (set-buffer b)
+                       (with-current-buffer c
+                         (setq inside t)
+                         (with-mutex m (while (not go) (condition-wait cv)))
+                         (push (list 'in (buffer-name) (buffer-live-p b)) log))
+                       (push (list 'after (buffer-name) (eq (current-buffer) c) (buffer-live-p b)) log)
+                       (insert "from-thread")
+                       (buffer-name)))))
+           (while (not inside) (thread-yield))
+           (let ((killed (kill-buffer b)))
+             (garbage-collect)
+             (push (list 'main killed (buffer-live-p b) (buffer-name b)) log)
+             (with-mutex m (setq go t) (condition-notify cv))
+             (let ((result (thread-join th)))
+               (garbage-collect)
+               (list result (nreverse log) (with-current-buffer c (buffer-string))
+                     (buffer-name) (kill-buffer c)))))"#,
+        r##"("t4-c" ((main t nil nil) (in "t4-c" nil) (after "t4-c" t nil)) "from-thread" "*scratch*" t)"##,
+        "threads, buffers and collections",
+    );
+}
+
+#[test]
+fn a_parked_threads_current_buffer_survives_a_refused_kill_as_gnu() {
+    // thread.c:thread_check_current_buffer: kill-buffer answers nil for
+    // the buffer a parked thread has current; the thread, after a
+    // collection, inserts into it; once the thread is done it is killed.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((b (get-buffer-create "t4b-b"))
+                (m (make-mutex)) (cv (make-condition-variable m))
+                (go nil) (inside nil)
+                (th (make-thread
+                     (lambda ()
+                       (set-buffer b)
+                       (setq inside t)
+                       (with-mutex m (while (not go) (condition-wait cv)))
+                       (insert "x")
+                       (list (buffer-name) (buffer-string))))))
+           (while (not inside) (thread-yield))
+           (let ((during (list (kill-buffer b) (buffer-live-p b))))
+             (garbage-collect)
+             (with-mutex m (setq go t) (condition-notify cv))
+             (let ((r (thread-join th)))
+               (garbage-collect)
+               (list during r (buffer-live-p b) (kill-buffer b) (buffer-live-p b)))))"#,
+        r##"((nil t) ("t4b-b" "x") t t nil)"##,
+        "parked thread buffer",
+    );
+}
+
+#[test]
+fn set_standard_case_table_reaches_new_buffers_only_as_gnu() {
+    // casetab.c:Fset_standard_case_table changes Vascii_downcase_table
+    // and the buffer_defaults slots: a buffer made after it takes the new
+    // table (reset_buffer_local_variables), one made before keeps its own;
+    // kill-all-local-variables gives a buffer the standard table again.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((old (get-buffer-create "t6-old"))
+                (std (standard-case-table))
+                (new-std (copy-case-table std)))
+           (set-case-syntax-pair ?Q ?z new-std)
+           (unwind-protect
+               (progn
+                 (set-standard-case-table new-std)
+                 (let ((new (get-buffer-create "t6-new")))
+                   (prog1
+                       (list (with-current-buffer old (list (eq (current-case-table) std) (downcase ?Q) (upcase ?z) (upcase ?q)))
+                             (with-current-buffer new (list (eq (current-case-table) new-std) (downcase ?Q) (upcase ?z)))
+                             (with-temp-buffer (list (eq (current-case-table) new-std) (downcase ?Q)))
+                             (with-current-buffer old (string-match "q" "Q"))
+                             (with-current-buffer new (list (string-match "z" "Q") (let ((case-fold-search t)) (string-match "z" "Q"))))
+                             (eq (standard-case-table) new-std)
+                             (with-current-buffer old (set-case-table new-std) (downcase ?Q))
+                             (with-current-buffer new (kill-all-local-variables) (eq (current-case-table) new-std)))
+                     (kill-buffer new))))
+             (set-standard-case-table std)
+             (kill-buffer old)))"#,
+        r##"((t 113 90 81) (t 122 81) (t 122) 0 (0 0) t 122 t)"##,
+        "standard case table",
+    );
+}
+
+#[test]
+fn case_fold_search_and_lookup_properties_follow_the_buffer_as_gnu() {
+    // case-fold-search (DEFVAR_LISP, Fmake_variable_buffer_local) and
+    // parse-sexp-lookup-properties (DEFVAR_BOOL, likewise) are C variables
+    // set_buffer_internal_2 loads: a let in one buffer and a search in
+    // another, setq-local, kill-local-variable, kill-all-local-variables,
+    // a variable watcher's reports, and a thread with its own let.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((a (get-buffer-create "t7-a"))
+                (b (get-buffer-create "t7-b"))
+                (r nil)
+                (watch nil))
+           (with-current-buffer a (insert "Hello World") (goto-char 1))
+           (with-current-buffer b (insert "Hello World") (goto-char 1))
+           (with-current-buffer a
+             (let ((case-fold-search nil) (parse-sexp-lookup-properties t))
+               (push (list (with-current-buffer b (list case-fold-search parse-sexp-lookup-properties (looking-at "hello") (save-excursion (re-search-forward "world" nil t))))
+                           (looking-at "hello") parse-sexp-lookup-properties)
+                     r)))
+           (push (list (with-current-buffer a case-fold-search) (with-current-buffer b case-fold-search)) r)
+           (with-current-buffer a
+             (setq-local case-fold-search nil)
+             (push (list (looking-at "hello") (local-variable-p 'case-fold-search)
+                         (with-current-buffer b (looking-at "hello"))
+                         (default-value 'case-fold-search)) r)
+             (let ((case-fold-search t))
+               (push (list (looking-at "hello") (with-current-buffer b case-fold-search)) r)
+               (set-buffer b)
+               (push (list 'in-b case-fold-search (looking-at "hello")) r))
+             (push (list (buffer-name) case-fold-search (with-current-buffer a case-fold-search)) r))
+           (with-current-buffer a
+             (kill-local-variable 'case-fold-search)
+             (push (list (looking-at "hello") (local-variable-p 'case-fold-search)) r)
+             (setq-local case-fold-search nil parse-sexp-lookup-properties t)
+             (kill-all-local-variables)
+             (push (list case-fold-search parse-sexp-lookup-properties (looking-at "hello")) r))
+           (add-variable-watcher 'case-fold-search (lambda (sym nv op where) (push (list sym nv op (and where (buffer-name where))) watch)))
+           (unwind-protect
+               (with-current-buffer a
+                 (setq-local case-fold-search nil)
+                 (let ((case-fold-search 'x)) (looking-at "hello"))
+                 (with-current-buffer b (let ((case-fold-search nil)) (looking-at "hello")))
+                 (kill-local-variable 'case-fold-search))
+             (remove-variable-watcher 'case-fold-search (car (get-variable-watchers 'case-fold-search))))
+           (push (nreverse watch) r)
+           (let* ((m (make-mutex)) (cv (make-condition-variable m)) (go nil) (in nil)
+                  (th (make-thread (lambda ()
+                                     (with-current-buffer a
+                                       (let ((case-fold-search nil))
+                                         (setq in t)
+                                         (with-mutex m (while (not go) (condition-wait cv)))
+                                         (list case-fold-search (looking-at "hello"))))))))
+             (while (not in) (thread-yield))
+             (push (list 'main case-fold-search (with-current-buffer a (list case-fold-search (looking-at "hello")))) r)
+             (with-mutex m (setq go t) (condition-notify cv))
+             (push (thread-join th) r))
+           (kill-buffer a) (kill-buffer b)
+           (nreverse r))"#,
+        r##"(((nil t nil nil) nil t) (t t) (nil t t t) (t t) (in-b t t) ("t7-b" t nil) (t nil) (t nil t) ((case-fold-search nil set "t7-a") (case-fold-search x let "t7-a") (case-fold-search nil unlet "t7-a") (case-fold-search nil let "t7-b") (case-fold-search t set nil) (case-fold-search nil makunbound "t7-a")) (main t (t t)) (nil nil))"##,
+        "buffer-local C variables",
+    );
+}
+
+#[test]
+fn the_matcher_calls_syntax_propertize_as_gnu() {
+    // regex-emacs.c's UPDATE_SYNTAX_TABLE past gl_state.e_property calls
+    // syntax.c:parse_sexp_propertize, which runs syntax-propertize (a Lisp
+    // function that puts syntax-table properties) in the middle of a
+    // looking-at or re-search-forward; none is called before the first
+    // property boundary.
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-temp-buffer
+           (insert "a_b c_d e_f g_h")
+           (let* ((calls nil) (r nil))
+             (setq-local parse-sexp-lookup-properties t)
+             (setq-local syntax-propertize-function
+                         (lambda (beg end)
+                           (push (list beg end) calls)
+                           (save-excursion
+                             (goto-char beg)
+                             (while (search-forward "_" end t)
+                               (put-text-property (1- (point)) (point) 'syntax-table (string-to-syntax "w"))))))
+             (dolist (step (list (lambda () (goto-char 1) (list (looking-at "\\w+") (match-end 0)))
+                                 (lambda () (put-text-property 4 5 'syntax-table (string-to-syntax ".")) (setq syntax-propertize--done 2)
+                                            (goto-char 1) (list (looking-at "a\\Sw\\w\\W*\\w\\w\\w") (match-end 0)))
+                                 (lambda () (goto-char 1) (list (looking-at "\\w+") (match-end 0)))
+                                 (lambda () (setq syntax-propertize--done 5) (goto-char 1) (list (re-search-forward "\\_<e\\w*" nil t) (match-beginning 0)))
+                                 (lambda () (setq syntax-propertize--done 9) (goto-char 9) (list (re-search-forward "\\w+" nil t) (match-beginning 0)))
+                                 (lambda () (goto-char 3) (insert "_") (list syntax-propertize--done (text-properties-at 3)))
+                                 (lambda () (goto-char (point-max)) (list (re-search-backward "\\<c\\w*" nil t) (match-end 0)))))
+               (setq calls nil)
+               (let ((v (condition-case e (funcall step) (error e))))
+                 (push (list v (nreverse calls) syntax-propertize--done (get-text-property 2 'syntax-table) (get-text-property 6 'syntax-table)) r)))
+             (nreverse r)))"#,
+        r##"(((t 2) nil -1 nil nil) ((t 8) ((1 16)) 16 (2) (2)) ((t 4) nil 16 (2) (2)) ((12 9) ((1 16)) 16 (2) (2)) ((12 9) ((1 16)) 16 (2) (2)) ((16 nil) nil 16 (2) nil) ((6 9) nil 16 (2) nil))"##,
+        "matcher callouts",
+    );
+}
+
+#[test]
+fn buffer_swap_text_moves_text_markers_overlays_and_point_as_gnu() {
+    // buffer.c:Fbuffer_swap_text swaps the own_text (markers and
+    // intervals with it), the overlays, point and the narrowing; a later
+    // edit moves the markers in the buffer that now has their text.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((a (get-buffer-create "t9-a"))
+                (b (get-buffer-create "t9-b"))
+                ma mb oa ob)
+           (with-current-buffer a (insert "alpha text") (put-text-property 1 3 'face 'bold) (goto-char 4)
+             (setq ma (copy-marker 6)) (setq oa (make-overlay 2 5)) (overlay-put oa 'x 'a) (narrow-to-region 2 8))
+           (with-current-buffer b (insert "beta") (put-text-property 2 4 'face 'italic) (goto-char 3)
+             (setq mb (copy-marker 2 t)) (setq ob (make-overlay 1 3)) (overlay-put ob 'x 'b))
+           (with-current-buffer a (buffer-swap-text b))
+           (prog1
+               (list (with-current-buffer a (list (buffer-string) (point) (point-min) (point-max) (object-intervals (current-buffer))))
+                     (with-current-buffer b (list (buffer-string) (point) (point-min) (point-max) (object-intervals (current-buffer))))
+                     (list (marker-buffer ma) (marker-position ma) (marker-buffer mb) (marker-position mb))
+                     (list (overlay-buffer oa) (overlay-start oa) (overlay-end oa) (overlay-buffer ob) (overlay-start ob))
+                     (with-current-buffer a (mapcar (lambda (o) (overlay-get o 'x)) (overlays-in (point-min) (point-max))))
+                     (with-current-buffer b (widen) (mapcar (lambda (o) (overlay-get o 'x)) (overlays-in (point-min) (point-max))))
+                     (with-current-buffer a (goto-char 1) (insert "Z") (list (marker-position mb) (overlay-start ob)))
+                     (progn (garbage-collect) (list (marker-position ma) (marker-position mb))))
+             (kill-buffer a) (kill-buffer b)))"#,
+        r##"((#("beta" 1 3 (face italic)) 3 1 5 ((0 1 nil) (1 3 (face italic)) (3 4 nil))) (#("lpha t" 0 1 (face bold)) 4 2 8 ((0 2 (face bold)) (2 10 nil))) (#<killed buffer> 6 #<killed buffer> 2) (#<killed buffer> 2 5 #<killed buffer> 1) (b) (a) (3 1) (6 3))"##,
+        "buffer-swap-text",
+    );
+}
+
+#[test]
 fn auto_save_and_modification_counts_follow_gnu() {
     // fileio.c:Fdo_auto_save marks each buffer it saves with
     // BUF_AUTOSAVE_MODIFF; buffer.c:Frestore_buffer_modified_p moves
@@ -25247,6 +25599,82 @@ fn native_frame_terminal_and_buffer_owners_contribute_to_vector_census() {
     assert_eq!(killed.vectors, after.vectors);
     assert_eq!(killed.vector_slots, after.vector_slots);
     assert!(matches!(buffer.kind(), Kind::Buffer(_)));
+}
+
+#[test]
+fn buffer_creation_and_kill_cons_their_objects_and_markers() {
+    // memory-use-counts (conses, floats, vector cells, symbols, string
+    // characters, intervals, strings) consed by each operation, less what
+    // calling an empty function conses.  alloc.c:allocate_vectorlike
+    // counts the words after the header that were asked for: a buffer's
+    // BufferValue, and 5 for each marker.  Fget_buffer_create makes the
+    // buffer, a copy of its name and its mark; kill-buffer conses a cons
+    // and 5 cells of its own (the last row, GNU's too); with-temp-buffer
+    // is a buffer, its kill and two conses more; the first
+    // Fmake_indirect_buffer on a base gives the base its pt, begv and zv
+    // markers, and each indirect buffer gets its mark, a second mark
+    // (replace_state) and its own three.  GNU conses two conses more a
+    // buffer (its Vbuffer_alist entry) and its buffer is 123 words: these
+    // are this editor's counts, which a buffer laid out as buffer.h's and
+    // a Vbuffer_alist of conses change.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let program = r#"
+        (let ((delta (lambda (thunk)
+                       (let* ((a (memory-use-counts)) (_ (funcall thunk)) (b (memory-use-counts)))
+                         (mapcar (lambda (i) (- (nth i b) (nth i a))) '(0 1 2 3 4 5 6)))))
+              (r nil)
+              (base-buffer (get-buffer-create "t10-base")))
+          (dolist (thunk (list (lambda () nil)
+                               (lambda () (get-buffer-create "t10-a"))
+                               (lambda () (get-buffer-create " t10-b"))
+                               (lambda () (with-temp-buffer nil))
+                               (lambda () (make-indirect-buffer base-buffer "t10-i1"))
+                               (lambda () (make-indirect-buffer base-buffer "t10-i2"))
+                               (lambda () (kill-buffer (get-buffer-create "t10-k")))
+                               (lambda () (kill-buffer "t10-a"))))
+            (garbage-collect)
+            (push (funcall delta thunk) r))
+          (let* ((r (nreverse r)) (base (car r)))
+            (mapcar (lambda (d) (mapcar (lambda (i) (- (nth i d) (nth i base))) '(0 1 2 3 4 5 6)))
+                    (cdr r))))"#;
+    let form = Reader::new(program)
+        .read()
+        .expect("the program parses")
+        .expect("a form");
+    let counts = interp
+        .eval(&form, &mut crate::lisp::types::Env::new())
+        .expect("the program runs")
+        .to_vec()
+        .expect("a list of counts")
+        .into_iter()
+        .map(|counts| {
+            counts
+                .to_vec()
+                .expect("seven counts")
+                .into_iter()
+                .map(|count| match count.kind() {
+                    Kind::Integer(count) => count,
+                    other => panic!("a count: {other:?}"),
+                })
+                .collect::<Vec<_>>()
+        })
+        .collect::<Vec<_>>();
+    let word = std::mem::size_of::<Value>();
+    let buffer = std::mem::size_of::<crate::lisp::types::BufferValue>().div_ceil(word) as i64;
+    let marker = std::mem::size_of::<crate::lisp::types::MarkerValue>().div_ceil(word) as i64;
+    assert_eq!(marker, 5, "a Lisp_Marker's words after its header");
+    assert_eq!(
+        counts,
+        [
+            [0, 0, buffer + marker, 0, 5, 0, 1],
+            [0, 0, buffer + marker, 0, 6, 0, 1],
+            [3, 0, buffer + 2 * marker, 0, 7, 0, 1],
+            [0, 0, buffer + 8 * marker, 0, 6, 0, 1],
+            [0, 0, buffer + 5 * marker, 0, 6, 0, 1],
+            [1, 0, buffer + 2 * marker, 0, 5, 0, 1],
+            [1, 0, 5, 0, 0, 0, 0],
+        ]
+    );
 }
 
 #[test]

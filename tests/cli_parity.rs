@@ -13383,3 +13383,104 @@ fn a_dumped_window_is_a_dead_window_of_the_process_that_loads_the_dump() {
         "Emaxx (left) and GNU (right) differ for a dumped window"
     );
 }
+
+#[test]
+fn dumped_buffers_keep_their_text_tables_and_indirect_family() {
+    // pdumper.c:dump_buffer writes a live buffer with its text, point,
+    // local variables (a buffer-local case-fold-search among them), its
+    // syntax and case tables and its base_buffer; the process started
+    // from the dump has those buffers, the dumped *scratch* current and
+    // in the first window (window.c:init_window_once_for_pdumper), and an
+    // indirect buffer that shares its base's text and markers again.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "dumped-buffers-probe.el",
+        r#"(dolist (name '(zz-scratch zz-base zz-indirect zz-window-buffer))
+  (let ((b (symbol-value name)))
+    (princ (format "%s: %S\n" name
+                   (list (bufferp b) (buffer-live-p b) (buffer-name b)
+                         (buffer-base-buffer b)
+                         (with-current-buffer b (buffer-string))
+                         (eq b (current-buffer)) (and (memq b (buffer-list)) t))))))
+(princ (format "window: %S\n"
+               (list (buffer-name (window-buffer)) (eq (window-buffer) zz-scratch)
+                     (eq (get-buffer "*scratch*") zz-scratch)
+                     (eq (current-buffer) zz-scratch))))
+(princ (format "list: %S\n"
+               (seq-remove (lambda (name) (string-prefix-p " *load*" name))
+                           (mapcar #'buffer-name (buffer-list)))))
+(with-current-buffer zz-base
+  (princ (format "base: %S\n"
+                 (list case-fold-search (local-variable-p 'case-fold-search)
+                       (string (char-syntax ?_)) (downcase ?X) (upcase ?y)
+                       (save-excursion (goto-char 1) (search-forward "text" nil t))
+                       (point)))))
+(with-current-buffer zz-indirect
+  (princ (format "indirect: %S\n"
+                 (list case-fold-search (string (char-syntax ?_)) (downcase ?X)
+                       (point) (marker-buffer zz-marker) (marker-position zz-marker)
+                       (save-excursion (goto-char 1) (search-forward "text" nil t)))))
+  (goto-char 1)
+  (insert "!"))
+(princ (format "after: %S\n"
+               (list (with-current-buffer zz-base (list (buffer-string) (point)))
+                     (marker-position zz-marker))))
+(garbage-collect)
+(princ (format "gc: %S\n"
+               (list (buffer-live-p zz-base) (buffer-live-p zz-indirect)
+                     (buffer-name (window-buffer)) (marker-position zz-marker))))
+(princ (format "kill: %S\n"
+               (list (kill-buffer zz-base) (buffer-live-p zz-indirect)
+                     (marker-buffer zz-marker) (buffer-live-p zz-base))))
+"#,
+    );
+    let run = |binary: &Path, name: &str| {
+        let image = corpus
+            .directory
+            .join(format!("{name}-dumped-buffers.pdmp"))
+            .display()
+            .to_string();
+        let dump = corpus.write(
+            &format!("{name}-dump-buffers.el"),
+            &format!(
+                r#"(setq zz-scratch (current-buffer))
+(setq zz-base (get-buffer-create "zz-base"))
+(with-current-buffer zz-base
+  (insert "Base TEXT")
+  (goto-char 2)
+  (setq-local case-fold-search nil)
+  (let ((table (make-syntax-table)))
+    (modify-syntax-entry ?_ "w" table)
+    (set-syntax-table table))
+  (let ((table (copy-case-table (standard-case-table))))
+    (set-case-syntax-pair ?X ?y table)
+    (set-case-table table)))
+(setq zz-indirect (make-indirect-buffer zz-base "zz-indirect"))
+(with-current-buffer zz-indirect (goto-char 6) (setq zz-marker (copy-marker 4)))
+(with-current-buffer zz-scratch (insert "dumped scratch"))
+(setq zz-window-buffer (window-buffer (selected-window)))
+(let ((load--bin-dest-dir (file-truename invocation-directory))
+      (load--eln-dest-dir (file-truename source-directory)))
+  (dump-emacs-portable "{image}"))
+"#
+            ),
+        );
+        let dumped = corpus.run(binary, &["--batch", "-Q", "-l", &dump]);
+        assert_eq!(dumped.2, Some(0), "{name} did not dump: {dumped:?}");
+        corpus.run(
+            binary,
+            &["--dump-file", &image, "--batch", "-Q", "-l", &probe],
+        )
+    };
+    let expected = run(&oracle(), "gnu");
+    assert_eq!(expected.2, Some(0), "GNU's probe failed: {expected:?}");
+    assert!(
+        expected.0.contains("base: (nil t \"w\" 121 88 nil 2)"),
+        "GNU keeps the base's local variable and tables: {expected:?}"
+    );
+    assert_eq!(
+        run(emaxx(), "emaxx"),
+        expected,
+        "Emaxx (left) and GNU (right) differ for dumped buffers"
+    );
+}
