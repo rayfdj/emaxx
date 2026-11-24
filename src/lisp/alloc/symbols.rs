@@ -37,8 +37,8 @@ use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
 /// built as.
 ///
 /// The words are cells, so the one write of a pending text goes through
-/// a shared reference: symbols are read and written by the one Lisp
-/// thread that runs, as `ProcessTable's tables are, and no reference to
+/// a shared reference: symbols are read and written by the OS thread that
+/// holds the runtime, as the obarrays are, and no reference to
 /// a pending text exists (`get' gives none), so no reader sees the words
 /// change.
 #[repr(C)]

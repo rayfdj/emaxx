@@ -26,6 +26,9 @@ struct RuntimeState {
     /// The allocation frontier while no OS thread holds the runtime; the
     /// holder has it in its thread-local cells (see `alloc::Frontier').
     frontier: crate::lisp::alloc::Frontier,
+    /// The obarray of heap operations that make no editor, made at its
+    /// first use (see `with_host_symbols').
+    host_symbols: Option<crate::lisp::types::symbols::HostSymbols>,
 }
 
 /// The state is locked only while the runtime is taken or given back, not
@@ -36,15 +39,7 @@ struct GlobalLock {
     released: Condvar,
 }
 
-static RUNTIME: GlobalLock = GlobalLock {
-    state: Mutex::new(RuntimeState {
-        holder: None,
-        waiters: 0,
-        poisoned: false,
-        frontier: crate::lisp::alloc::Frontier::EMPTY,
-    }),
-    released: Condvar::new(),
-};
+static RUNTIME: GlobalLock = GlobalLock::new();
 
 /// How long an OS thread waits for the runtime before it names the holder.
 const PATIENCE: Duration = Duration::from_secs(60);
@@ -89,6 +84,19 @@ impl Drop for Tenure {
 }
 
 impl GlobalLock {
+    const fn new() -> Self {
+        Self {
+            state: Mutex::new(RuntimeState {
+                holder: None,
+                waiters: 0,
+                poisoned: false,
+                frontier: crate::lisp::alloc::Frontier::EMPTY,
+                host_symbols: None,
+            }),
+            released: Condvar::new(),
+        }
+    }
+
     fn state(&self) -> MutexGuard<'_, RuntimeState> {
         self.state.lock().unwrap_or_else(PoisonError::into_inner)
     }
@@ -140,12 +148,22 @@ impl GlobalLock {
     /// runtime does, so the next holder is given it.
     fn release(&self, poison: bool) {
         let mut state = self.state();
+        let shared = !state
+            .host_symbols
+            .as_ref()
+            .is_none_or(crate::lisp::types::symbols::HostSymbols::is_unshared);
         state.frontier = crate::lisp::alloc::Frontier::take();
         state.holder = None;
         state.poisoned |= poison;
         if state.waiters > 0 {
             self.released.notify_one();
         }
+        drop(state);
+        // After the release, so that the runtime is not left held.
+        assert!(
+            !shared,
+            "a clone of the host obarray outlived its thread's hold of the Lisp runtime"
+        );
     }
 }
 
@@ -188,6 +206,21 @@ pub(crate) fn ensure_held() {
     if !held() {
         take_tenure();
     }
+}
+
+/// BODY on the host obarray, the runtime's, which this OS thread then
+/// holds (taking it if it does not).  BODY runs under the runtime's state
+/// lock, so it only reads or clones.
+pub(crate) fn with_host_symbols<R>(
+    body: impl FnOnce(&crate::lisp::types::symbols::HostSymbols) -> R,
+) -> R {
+    ensure_held();
+    body(
+        RUNTIME
+            .state()
+            .host_symbols
+            .get_or_insert_with(crate::lisp::types::symbols::HostSymbols::new),
+    )
 }
 
 /// An allocator's cold path: whether this OS thread has just taken the
@@ -325,7 +358,9 @@ pub(crate) fn with_runtime<R: Send>(body: impl FnOnce() -> R) -> R {
 
 #[cfg(test)]
 mod tests {
-    use super::{RUNTIME, ensure_held, held, holder_name, release_while, with_runtime};
+    use super::{
+        GlobalLock, PATIENCE, RUNTIME, ensure_held, held, holder_name, release_while, with_runtime,
+    };
     use crate::lisp::eval::continuations::current_stack_base;
     use crate::lisp::types::{Kind, Value};
     use std::sync::{
@@ -752,5 +787,28 @@ mod tests {
         for worker in workers {
             assert_eq!(worker.join().expect("a worker"), 1);
         }
+    }
+
+    #[test]
+    fn a_host_symbol_clone_cannot_outlive_its_tenure() {
+        // The host obarray's count changes only on the runtime's holder: a
+        // release that finds a clone of it left refuses it, after giving
+        // the runtime back.  On a lock and a table of the test's own.
+        let refused = std::thread::spawn(|| {
+            let lock = GlobalLock::new();
+            let host = crate::lisp::types::symbols::HostSymbols::new();
+            let _kept = host.share();
+            lock.state().host_symbols = Some(host);
+            lock.acquire(PATIENCE, &mut |_| ());
+            lock.release(false);
+        })
+        .join()
+        .expect_err("the release refuses a clone of the host obarray");
+        let message = refused
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| refused.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or_default();
+        assert!(message.contains("outlived"), "{message}");
     }
 }

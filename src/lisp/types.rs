@@ -240,33 +240,6 @@ impl SymbolName {
     }
 }
 
-/// A table of the process's, read and written without a lock by the one
-/// Lisp thread that runs (alloc.c's `Vobarray' is a plain global under
-/// the global lock; a template interpreter built on one thread is used
-/// from another, one at a time).
-pub(crate) struct ProcessTable<T>(std::cell::UnsafeCell<Option<T>>);
-
-// SAFETY: one Lisp OS thread at a time, by construction (see above).
-unsafe impl<T> Sync for ProcessTable<T> {}
-
-impl<T: Default> ProcessTable<T> {
-    pub(crate) const fn new() -> Self {
-        Self(std::cell::UnsafeCell::new(None))
-    }
-
-    pub(crate) fn with_borrow<R>(&self, body: impl FnOnce(&T) -> R) -> R {
-        // SAFETY: the one running Lisp thread's access.
-        let table = unsafe { &mut *self.0.get() };
-        body(table.get_or_insert_with(T::default))
-    }
-
-    pub(crate) fn with_borrow_mut<R>(&self, body: impl FnOnce(&mut T) -> R) -> R {
-        // SAFETY: as above.
-        let table = unsafe { &mut *self.0.get() };
-        body(table.get_or_insert_with(T::default))
-    }
-}
-
 /// The canonical table selected by the current editor entry. The table and
 /// its Qsymbol/address references have the same owner; they cannot return an
 /// object retained by a previous editor instance.

@@ -51,12 +51,6 @@ pub struct SqliteSetState {
     name: Vec<u8>,
 }
 
-// SAFETY: `sqlite-open' opens every connection with SQLITE_OPEN_FULLMUTEX,
-// SQLite's serialized mode, in which a connection and its statements may be
-// used from any thread.
-unsafe impl Send for SqliteDatabaseState {}
-unsafe impl Send for SqliteSetState {}
-
 /// sqlite_free: the collector's finalizer closes a database...
 impl Drop for SqliteDatabaseState {
     fn drop(&mut self) {
