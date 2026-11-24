@@ -26,11 +26,12 @@ Run:
 cargo test --lib
 ```
 
-The repository defaults the Rust test harness to two workers.  Many of these
-tests run complete GNU Lisp subsystems or child processes inside the debug
-interpreter; higher test-level concurrency merely starves independent
-interpreters and makes process deadlines host-load dependent.  Asynchronous
-behavior inside each interpreter remains fully exercised.
+The repository defaults the Rust test harness to one test thread
+(`.cargo/config.toml`), as the grouped gate and CI run it.  The Lisp heap is
+the process's, as alloc.c's is, and until the runtime keeps a second OS thread
+out of it, two library tests that allocate at once can corrupt it (D43:
+parallel runs crash in string data).  Asynchronous behavior inside each
+interpreter remains fully exercised.
 
 What this covers:
 
@@ -71,8 +72,8 @@ Its current resource schedule is deliberately fixed:
 | `eval_05` | exclusive | cached; Eshell/process timing cluster isolated |
 | primitives | exclusive | cached; oracle/network/process tests isolated |
 | compat-runtime + TTY unit tests | 2 processes | one cached image per serial process |
-| batch reconstruction | one process, 2 test threads | fresh images; construction is the subject |
-| lightweight remainder | one process, 2 test threads | no image template |
+| batch reconstruction | one process, 1 test thread | fresh images; construction is the subject |
+| lightweight remainder | one process, 1 test thread | no image template |
 
 The runner builds the test binary first, discovers that exact binary's test
 inventory, and proves that every selected name occurs in exactly one group.
@@ -87,8 +88,8 @@ one successful test result.  Adding a new test binary therefore cannot
 silently leave it outside the gate.
 Per-group logs, timings, test-binary hash, inventory hash, Git state, and a
 machine-readable summary are written under `target/grouped-gate/`.
-The runner pins the gate locale, stack size, and two-thread ceiling instead of
-inheriting a caller's potentially unsafe test-thread override.
+The runner pins the gate locale, stack size, and one test thread a group
+instead of inheriting a caller's potentially unsafe test-thread override.
 
 Use `--scope eval --repetitions 3` to stress only the five eval groups, or
 `--scope lib` to omit the binary and integration stages.  Until repeated

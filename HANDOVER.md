@@ -25574,9 +25574,10 @@ ert-tests as a whole 26,307 ms against 27,211.
   it maps (`eassert (nmapped == leni)` is off in release builds and the
   uninitialized tail is concatenated); Emaxx concatenates what was mapped.
   Exclude that case from oracle comparisons.
-- Library tests share one process heap and are not thread-safe: run the gate
-  locally with `--test-threads=1`, as CI does; parallel runs crash in string
-  data.
+- Library tests share one process heap and are not thread-safe (D43):
+  ordinary `cargo test` now runs one test thread (`.cargo/config.toml`), as
+  the gate and CI do; an explicit `--test-threads` above 1 can still crash
+  in string data.
 - Keeping the interpreter state behind `Option` costs a test and branch per
   field access (about 18 of the 108 instructions `eval_sub` spends per list
   form). Removing the check would make a parked shell's use undefined
