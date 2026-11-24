@@ -186,7 +186,9 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   Round 385: its first three stages; the evaluator's twelve C variables
   and the kboard's fourteen are their symbols' values alone.
   `(setq inhibit-quit X)' costs 171.6 instructions against GNU's 248.0
-  (931.6 before), `(setq last-command X)' 149.6 against 257.0 (1,020.6).
+  (931.6 before), `(setq last-command X)' 149.6 against 257.0 (1,020.6).  Round 387: stages R4 and R5, the
+  dead and test-only machinery out, the reader's literals to its
+  context, `put' a plist store (435.6 against 399.0, 561.6 before).
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -20586,6 +20588,75 @@ setup_process_coding_systems's check now refuses). A 13-form
   view, the same checks); its other notes are the match's slot for the
   shared bytes and the registers taken from their box (an `Option'
   taken, no error dropped).
+- **Round 387: dead and test-only machinery leaves the runtime, every
+  reader reads in the Lisp world, and `put' is a plist store (M2,
+  stages R4 and R5 of A2.3, A3.8 and A4.2; none closed).**  **Out of
+  the runtime**: a counter of function rebindings nothing read; a
+  native timer queue that only a test scheduled (timers are timer.el's
+  `timer-list', as GNU's), and with it the image's root slot for it and
+  the bound a process wait took from it; a string wire type the image
+  writer never produced; a cons snapshot only tests used, now theirs;
+  stale comments.  **The reader**: a literal the reader meets (`#s', a
+  `#[' function, a `#^[' char-table, a `#&' bool-vector) goes to the
+  reading context as a value, as lread.c builds it; the placeholder
+  object kind a context-free read left for a later walk to replace, and
+  the two walks, are gone, and a read with no context reports such a
+  literal as invalid syntax.  The library embedder's `--eval' reads its
+  first form with `read-from-string' and evaluates it as startup.el's
+  command-line-1 does (the editor binary already ran startup.el).
+  **`put'** stores into the symbol's plist and nothing else, where it
+  also copied every `ert--test' property into a registry of the
+  interpreter's that the library embedder's report read; that report
+  and the test runner now find the tests on the symbols, as ert.el's
+  `ert-select-tests' does.  An adapter that deferred the unbinding of a
+  `defsubst' an `unload-feature' removed inside a timer callback is
+  gone; the upstream test that motivated it (eshell-tests-unload.el)
+  passes without it.  **Lisp sees these changes, each now GNU's**:
+  `(put 'x 'ert--test (record 'foo 1))' returns the record (it
+  signaled wrong-type-argument); a test on an uninterned symbol is read
+  back from the symbol (`ert-test-boundp' t, was nil); an unbound
+  test's body is freed by the collector; a `defsubst' a feature's
+  unload removes inside a timer callback is unbound in that callback;
+  the library embedder's `--eval' evaluates only its first form, where
+  it evaluated all of them.  The compatibility report's discovered
+  tests are unchanged: for each of the 519 frozen files the list of
+  8,224 tests in all is the same, name for name and in order, before
+  and after.  The image's format changes (two root slots fewer); an
+  image of the build before is refused as GNU refuses another build's
+  dump.  **Counts** (callgrind, the release build; before = round
+  385's build): `put' 561.6 instructions, 435.6 after (GNU 399.0); the
+  call and interpreter guards unchanged (the interpreted loop 2,760.0
+  to 2,753.0, alignment padding).  The independent review (the one
+  question: does the round cheat or break something) ran probes on
+  GNU, the build before and this one: forty-nine literal texts through
+  every kind of read, with circular and shared structure, malformed
+  ones and their errors; printed objects read back, a file of literals
+  loaded, evaluated, byte-compiled and its output loaded, native
+  compilation; an image of literal-made objects and a timer; the
+  embedder's `--eval' cases; timers, `sit-for', `sleep-for',
+  `accept-process-output' with timers due and not; `put', `get' and
+  `symbol-plist' on every kind of symbol and ERT's selection,
+  redefinition and deletion; the defsubst probe and its upstream test;
+  and the inventory on five frozen files again.  Every answer was
+  GNU's or the build before's, except one break, which the round fixes:
+  the embedder's `--eval' first signaled "Trailing garbage" after its
+  first form, where GNU's command-line-1, whose check always matches,
+  never does.  It found no cheat; the anti-cheat scan of the thread
+  visitor, re-anchored where the reader's arm left, still covers every
+  arm that names a thread field.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,630 passed, 0 failed, 2 ignored (four
+  library tests more); cli 30, cli_parity 187, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 2,706
+  changed lines with 4 tests and 38 assertions added and 20 changed
+  (assertions on the reader's placeholder objects, the timer queue and
+  the ERT registry rewritten against what replaces them, and two now
+  expecting GNU's answers); its other notes are two defaults moved with
+  the ERT code, a test literal moved between helpers, and the
+  anti-cheat scan of the thread visitor re-anchored, which the review
+  read.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24016,6 +24087,10 @@ ert-tests as a whole 26,307 ms against 27,211.
   tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 387 and its review), outside the
+  round and in no milestone.**  One line: a few host scans and tests
+  still read without a Lisp context (file-local values, shorthands,
+  completion's built-in interactive specs), none of them a literal.
 - **Found after the scope lock (round 386 and its reviews), outside the
   round and in no milestone.**  One line each, both older than the
   round: a canon table entry of -1 or (1+ (max-char)) leaves é unfolded
