@@ -4816,7 +4816,7 @@ pub(crate) fn window_end_xy(
     geometry: WindowTextGeometry,
     text_rows: usize,
 ) -> Option<(i64, usize)> {
-    let zv = interpreter.buffer.borrow().point_max();
+    let zv = interpreter.current_buffer().zv();
     window_cell_xy(interpreter, window, start, zv, geometry, text_rows, true).map(|at| (at.x, at.y))
 }
 
@@ -4833,7 +4833,7 @@ pub(crate) fn window_end_walk(
     text_rows: usize,
 ) -> usize {
     let layouter = ScreenLineLayouter::new(interpreter, window, geometry.lnum_cols);
-    let zv = interpreter.buffer.borrow().point_max();
+    let zv = interpreter.current_buffer().zv();
     let mut layout = layouter.layout_from(start, geometry.text_width, geometry.truncate);
     let mut y = 0usize;
     loop {
@@ -4864,7 +4864,7 @@ pub(crate) fn fetch_window_end(
     text_rows: usize,
 ) {
     fetch_start_display(interpreter, window, fetches, start);
-    let zv = interpreter.buffer.borrow().point_max();
+    let zv = interpreter.current_buffer().zv();
     let mut walk = IteratorWalk::from_window_start(interpreter, window, geometry, start);
     walk.walk_to_within(fetches, start, zv, text_rows);
 }
@@ -4898,7 +4898,7 @@ fn window_cell_xy(
     window_end: bool,
 ) -> Option<VisibleAt> {
     let layouter = ScreenLineLayouter::new(interpreter, window, geometry.lnum_cols);
-    let zv = interpreter.buffer.borrow().point_max();
+    let zv = interpreter.current_buffer().zv();
     let mut layout = layouter.layout_from(start, geometry.text_width, geometry.truncate);
     let mut y = 0usize;
     loop {
@@ -4963,7 +4963,7 @@ fn window_cell_xy(
                     }
                     Some(&below_start) => below_start,
                 };
-                if interpreter.buffer.borrow().char_at(row_start) == Some('\n') || pos >= landed {
+                if interpreter.current_buffer().char_at(row_start) == Some('\n') || pos >= landed {
                     return None;
                 }
                 // At a row's start move_it_to stops before the row's line
@@ -4995,8 +4995,8 @@ fn window_cell_xy(
                 && y == 0
                 && column == 0
                 && !geometry.truncate
-                && start > interpreter.buffer.borrow().point_min()
-                && interpreter.buffer.borrow().char_at(start - 1) != Some('\n')
+                && start > interpreter.current_buffer().begv()
+                && interpreter.current_buffer().char_at(start - 1) != Some('\n')
                 && !layouter
                     .layout(start, geometry.text_width, false)
                     .row_starts
@@ -6451,7 +6451,7 @@ fn with_window_point<T>(
     if interpreter.current_buffer_id() != info.buffer_id {
         return f(interpreter);
     }
-    let opoint = interpreter.buffer.borrow().point();
+    let opoint = interpreter.current_buffer().pt();
     if !info.selected {
         let point = {
             let buffer = interpreter.buffer.borrow();
@@ -6791,7 +6791,7 @@ pub(crate) fn fetch_move_vertically_backward(
     let Some(geometry) = fetches.geometry() else {
         return;
     };
-    let begv = interpreter.buffer.borrow().point_min();
+    let begv = interpreter.current_buffer().begv();
     let nchars_per_row = crate::lisp::primitives::move_it::iterator_row_chars(interpreter, window);
     let mut it = point;
     // IT's current_y, relative to where it started.
@@ -6923,7 +6923,7 @@ fn fontify_buffer_range(
         before,
     } = declined;
     let mut ran = false;
-    let z = interpreter.buffer.borrow().size_total() + 1;
+    let z = interpreter.current_buffer().z();
     let end = end.min(z);
     let next_stop = |interpreter: &Interpreter, pos: usize| iterator_next_stop(interpreter, pos);
     let mut pos = start;
@@ -7097,8 +7097,8 @@ impl IteratorFetches {
             .is_some_and(|value| !value.is_nil());
         self.geometry =
             on.then(|| crate::lisp::primitives::window_text_geometry(interpreter, env, window));
-        self.zv = interpreter.buffer.borrow().point_max();
-        self.z = interpreter.buffer.borrow().size_total() + 1;
+        self.zv = interpreter.current_buffer().zv();
+        self.z = interpreter.current_buffer().z();
         self.ranges.clear();
         self.originals.clear();
         self.walk_stops.clear();
@@ -7378,7 +7378,7 @@ impl<'a> IteratorWalk<'a> {
         IteratorWalk {
             layouter,
             geometry,
-            zv: interpreter.buffer.borrow().point_max(),
+            zv: interpreter.current_buffer().zv(),
             layout,
         }
     }
@@ -7396,7 +7396,7 @@ impl<'a> IteratorWalk<'a> {
         IteratorWalk {
             layouter,
             geometry,
-            zv: interpreter.buffer.borrow().point_max(),
+            zv: interpreter.current_buffer().zv(),
             layout,
         }
     }
@@ -7689,13 +7689,13 @@ fn fontify_iterated_text(
         return (false, start);
     }
     let window_point = if window == interpreter.selected_window_ref() {
-        interpreter.buffer.borrow().point()
+        interpreter.current_buffer().pt()
     } else {
         crate::lisp::primitives::window_marker_position(
             window,
             crate::lisp::primitives::WindowMarker::Pointm,
         )
-        .unwrap_or_else(|| interpreter.buffer.borrow().point())
+        .unwrap_or_else(|| interpreter.current_buffer().pt())
     };
     fontify_buffer_range(interpreter, env, start, end, window_point, declined)
 }
@@ -7723,7 +7723,7 @@ fn narrow_for_fontification(
         begv = long_lines::large_narrowing_begv(interpreter, pos);
         zv = long_lines::large_narrowing_zv(interpreter, pos);
     }
-    let z = interpreter.buffer.borrow().size_total() + 1;
+    let z = interpreter.current_buffer().z();
     if begv != 1 || zv != z {
         let label = cached_symbol!("long-line-optimizations-in-fontification-functions")
             .with(|symbol| Value::Symbol(*symbol));
@@ -13712,7 +13712,7 @@ mod tests {
             &InvisibilitySpec::default(),
             None,
             &mut view,
-            interpreter.buffer.borrow().point_min(),
+            interpreter.current_buffer().begv(),
             point,
             11,
             80,
