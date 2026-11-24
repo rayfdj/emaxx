@@ -3211,3 +3211,72 @@ fn image_buffers_hold_the_images_standard_tables_or_their_own() {
         ])
     );
 }
+
+#[test]
+fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
+    // search.c's Vcase_fold_search and syntax.c's
+    // parse_sexp_lookup_properties are C variables the image does not
+    // carry: the process that loads it fills them from the current
+    // buffer's bindings, its own or the defaults, as set_buffer_internal_2
+    // and the loaded symbols leave them.
+    fn eval(interp: &mut Interpreter, source: &str) -> Value {
+        let form = crate::lisp::reader::Reader::new(source)
+            .read()
+            .expect("the form parses")
+            .expect("a form");
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    }
+    let mut source = Interpreter::new();
+    eval(
+        &mut source,
+        r#"(progn
+             (set-default 'case-fold-search nil)
+             (set (make-local-variable 'parse-sexp-lookup-properties) t)
+             (save-current-buffer
+               (set-buffer (get-buffer-create "cv-folding"))
+               (set (make-local-variable 'case-fold-search) t)))"#,
+    );
+    assert!(!source.case_fold_search_active() && source.parse_sexp_lookup_properties);
+    let mut ctx = DumpContext::new(false, source.main_thread_record_id());
+    if let Err(error) = write_image(&mut ctx, &source, RootSource::Interpreter) {
+        match error {
+            super::context::DumpError::Unsupported(unsupported) => {
+                panic!("unsupported: {}", unsupported.message)
+            }
+            super::context::DumpError::Lisp(error) => panic!("dump: {error:?}"),
+        }
+    }
+    let bytes = ctx.buffer().to_vec();
+    let mut target = Interpreter::for_image();
+    // The loading process's own words hold the C initial values.
+    assert!(target.case_fold_search_active() && !target.parse_sexp_lookup_properties);
+    let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+    target
+        .install_image(
+            &image,
+            crate::lisp::eval::PdumperLoadRecord {
+                filename: "cv.pdmp".into(),
+                load_time: std::time::Duration::ZERO,
+                dump_size: bytes.len() as u64,
+            },
+        )
+        .expect("install the image's symbols");
+    target
+        .init_after_pdump_load()
+        .expect("initialize the loaded process");
+    assert!(!target.case_fold_search_active());
+    assert!(target.parse_sexp_lookup_properties);
+    let answer = eval(
+        &mut target,
+        r#"(list (string-match "abc" "ABC")
+                 (save-current-buffer (set-buffer "cv-folding") (string-match "abc" "ABC"))
+                 (string-match "abc" "ABC"))"#,
+    );
+    assert_eq!(
+        answer,
+        Value::list([Value::Nil, Value::Integer(0), Value::Nil])
+    );
+    assert!(target.parse_sexp_lookup_properties);
+}

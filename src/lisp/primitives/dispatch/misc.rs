@@ -1194,6 +1194,14 @@ define_dispatch!(
                         env,
                     )?;
                     interp.set_buffer_local_value_symbol(buffer_id, &symbol, Value::Unbound);
+                    // set_internal's store of void into a variable whose
+                    // binding is forwarded to a C variable: `blv->fwd.fwdptr
+                    // = NULL', and the C variable keeps the value it holds.
+                    if symbol.cell().has_c_slot()
+                        && interp.forwarded_eval_cell_value(symbol.as_str()).is_some()
+                    {
+                        interp.detach_forwarded_variable_symbol(&symbol, Value::Nil);
+                    }
                 } else {
                     interp.notify_variable_watchers_symbol(
                         &symbol,

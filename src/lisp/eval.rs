@@ -5720,6 +5720,7 @@ impl Interpreter {
         mark(&self.quit_flag);
         mark(&self.inhibit_quit);
         mark(&self.throw_on_input);
+        mark(&self.case_fold_search);
         mark(&self.overriding_plist_environment);
         mark(&self.load_path);
         mark(&self.loads_in_progress);
@@ -6194,6 +6195,7 @@ impl Interpreter {
             clone.quit_flag = c.copy(&self.quit_flag);
             clone.inhibit_quit = c.copy(&self.inhibit_quit);
             clone.throw_on_input = c.copy(&self.throw_on_input);
+            clone.case_fold_search = c.copy(&self.case_fold_search);
             clone.overriding_plist_environment = c.copy(&self.overriding_plist_environment);
             clone.load_path = c.copy(&self.load_path);
             clone.loads_in_progress = c.copy(&self.loads_in_progress);
@@ -6710,6 +6712,12 @@ pub struct InterpreterState {
     /// undo.c's DEFVAR_BOOL `undo_inhibit_record_point', which the buffers
     /// hold as well (`set_undo_inhibit_record_point').
     undo_inhibit_record_point: bool,
+    /// search.c's Vcase_fold_search and syntax.c's DEFVAR_BOOL
+    /// parse_sexp_lookup_properties, both made buffer-local when set:
+    /// the current buffer's values, which set_buffer_internal_2 loads, as
+    /// the matcher and the scanners read them.
+    pub(crate) case_fold_search: Value,
+    pub(crate) parse_sexp_lookup_properties: bool,
     /// eval.c's Vrun_hooks cleared: shut_down_emacs has begun, and no hook
     /// runs from then on.
     pub(crate) hooks_cleared: bool,
@@ -7599,6 +7607,8 @@ impl Interpreter {
             inhibit_quit: Value::Nil,
             throw_on_input: Value::Nil,
             undo_inhibit_record_point: false,
+            case_fold_search: Value::T,
+            parse_sexp_lookup_properties: false,
             hooks_cleared: false,
             inhibit_sentinels: false,
             fd_thread_locks: std::collections::HashMap::new(),

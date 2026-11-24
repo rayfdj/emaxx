@@ -947,6 +947,188 @@ fn a_buffers_own_tables_survive_collections_as_gnu() {
 }
 
 #[test]
+fn case_fold_search_is_the_c_variable_the_current_buffer_loads_as_gnu() {
+    // search.c reads Vcase_fold_search, a C variable that
+    // set_buffer_internal_2 loads with the current buffer's binding: a
+    // let in one buffer unbound in another, a let of a buffer's own
+    // binding, set-default with and without a local binding, a let of
+    // the default with the buffer made local inside, buffer-local-value
+    // and with-temp-buffer, under string-match, looking-at,
+    // search-forward and re-search-forward.  makunbound stores void
+    // through set_internal, which disconnects the symbol from the C
+    // variable (`blv->fwd.fwdptr = NULL'): the searches keep the value it
+    // last held, whatever the symbol is bound to afterwards.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((a (generate-new-buffer "cf-a")) (b (generate-new-buffer "cf-b"))
+                (probe (lambda () (list case-fold-search (local-variable-p 'case-fold-search)
+                                        (string-match "abc" "xABC")
+                                        (save-excursion (goto-char 1) (looking-at "hello"))
+                                        (save-excursion (goto-char 1) (search-forward "WORLD" nil t))
+                                        (save-excursion (goto-char 1) (re-search-forward "w.rld" nil t)))))
+                (r nil))
+           (dolist (buf (list a b)) (with-current-buffer buf (insert "Hello World")))
+           ;; let in A, not local there, unbound in B.
+           (with-current-buffer a
+             (let ((case-fold-search nil))
+               (push (funcall probe) r)
+               (set-buffer b)
+               (push (funcall probe) r))
+             (push (list (buffer-name) (funcall probe) (with-current-buffer a (funcall probe))) r))
+           ;; let of A's local binding, unbound in B.
+           (set-buffer a)
+           (setq-local case-fold-search nil)
+           (let ((case-fold-search t))
+             (push (funcall probe) r)
+             (set-buffer b)
+             (push (funcall probe) r))
+           (push (list (buffer-name) (funcall probe) (with-current-buffer a (funcall probe))) r)
+           ;; set-default with and without a local binding.
+           (with-current-buffer a
+             (setq-default case-fold-search nil)
+             (push (list (funcall probe) (with-current-buffer b (funcall probe))) r)
+             (kill-local-variable 'case-fold-search)
+             (push (funcall probe) r)
+             (setq-default case-fold-search t)
+             (push (funcall probe) r))
+           ;; let of the default with B made local inside.
+           (with-current-buffer b
+             (let ((case-fold-search nil))
+               (setq-local case-fold-search 'local)
+               (push (funcall probe) r))
+             (push (list (funcall probe) (default-value 'case-fold-search)) r)
+             (kill-local-variable 'case-fold-search))
+           ;; makunbound of a local binding and then of the default.
+           (with-current-buffer a
+             (setq-local case-fold-search nil)
+             (makunbound 'case-fold-search)
+             (push (list (boundp 'case-fold-search) (local-variable-p 'case-fold-search)
+                         (string-match "abc" "xABC")
+                         (with-current-buffer b (funcall probe)))
+                   r)
+             (kill-local-variable 'case-fold-search)
+             (push (list (boundp 'case-fold-search) (funcall probe)) r))
+           ;; buffer-local-value and with-temp-buffer.
+           (with-current-buffer a (setq-local case-fold-search nil))
+           (push (list (buffer-local-value 'case-fold-search a) (buffer-local-value 'case-fold-search b)
+                       (with-temp-buffer (insert "Hello") (funcall probe))
+                       (with-current-buffer a (with-temp-buffer (string-match "abc" "ABC"))))
+                 r)
+           (kill-buffer a) (kill-buffer b)
+           (nreverse r))"#,
+        r##"((nil nil nil nil nil nil) (nil nil nil nil nil nil) ("cf-b" (t nil 1 t 12 12) (t nil 1 t 12 12)) (t t 1 t 12 12) (t nil 1 t 12 12) ("cf-b" (t nil 1 t 12 12) (nil t nil nil nil nil)) ((nil t nil nil nil nil) (nil nil nil nil nil nil)) (nil nil nil nil nil nil) (t nil 1 t 12 12) (local t 1 t 12 12) ((local t 1 t 12 12) t) (nil t nil (t nil nil nil nil nil)) (t (t nil nil nil nil nil)) (nil t (t nil nil nil nil nil) nil))"##,
+        "case-fold-search",
+    );
+}
+
+#[test]
+fn case_fold_search_and_lookup_properties_watchers_see_every_store_as_gnu() {
+    // data.c:notify_variable_watchers for the two buffer-local C
+    // variables: set, let and unlet with their buffers, set-default
+    // (no buffer), makunbound of a local binding (its buffer) and of the
+    // default, and kill-all-local-variables.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((a (generate-new-buffer "cw-a")) (b (generate-new-buffer "cw-b")) (log nil)
+                (watch (lambda (sym nv op where) (push (list sym nv op (and where (buffer-name where))) log))))
+           (add-variable-watcher 'case-fold-search watch)
+           (add-variable-watcher 'parse-sexp-lookup-properties watch)
+           (unwind-protect
+               (progn
+                 (with-current-buffer a
+                   (setq-local case-fold-search nil)
+                   (let ((case-fold-search 'x)) (set-buffer b) (string-match "a" "A")))
+                 (with-current-buffer b
+                   (setq-default case-fold-search nil)
+                   (setq-default case-fold-search t)
+                   (setq-local parse-sexp-lookup-properties t)
+                   (let ((parse-sexp-lookup-properties nil)) nil)
+                   (kill-local-variable 'parse-sexp-lookup-properties))
+                 (with-current-buffer a
+                   (makunbound 'case-fold-search)
+                   (kill-all-local-variables)))
+             (remove-variable-watcher 'case-fold-search watch)
+             (remove-variable-watcher 'parse-sexp-lookup-properties watch))
+           (setq-default case-fold-search t)
+           (kill-buffer a) (kill-buffer b)
+           (nreverse log))"#,
+        r##"((case-fold-search nil set "cw-a") (case-fold-search x let "cw-a") (case-fold-search nil unlet "cw-a") (case-fold-search nil set nil) (case-fold-search t set nil) (parse-sexp-lookup-properties t set "cw-b") (parse-sexp-lookup-properties nil let "cw-b") (parse-sexp-lookup-properties t unlet "cw-b") (parse-sexp-lookup-properties nil makunbound "cw-b") (case-fold-search nil makunbound nil) (case-fold-search nil makunbound "cw-a"))"##,
+        "case-fold-search watchers",
+    );
+}
+
+#[test]
+fn a_threads_let_of_the_buffer_local_c_variables_is_its_own_as_gnu() {
+    // thread.c's unbind_for_thread_switch and rebind_for_thread_switch:
+    // a thread's let of case-fold-search and
+    // parse-sexp-lookup-properties in one buffer holds only while it
+    // runs; the main thread, in that buffer and another with its own
+    // binding, searches with its own values while the thread is parked.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((a (generate-new-buffer "ct-a")) (b (generate-new-buffer "ct-b"))
+                (m (make-mutex)) (cv (make-condition-variable m)) (go nil) (in nil) (log nil)
+                (probe (lambda (tag) (push (list tag (buffer-name) case-fold-search parse-sexp-lookup-properties
+                                                 (string-match "a" "A") (save-excursion (goto-char 1) (looking-at "x")))
+                                           log))))
+           (dolist (buf (list a b)) (with-current-buffer buf (insert "X_y")))
+           (with-current-buffer b (setq-local case-fold-search nil))
+           (let ((th (make-thread
+                      (lambda ()
+                        (with-current-buffer a
+                          (let ((case-fold-search nil) (parse-sexp-lookup-properties t))
+                            (funcall probe 'thread-in)
+                            (setq in t)
+                            (with-mutex m (while (not go) (condition-wait cv)))
+                            (funcall probe 'thread-resumed)
+                            (set-buffer b)
+                            (funcall probe 'thread-b)))
+                        (funcall probe 'thread-after)))))
+             (while (not in) (thread-yield))
+             (with-current-buffer a (funcall probe 'main-a))
+             (with-current-buffer b (funcall probe 'main-b))
+             (with-mutex m (setq go t) (condition-notify cv))
+             (thread-join th)
+             (with-current-buffer a (funcall probe 'main-after)))
+           (kill-buffer a) (kill-buffer b)
+           (nreverse log))"#,
+        r##"((thread-in "ct-a" nil t nil nil) (main-a "ct-a" t nil 0 t) (main-b "ct-b" nil nil nil nil) (thread-resumed "ct-a" nil t nil nil) (thread-b "ct-b" nil t nil nil) (thread-after "*scratch*" t t 0 nil) (main-after "ct-a" t nil 0 t))"##,
+        "case-fold-search and threads",
+    );
+}
+
+#[test]
+fn parse_sexp_lookup_properties_decides_whether_syntax_properties_count_as_gnu() {
+    // syntax.c's parse_sexp_lookup_properties, a DEFVAR_BOOL made
+    // buffer-local: syntax-table text properties count for forward-word,
+    // looking-at, re-search-forward, skip-syntax-forward and scan-sexps
+    // under its let, its buffer-local value and neither, and not in
+    // another buffer.
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-temp-buffer
+           (insert "foo_bar baz-qux (a [b) c]")
+           (put-text-property 4 5 'syntax-table (string-to-syntax "w"))
+           (put-text-property 12 13 'syntax-table (string-to-syntax "w"))
+           (put-text-property 20 21 'syntax-table (string-to-syntax "("))
+           (let ((probe (lambda ()
+                          (list parse-sexp-lookup-properties
+                                (progn (goto-char 1) (forward-word) (point))
+                                (progn (goto-char 9) (forward-word) (point))
+                                (progn (goto-char 1) (looking-at "\\w+") (match-end 0))
+                                (progn (goto-char 1) (re-search-forward "\\_<\\w+\\_>" nil t))
+                                (progn (goto-char 9) (skip-syntax-forward "w") (point))
+                                (condition-case e (scan-sexps 17 1) (error (car e)))
+                                (and (char-after 4) (string (char-syntax (char-after 4))))
+                                (and (char-after 4) (syntax-class (syntax-after 4)))))))
+             (list (funcall probe)
+                   (let ((parse-sexp-lookup-properties t)) (funcall probe))
+                   (progn (setq-local parse-sexp-lookup-properties t) (funcall probe))
+                   (with-temp-buffer (funcall probe))
+                   (let ((parse-sexp-lookup-properties nil)) (funcall probe))
+                   (progn (kill-local-variable 'parse-sexp-lookup-properties) (funcall probe)))))"#,
+        r##"((nil 4 12 4 19 12 26 "_" 3) (t 8 16 8 8 16 26 "_" 2) (t 8 16 8 8 16 26 "_" 2) (nil 1 1 8 nil 1 nil nil nil) (nil 4 12 4 19 12 26 "_" 3) (nil 4 12 4 19 12 26 "_" 3))"##,
+        "parse-sexp-lookup-properties",
+    );
+}
+
+#[test]
 fn killed_buffers_keep_what_fkill_buffer_leaves_as_gnu() {
     // buffer.c:Fkill_buffer: the name nil, BUFFER_LIVE_P false; the
     // file name and truename and the directory kept, the other slots as

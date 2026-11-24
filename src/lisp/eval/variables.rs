@@ -8,7 +8,7 @@ use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SymbolName;
 
 /// The variables forwarded to evaluator cells (`update_forwarded_eval_cell').
-const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 10] = [
+const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 12] = [
     cached_symbol!("quit-flag"),
     cached_symbol!("inhibit-quit"),
     cached_symbol!("throw-on-input"),
@@ -19,6 +19,8 @@ const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 10] = [
     cached_symbol!("symbols-with-pos-enabled"),
     cached_symbol!("undo-inhibit-record-point"),
     cached_symbol!("attempt-orderly-shutdown-on-fatal-signal"),
+    cached_symbol!("case-fold-search"),
+    cached_symbol!("parse-sexp-lookup-properties"),
 ];
 
 /// Whether SYMBOL is one of the variables whose evaluator cells hold the
@@ -39,6 +41,8 @@ pub(super) fn is_forwarded_eval_cell(symbol: &SymbolName) -> bool {
             | "symbols-with-pos-enabled"
             | "undo-inhibit-record-point"
             | "attempt-orderly-shutdown-on-fatal-signal"
+            | "case-fold-search"
+            | "parse-sexp-lookup-properties"
     ) && FORWARDED_EVAL_CELLS
         .iter()
         .any(|key| key.name() == symbol.as_str() && key.with(|cell| cell == symbol))
@@ -1635,7 +1639,10 @@ impl Interpreter {
             9 => {
                 crate::lisp::primitives::set_attempt_orderly_shutdown(value.is_truthy());
             }
-            _ => unreachable!("FORWARDED_EVAL_CELLS has ten entries"),
+            // case-fold-search, parse-sexp-lookup-properties
+            10 => self.case_fold_search = *value,
+            11 => self.parse_sexp_lookup_properties = value.is_truthy(),
+            _ => unreachable!("FORWARDED_EVAL_CELLS has twelve entries"),
         }
     }
 
@@ -1671,6 +1678,12 @@ impl Interpreter {
                     Value::Nil
                 })
             }
+            "case-fold-search" => Some(self.case_fold_search),
+            "parse-sexp-lookup-properties" => Some(if self.parse_sexp_lookup_properties {
+                Value::T
+            } else {
+                Value::Nil
+            }),
             _ => None,
         }
     }
@@ -2289,14 +2302,12 @@ impl Interpreter {
         self.bind_special_symbol(&SymbolName::intern_str(name), value, env)
     }
 
-    /// `case-fold-search' as search.c reads it, BVAR (current_buffer,
-    /// case_fold_search): the binding loaded for the current buffer, its
-    /// own or the default, by the symbol interned once per thread.  A
-    /// buffer-local variable cannot be an alias (Fdefvaralias refuses it).
+    /// `case-fold-search' as search.c reads it: `!NILP
+    /// (Vcase_fold_search)', the C variable set_buffer_internal_2 loads
+    /// with the current buffer's binding.
     #[inline]
     pub(crate) fn case_fold_search_active(&self) -> bool {
-        self.local_variable_value_key(cached_symbol!("case-fold-search"))
-            .is_some_and(|value| value.is_truthy())
+        self.case_fold_search.is_truthy()
     }
 
     /// Learn whether SYMBOL's assignments are a plain store (data.c's

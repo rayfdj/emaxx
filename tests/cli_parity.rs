@@ -13385,6 +13385,72 @@ fn a_dumped_window_is_a_dead_window_of_the_process_that_loads_the_dump() {
 }
 
 #[test]
+fn a_dumped_session_s_buffer_local_c_variables_are_the_loading_process_s() {
+    // search.c's Vcase_fold_search and syntax.c's
+    // parse_sexp_lookup_properties are C variables: the process started
+    // from a dump has them as its current buffer's bindings leave them
+    // (here *scratch*'s own parse-sexp-lookup-properties, the dumped
+    // default case-fold-search), and another buffer's own binding when
+    // that one is current.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "dumped-c-variables-probe.el",
+        r#"(princ (format "%S\n"
+               (list (buffer-name) case-fold-search parse-sexp-lookup-properties
+                     (default-value 'case-fold-search)
+                     (string-match "abc" "ABC")
+                     (save-excursion (goto-char 1) (forward-word) (point))
+                     (save-excursion (goto-char 1) (looking-at "\\w+") (match-end 0))
+                     (with-current-buffer "zz-folding"
+                       (list case-fold-search (save-excursion (goto-char 1) (search-forward "WORLD" nil t))))
+                     (with-temp-buffer (list case-fold-search parse-sexp-lookup-properties
+                                             (string-match "abc" "ABC")))
+                     (progn (setq-default case-fold-search t) (string-match "abc" "ABC")))))
+"#,
+    );
+    let run = |binary: &Path, name: &str| {
+        let image = corpus
+            .directory
+            .join(format!("{name}-dumped-c-variables.pdmp"))
+            .display()
+            .to_string();
+        let dump = corpus.write(
+            &format!("{name}-dump-c-variables.el"),
+            &format!(
+                r#"(setq-default case-fold-search nil)
+(with-current-buffer (get-buffer-create "zz-folding")
+  (insert "Hello World")
+  (setq-local case-fold-search t))
+(setq-local parse-sexp-lookup-properties t)
+(insert "a_b c")
+(put-text-property 2 3 'syntax-table (string-to-syntax "w"))
+(let ((load--bin-dest-dir (file-truename invocation-directory))
+      (load--eln-dest-dir (file-truename source-directory)))
+  (dump-emacs-portable "{image}"))
+"#
+            ),
+        );
+        let dumped = corpus.run(binary, &["--batch", "-Q", "-l", &dump]);
+        assert_eq!(dumped.2, Some(0), "{name} did not dump: {dumped:?}");
+        corpus.run(
+            binary,
+            &["--dump-file", &image, "--batch", "-Q", "-l", &probe],
+        )
+    };
+    let expected = run(&oracle(), "gnu");
+    assert_eq!(expected.2, Some(0), "GNU's probe failed: {expected:?}");
+    assert!(
+        expected.0.starts_with("(\"*scratch*\" nil t nil nil"),
+        "GNU keeps the dumped default and *scratch*'s binding: {expected:?}"
+    );
+    assert_eq!(
+        run(emaxx(), "emaxx"),
+        expected,
+        "Emaxx (left) and GNU (right) differ for the dumped C variables"
+    );
+}
+
+#[test]
 fn dumped_buffers_keep_their_text_tables_and_indirect_family() {
     // pdumper.c:dump_buffer writes a live buffer with its text, point,
     // local variables (a buffer-local case-fold-search among them), its

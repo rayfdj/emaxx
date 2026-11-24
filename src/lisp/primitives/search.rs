@@ -641,11 +641,7 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
             // gl_state too.
             Object::String { .. } | Object::None => return,
         };
-        if !self
-            .interp
-            .local_variable_value_key(cached_symbol!("parse-sexp-lookup-properties"))
-            .is_some_and(|value| value.is_truthy())
-        {
+        if !self.interp.parse_sexp_lookup_properties {
             return;
         }
         let (gl, error) = GlState::for_regexp(self.interp, object, || self.charpos(at));

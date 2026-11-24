@@ -22,6 +22,10 @@ use crate::lisp::types::Kind;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
+        "case_fold_search",
+        "search.c's staticpro'd Vcase_fold_search, the forwarded C slot of case-fold-search, which install_image refills from the loaded current buffer's binding",
+    ),
+    (
         "require_nesting",
         "fns.c's staticpro'd require_nesting_list holds the features of the running `require' loads, none once the dump's own load ends; a session starts with none",
     ),
@@ -250,6 +254,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "undo_inhibit_record_point",
         "the forwarded C slot of undo-inhibit-record-point, refilled likewise with the buffers' copies",
+    ),
+    (
+        "parse_sexp_lookup_properties",
+        "the forwarded C slot of parse-sexp-lookup-properties, refilled likewise from the current buffer's binding (install_image)",
     ),
     (
         "executing_kbd_macro",
