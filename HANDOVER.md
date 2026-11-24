@@ -24086,6 +24086,27 @@ ert-tests as a whole 26,307 ms against 27,211.
   library tests, the seven integration targets (230) and the binaries'
   tests (61), none failed.
 
+**On `f643869`** (round 386): the frozen run (run 45416838018) matched
+  7,927 of the 7,928 outcomes on both its attempts, the one mismatch
+  the same test both times and on a different side each time:
+  `eglot-test-rust-completion-exit-function' failed in Emaxx's run on
+  the first attempt and in GNU's on the second, each with a
+  `jsonrpc-error', the other side passing.  In both logs the test sees
+  rust-analyzer's indexing begin and then asks for completions, and
+  the failing side's request is answered with an error while the
+  passing side's is not: a race in the test against the server on the
+  runner, which recorded the same pinned rust-analyzer (1.75.0) in
+  every run; it has failed on one side or the other in five of the last
+  eight attempts (rounds 383, 385 and 386) and is not skipped.  The
+  first attempt: setup 54.4 s against 47.0 s (1.156), test bodies 238.7
+  s against 224.1 s (1.065), in all 1.081 (GNU's suite took 271 s); the
+  second 1.087.  The widest body gaps of the first are tramp-tests
+  (15.6 s against 13.8 s), comp-tests (11.8 against 10.5),
+  process-tests (2.22 against 1.57), semantic-utest-ia (2.69 against
+  2.07) and mule-tests (1.97 against 1.36).  The Rust gate (run
+  45416831904) passed: 3,633 library tests, the seven integration
+  targets (230) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 387 and its review), outside the
   round and in no milestone.**  One line: a few host scans and tests
