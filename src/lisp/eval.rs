@@ -7918,7 +7918,7 @@ impl Interpreter {
         };
         // init_buffer_once's Vbuffer_alist entry for *scratch*, whose car
         // is the buffer's own name.
-        let scratch_name = interp.buffer.borrow().name();
+        let scratch_name = interp.current_buffer().name();
         interp.buffer_list.push((0, scratch_name));
         for (purpose, extras) in [
             ("case-table", 3),
@@ -9133,7 +9133,7 @@ impl Interpreter {
         ] {
             interp.define_special_variable(name, value);
         }
-        let buffer_start = interp.buffer.borrow().point_min();
+        let buffer_start = interp.current_buffer().begv();
         let selected_window_geometry = (
             interp.frame_width(),
             interp.frame_height().saturating_sub(1).max(1),

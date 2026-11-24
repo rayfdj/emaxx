@@ -185,7 +185,7 @@ impl Interpreter {
         {
             buffer.set_point_before_last_command_or_undo(None);
         }
-        let point = self.buffer.borrow().point();
+        let point = self.current_buffer().pt();
         self.buffer
             .borrow_mut()
             .set_point_before_last_command_or_undo(Some(point));
@@ -396,7 +396,7 @@ impl Interpreter {
         props: crate::buffer::InsertedProperties<'_>,
         before_markers: bool,
     ) {
-        let pos = self.buffer.borrow().point();
+        let pos = self.current_buffer().pt();
         let related = self.related_buffer_ids(self.current_buffer_id());
         let vars = self.insertion_property_variables();
         // adjust_markers_for_insert (PT, ..., PT + nchars, ...).
@@ -422,7 +422,7 @@ impl Interpreter {
     /// insert_from_gap_1 of BYTES at point in the current unibyte buffer,
     /// their characters written straight into its gap.
     pub(crate) fn insert_current_buffer_raw_bytes(&mut self, bytes: &[u8]) {
-        let pos = self.buffer.borrow().point();
+        let pos = self.current_buffer().pt();
         let related = self.related_buffer_ids(self.current_buffer_id());
         let vars = self.insertion_property_variables();
         // The insertion's adjust_markers_for_insert, a character a byte.
@@ -558,8 +558,8 @@ impl Interpreter {
         to: usize,
         ret_string: bool,
     ) -> Result<Option<String>, crate::buffer::BufferError> {
-        let from = from.max(self.buffer.borrow().point_min());
-        let to = to.min(self.buffer.borrow().point_max());
+        let from = from.max(self.current_buffer().begv());
+        let to = to.min(self.current_buffer().zv());
         // undo.c:record_delete's record_marker_adjustments, read before
         // the deletion moves the markers and recorded under it after.
         let marker_adjustments = if self.buffer.borrow().undo_recording_disabled() {

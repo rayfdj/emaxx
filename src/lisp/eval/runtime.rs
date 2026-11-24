@@ -935,7 +935,7 @@ impl Interpreter {
     /// readers that can meet one call `selected_window_start_checked'.
     pub fn selected_window_start(&self) -> usize {
         self.selected_window_start_checked()
-            .unwrap_or_else(|_| self.buffer.borrow().point_min())
+            .unwrap_or_else(|_| self.current_buffer().begv())
     }
 
     /// SET_TEXT_POS_FROM_MARKER (pos, w->start) of the selected window:
@@ -949,7 +949,7 @@ impl Interpreter {
             Some(marker) => marker
                 .position()
                 .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into())),
-            None => Ok(self.buffer.borrow().point_min()),
+            None => Ok(self.current_buffer().begv()),
         }
     }
 
@@ -2612,7 +2612,7 @@ impl Interpreter {
     /// BUF_PT of buffer ID.
     pub(crate) fn buffer_point_by_id(&self, id: u64) -> usize {
         if id == self.current_buffer_id {
-            self.buffer.borrow().point()
+            self.current_buffer().pt()
         } else {
             self.get_buffer_by_id(id).map_or(1, |buffer| buffer.point())
         }

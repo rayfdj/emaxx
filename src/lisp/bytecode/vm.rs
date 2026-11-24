@@ -2354,17 +2354,17 @@ fn run_verified(
                 // as `exec_op's arms push them, with no call out of the
                 // loop (nothing here runs Lisp).
                 0o140 => {
-                    let point = vm.interp.buffer.borrow().point();
+                    let point = vm.interp.current_buffer().pt();
                     push!(Value::Integer(point as i64));
                     at += 1;
                 }
                 0o144 => {
-                    let zv = vm.interp.buffer.borrow().point_max();
+                    let zv = vm.interp.current_buffer().zv();
                     push!(Value::Integer(zv as i64));
                     at += 1;
                 }
                 0o145 => {
-                    let begv = vm.interp.buffer.borrow().point_min();
+                    let begv = vm.interp.current_buffer().begv();
                     push!(Value::Integer(begv as i64));
                     at += 1;
                 }
@@ -3591,15 +3591,15 @@ fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), L
         // buffer's PT, ZV, BEGV and the buffer itself, as the primitives
         // answer, without looking them up by name.
         Op::Point => {
-            let point = interp.buffer.borrow().point();
+            let point = interp.current_buffer().pt();
             push!(Value::Integer(point as i64));
         }
         Op::PointMax => {
-            let zv = interp.buffer.borrow().point_max();
+            let zv = interp.current_buffer().zv();
             push!(Value::Integer(zv as i64));
         }
         Op::PointMin => {
-            let begv = interp.buffer.borrow().point_min();
+            let begv = interp.current_buffer().begv();
             push!(Value::Integer(begv as i64));
         }
         Op::CurrentBuffer => {
