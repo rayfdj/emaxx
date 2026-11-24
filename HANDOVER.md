@@ -34,7 +34,7 @@ A round's review answers whether the round cheats or breaks something; it does
 not survey the neighbourhood of the change. Current user instructions take
 precedence over this plan as over everything here.
 
-### M2: structure and performance — 6 of 30 done
+### M2: structure and performance — 7 of 30 done
 
 **Baseline of 23 November 2026**, on `394d57de` (round 366's source) under
 Rust 1.100.0, with GNU 30.2 on this host as the oracle.
@@ -175,6 +175,12 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   `string-match' 1,323.6 (GNU 1,148.0).  Round 384: the text is
   buffer_text and point and the bounds keep their bytes; `looking-at'
   1,237.6, `char-after' 368.6 (GNU 260.0).
+- **Done: D13** (round 386).  `looking-at' at a failing position costs
+  1,130.6 instructions against GNU's 1,147.0 (1,387.6 at round 380),
+  `string-match' 1,250.6 against 1,148.0.  The rest of the buffers plan
+  (its stages S6 to S11: the C slots and Lisp fields as fields, the
+  holders, the ids out, the registry gone, GNU's size and census, the
+  per-buffer variables) belongs to A3.6 and B19 and is not done.
 - **In progress: A2.3, A3.4 and A3.8** (mirrors, registries and the
   image; the plan: docs/plans/mirrors-registries.md, stages R0 to R18).
   Round 385: its first three stages; the evaluator's twelve C variables
@@ -20518,6 +20524,68 @@ setup_process_coding_systems's check now refuses). A 13-form
   (the image tests' field reads of `parse-sexp-lookup-properties',
   now the C variable's accessor); its note of new state is the
   accessor of the existing fatal-signal flag, now built on every host.
+- **Round 386: a match reads the case and syntax state as search.c
+  does, and `inhibit-changing-match-data' is its C variable (M2, D13
+  done; A3.6 not closed).**  Three commits after the buffers plan's
+  fifth stage.  **The canonicalize table**: the matcher translates a
+  character through the buffer's case_canon_table itself, as
+  char_table_translate does (CHAR_TABLE_REF, the `ascii' sub-table for
+  an ASCII character, the entry kept only when it is a character),
+  where it filled a per-thread cache of each table's ASCII entries for
+  every match; the plain search's translations and the fast
+  case-folding comparison read the tables the same way, as boyer_moore's
+  TRANSLATE does.  **The registers**: the match registers are a box the
+  match takes from the interpreter and gives back however it ends,
+  where they were moved out and an empty set left in their place; a
+  search run from Lisp inside a match gets a box of its own.  **The
+  matcher's buffer** refers to the match's snapshot instead of copying
+  its parts.  **RE_SETUP**: a match sets up the syntax state only when
+  an earlier match's needs releasing or `parse-sexp-lookup-properties'
+  is set, an inlined test with the work out of line, as GNU's
+  RE_SETUP is.  **`inhibit-changing-match-data'** is search.c's
+  DEFVAR_LISP, one C variable its symbol forwards to (with the
+  evaluator's others, its own slot in the image), and the matchers read
+  it, where each search looked its binding up.  **Lisp sees two
+  changes, each now GNU's**: a `syntax-propertize' callout that changes
+  the case table in the middle of a match is seen by the rest of that
+  match (the cached copy was read); after `makunbound' of
+  `inhibit-changing-match-data' and a `setq' of it, matches change the
+  match data, the C variable having stayed nil, and so they do after
+  an image is loaded (an image dumped so would not start, and a void
+  variable's later `let' inhibited them).  **Counts** (callgrind, the
+  release build; before = round 385's build): `looking-at' at a failing
+  position 1,241.6 instructions, 1,130.6 after, against GNU's 1,147.0,
+  so D13 is done (about 250 over when recorded; 1,387.6 at round 380);
+  `string-match' 1,318.6 to 1,250.6 (GNU 1,148.0);
+  `re-search-forward' 1,953.6 to 1,971.6 (GNU 2,445.0), its plain
+  search reading the case tables for its few translations as GNU's
+  does; `char-after' 368.6 and `goto-char' 138.6 unchanged; the call
+  and interpreter guards unchanged.  The independent reviews (the one
+  question each: does the round cheat or break something) read each
+  commit and ran probes on GNU, the build before and this one: case
+  folding over ten letter sets (é, the three sigmas, ǅ, ß, the dotted
+  and dotless i, k, ﬀ, Cherokee) through every search primitive with
+  the standard table, a buffer's own, `with-case-table' and an
+  indirect buffer's, and with canon entries that are not characters;
+  callouts that change the case table or search; a quit's debugger
+  searching in a terminal; the syntax state across six sequences of
+  matches with and without syntax properties, in buffers and strings;
+  `inhibit-changing-match-data' under every binding operation and
+  matcher, across collections and in images; the earlier stages'
+  random edits, destructive callouts and region-end matches again.
+  Every answer was GNU's or, where GNU's differed before, the build
+  before's.  They found no cheat and nothing broken.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,626 passed, 0 failed, 2 ignored (four
+  library tests more); cli 30, cli_parity 187, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 606 changed
+  lines with 4 tests and 7 assertions added and 2 changed (two
+  debug-only checks now under `cfg(debug_assertions)' over a debug-only
+  view, the same checks); its other notes are the match's slot for the
+  shared bytes and the registers taken from their box (an `Option'
+  taken, no error dropped).
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23933,6 +24001,13 @@ ert-tests as a whole 26,307 ms against 27,211.
   targets (227) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 386 and its reviews), outside the
+  round and in no milestone.**  One line each, both older than the
+  round: a canon table entry of -1 or (1+ (max-char)) leaves é unfolded
+  in GNU's buffer searches while its `string-match' folds it, where
+  Emaxx's buffer searches fold it too; `replace-regexp-in-string' and
+  `word-search-forward' do not return while
+  `inhibit-changing-match-data' is non-nil, in GNU as in Emaxx.
 - **Found after the scope lock (round 385, its tests and its review),
   outside the round and in no milestone.**  One line each, each older
   than the round: `set-default' of a localized DEFVAR_BOOL keeps t

@@ -43,7 +43,7 @@ unfinished work pushed as a packaged draft (wip/r367).
 
 This document.
 
-## M2. Structure and performance (30 items; 6 done)
+## M2. Structure and performance (30 items; 7 done)
 
 Exit test: the remaining representation, collector and ownership engineering
 is done, the recorded per-call excesses are removed where GNU does less, and
@@ -120,6 +120,7 @@ interval within 0.97 and 1.03).
   and one base_buffer, as buffer.h's; round 382: the tables and two C
   variables, 1,291.6 against 1,147.0; round 384: the text as
   buffer_text, 1,237.6).
+  **Done** (round 386: 1,130.6 against 1,147.0).
 - D14: make-symbol ~690 instructions (round 173)
   **Done** (round 379: 1,280 against 1,965 a call).
 - D17: Rust-to-byte-code call ~120 instructions over GNU (rounds 167, 297).
