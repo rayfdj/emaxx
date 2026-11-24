@@ -41,6 +41,29 @@ impl RecordKey for &RecordRef {
 /// update_mode_lines asking for the windows marked, not all of them.
 pub(crate) const REDISPLAY_SOME: i32 = 2;
 
+/// buffer.c:set_buffer_internal_2's sharing of a base buffer's undo
+/// list: the list of OLD, when indirect, goes back into its base, and
+/// NEW, when indirect, takes its base's.  An indirect buffer or a base
+/// that is killed shares nothing.
+fn share_undo_list_with_base(
+    old: crate::lisp::types::BufferRef,
+    new: crate::lisp::types::BufferRef,
+) {
+    let live_base = |buffer: crate::lisp::types::BufferRef| {
+        buffer
+            .text_base()
+            .filter(crate::lisp::types::BufferRef::is_live)
+    };
+    if let Some(base) = live_base(old) {
+        let list = old.borrow().undo_list();
+        base.borrow_mut().set_undo_list(list);
+    }
+    if let Some(base) = live_base(new) {
+        let list = base.borrow().undo_list();
+        new.borrow_mut().set_undo_list(list);
+    }
+}
+
 impl Interpreter {
     pub(crate) fn inhibit_garbage_collection(&mut self) {
         self.garbage_collection_inhibited = self.garbage_collection_inhibited.saturating_add(1);
@@ -120,8 +143,10 @@ impl Interpreter {
         self.current_buffer_id
     }
 
-    pub fn current_buffer(&self) -> std::cell::Ref<'_, crate::buffer::Buffer> {
-        self.buffer.borrow()
+    /// buffer.h's current_buffer: the object.
+    #[inline]
+    pub(crate) fn current_buffer(&self) -> crate::lisp::types::BufferRef {
+        self.buffer
     }
 
     pub fn set_current_load_file(&mut self, path: Option<String>) -> Option<String> {
@@ -569,27 +594,24 @@ impl Interpreter {
             .ok_or_else(|| nsberror(buffer_or_name))
     }
 
-    /// BUFFER's id when it is live (BUFFER_LIVE_P), else None.
+    /// BUFFER's id when it is live (BUFFER_LIVE_P), else None.  A buffer
+    /// is live exactly while it is registered: the registry holds the
+    /// live buffers, and a buffer leaves it as it is killed or as an
+    /// image's buffer of its id takes its place.
     pub(crate) fn live_buffer_id(&self, buffer: crate::lisp::types::BufferRef) -> Option<u64> {
-        self.buffer_object(buffer.id)
-            .is_some_and(|live| live.ptr_eq(&buffer))
-            .then_some(buffer.id)
+        buffer.is_live().then_some(buffer.id)
     }
 
     /// Resolve a Lisp string-or-buffer value to a live buffer ID.
     pub fn resolve_buffer_id(&self, value: &Value) -> Result<u64, LispError> {
-        match value.kind() {
-            Kind::Buffer(buffer)
-                if self
-                    .buffer_object(buffer.id)
-                    .is_some_and(|live| live.ptr_eq(&buffer)) =>
-            {
-                Ok(buffer.id)
-            }
+        match super::buffers::decode_live_buffer(value) {
+            Some(buffer) => Ok(buffer.id),
             // buffer.c:Fset_buffer checks the given object's liveness.
             // A reused name must never select a different allocation.
-            Kind::Buffer(_) => Err(LispError::Signal("Selecting deleted buffer".into())),
-            _ => Err(LispError::TypeError(
+            None if matches!(value.kind(), Kind::Buffer(_)) => {
+                Err(LispError::Signal("Selecting deleted buffer".into()))
+            }
+            None => Err(LispError::TypeError(
                 "string-or-buffer".into(),
                 value.type_name(),
             )),
@@ -644,8 +666,16 @@ impl Interpreter {
         // so neither a `let' in the creating buffer nor a `setq-default'
         // (buffer_defaults) reaches it.
         self.reset_always_local_slots(id, inherited_directory);
-        primitives::casetab::reset_buffer_case_tables(self, id);
+        self.reset_buffer_char_tables(id);
         id
+    }
+
+    /// reset_buffer_local_variables's char-tables: buffer ID's syntax,
+    /// category and case tables are buffer_defaults' standard ones.
+    pub(crate) fn reset_buffer_char_tables(&mut self, id: u64) {
+        self.reset_buffer_syntax_table(id);
+        self.reset_buffer_category_table(id);
+        primitives::casetab::reset_buffer_case_tables(self, id);
     }
 
     /// indent.c:invalidate_current_column: no recorded column answers.
@@ -677,42 +707,20 @@ impl Interpreter {
             self.inactive_buffers.push((current_id, current_buffer));
         }
         self.current_buffer_id = id;
-        if !self.indirect_buffers.is_empty() {
-            self.share_undo_list_with_base(current_id, id);
-            // record_buffer_markers of the old buffer, fetch_buffer_markers
-            // of the new.
-            current_buffer.borrow_mut().leave_position_markers();
-            self.buffer.borrow_mut().enter_position_markers();
-        }
+        share_undo_list_with_base(current_buffer, self.buffer);
+        // record_buffer_markers of the old buffer and fetch_buffer_markers
+        // of the new, each for a buffer that has the markers.
+        current_buffer.borrow_mut().leave_position_markers();
+        let mut buffer = self.buffer.borrow_mut();
+        buffer.enter_position_markers();
         // The C variable record_point reads, which a buffer made since its
         // last store has yet to hold.
-        self.buffer
-            .borrow_mut()
-            .set_undo_inhibit_record_point(self.undo_inhibit_record_point);
+        buffer.set_undo_inhibit_record_point(self.undo_inhibit_record_point);
+        drop(buffer);
         // A localized GNU forwarding symbol loads the newly current
         // buffer's cell into its C variable during a buffer switch.
         self.refresh_forwarded_eval_cells_after_switch(current_id);
         Ok(())
-    }
-
-    /// buffer.c:set_buffer_internal_2's sharing of a base buffer's undo
-    /// list: the list of OLD, when indirect, goes back into its base, and
-    /// NEW, when indirect, takes its base's.
-    fn share_undo_list_with_base(&mut self, old: u64, new: u64) {
-        if let Some(base) = self.buffer_base_id(old) {
-            let list = self.get_buffer_by_id(old).map(|buffer| buffer.undo_list());
-            if let Some(list) = list
-                && let Some(mut base) = self.get_buffer_by_id_mut(base)
-            {
-                base.set_undo_list(list);
-            }
-        }
-        if let Some(base) = self.buffer_base_id(new) {
-            let list = self.get_buffer_by_id(base).map(|buffer| buffer.undo_list());
-            if let Some(list) = list {
-                self.buffer.borrow_mut().set_undo_list(list);
-            }
-        }
     }
 
     /// buffer.c:record_buffer: a buffer to the front of the buffer list,
@@ -933,7 +941,7 @@ impl Interpreter {
     /// readers that can meet one call `selected_window_start_checked'.
     pub fn selected_window_start(&self) -> usize {
         self.selected_window_start_checked()
-            .unwrap_or_else(|_| self.buffer.borrow().point_min())
+            .unwrap_or_else(|_| self.current_buffer().begv())
     }
 
     /// SET_TEXT_POS_FROM_MARKER (pos, w->start) of the selected window:
@@ -947,7 +955,7 @@ impl Interpreter {
             Some(marker) => marker
                 .position()
                 .ok_or_else(|| LispError::Signal("Marker does not point anywhere".into())),
-            None => Ok(self.buffer.borrow().point_min()),
+            None => Ok(self.current_buffer().begv()),
         }
     }
 
@@ -2610,7 +2618,7 @@ impl Interpreter {
     /// BUF_PT of buffer ID.
     pub(crate) fn buffer_point_by_id(&self, id: u64) -> usize {
         if id == self.current_buffer_id {
-            self.buffer.borrow().point()
+            self.current_buffer().pt()
         } else {
             self.get_buffer_by_id(id).map_or(1, |buffer| buffer.point())
         }
@@ -2700,9 +2708,13 @@ impl Interpreter {
             self.set_symbol_value_cell_resolved(&inhibit_quit, tem);
         }
         self.detach_markers_for_buffer(id);
-        // An indirect buffer stops sharing its base's text (and chain).
-        if let Some(object) = self.buffer_object(id) {
-            object.leave_marker_chain();
+        // An indirect buffer's base has one buffer fewer sharing its text
+        // (once: a window's replacement may have killed it already);
+        // base_buffer stays (Fbuffer_base_buffer of a killed buffer).
+        if let Some(object) = self.buffer_object(id)
+            && object.is_live()
+        {
+            object.note_indirect_killed();
         }
         self.delete_buffer_overlays(id);
         // The always-local slots the bindings hold, and the mark's state,
@@ -2720,13 +2732,13 @@ impl Interpreter {
         }
         // reset_buffer_local_variables (b, 1).
         self.remove_buffer_locals(id);
-        self.buffer_case_tables.remove(id);
+        if let Some(buffer) = self.buffer_object(id) {
+            buffer.set_case_tables(self.standard_case_tables);
+        }
         self.reset_buffer_syntax_table(id);
         self.reset_buffer_category_table(id);
         self.labeled_restrictions
             .retain(|restriction| restriction.buffer_id != id);
-        self.indirect_buffers
-            .retain(|(buffer_id, base_id)| *buffer_id != id && *base_id != id);
         if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
             buffer.set_keymap(Value::Nil);
         }
@@ -2734,9 +2746,10 @@ impl Interpreter {
         if let Some(object) = self.buffer_object(id) {
             object.live.set(false);
         }
-        // free_buffer_text.
-        if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {
-            buffer.release_killed_storage();
+        // free_buffer_text: the object's own_text, an empty one, is what
+        // the buffer reads from now on.
+        if let Some(object) = self.buffer_object(id) {
+            object.borrow_mut().release_killed_storage(object);
         }
         // A current buffer stays current, killed, until another is made
         // current; set_current_buffer_id then lets it go.

@@ -475,7 +475,7 @@ impl Interpreter {
             "syntax-propertize--done" => Some(Value::Integer(-1)),
             "most-positive-fixnum" => Some(Value::Integer(2_305_843_009_213_693_951)),
             "most-negative-fixnum" => Some(Value::Integer(-2_305_843_009_213_693_952)),
-            "enable-multibyte-characters" => Some(if self.buffer.borrow().is_multibyte() {
+            "enable-multibyte-characters" => Some(if self.current_buffer().multibyte() {
                 Value::T
             } else {
                 Value::Nil

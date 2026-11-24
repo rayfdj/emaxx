@@ -1551,7 +1551,8 @@ impl Interpreter {
     /// debugger's stop at the next call; no fatal signal for maybe_quit
     /// and no collection due): a byte-code closure (FUNC, or the one in
     /// its function cell) run at once, as `funcall_unnamed' would reach
-    /// it, and a subr or a native-compiled function called as Bcall's
+    /// it, its frame entered in this one (`funcall_closure_in_place'),
+    /// and a subr or a native-compiled function called as Bcall's
     /// `call_plain' calls them, the frame recorded around the call.
     /// None, with nothing changed, for any other case.
     #[inline(always)]
@@ -1574,7 +1575,17 @@ impl Interpreter {
                 return None;
             }
             let depth = self.enter_plain_funcall(func, args);
-            let result = crate::lisp::bytecode::vm::funcall_closure(self, closure, args, env);
+            let result =
+                crate::lisp::bytecode::vm::funcall_closure_in_place(self, closure, args, env);
+            // The activation leaves the backtrace as long as it found it,
+            // the call's record its last (`finish_activation', or the fast
+            // return's test): Ffuncall's `backtrace_debug_on_exit (count)'
+            // and `specpdl_ptr--' of that record.
+            if let Ok(value) = result
+                && self.leave_innermost_funcall(depth)
+            {
+                return Some(Ok(value));
+            }
             let result = self.settle_call_result(depth, result, env);
             self.leave_plain_funcall(depth);
             return Some(result);
@@ -1857,10 +1868,17 @@ impl Interpreter {
         // lisp.h:maybe_quit first reads Vquit_flag directly and returns on
         // the overwhelmingly common nil case.  These are eval.c's forwarded
         // cells, not symbol-name lookups.
-        if self.quit_flag_is_nil() && !primitives::atimer::signals_pending() {
+        if self.quit_check_clear() {
             return Ok(());
         }
         self.probably_quit(env)
+    }
+
+    /// maybe_quit's first test: no quit and no signal pending, nothing
+    /// for probably_quit to run.
+    #[inline(always)]
+    pub(crate) fn quit_check_clear(&self) -> bool {
+        self.quit_flag_is_nil() && !primitives::atimer::signals_pending()
     }
 
     /// eval.c:probably_quit: a fatal signal's terminate_due_to_signal (whose
@@ -2236,9 +2254,15 @@ impl Interpreter {
         Err(self.signal_or_quit(error, env))
     }
 
-    /// eval.c:funcall_lambda's direct `exec_byte_code' branch.  The caller
+    /// eval.c:funcall_lambda's two `exec_byte_code' calls.  The caller
     /// owns Ffuncall's depth and backtrace entry; this supplies only the
     /// byte-code activation boundary shared by source and native callers.
+    /// A FIXNUMP template's arguments go to exec_byte_code with no
+    /// specbind: the code runs under the caller's environment, which byte
+    /// code itself never reads (Bvarref is Fsymbol_value's) and the subrs
+    /// it calls read as GNU's do.  A dynamic-binding function's formals are
+    /// bound and then the environment to its nil lexenv
+    /// (`funcall_closure').
     #[inline(always)]
     pub(crate) fn execute_bytecode_funcall_body(
         &mut self,
@@ -2246,20 +2270,7 @@ impl Interpreter {
         args: &[Value],
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        // Byte code reads variables with Fsymbol_value, never through the
-        // interpreter environment (bytecode.c's Bvarref); a nil frame keeps
-        // the caller's lexical bindings out of the VM's reads, and is
-        // needed only over another environment, as funcall_lambda
-        // specbinds only a changed one.
-        let depth = env.len();
-        if crate::lisp::types::current_environment(env).is_some() {
-            env.push(EnvFrame::dynamic());
-        }
-        let result = crate::lisp::bytecode::vm::execute_closure(self, closure, args, env);
-        if env.len() > depth {
-            env.truncate(depth);
-        }
-        result
+        crate::lisp::bytecode::vm::funcall_closure(self, closure, args, env)
     }
 
     /// Bcall's callee, read after maybe_gc as bytecode.c reads it: a

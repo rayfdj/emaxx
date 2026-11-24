@@ -1988,7 +1988,7 @@ pub(crate) fn describe_buffer_bindings(
         })?;
         // get_local_map (BUF_PT, buffer, Qkeymap).
         let property = with_keymap_description_buffer(interp, buffer, |interp| {
-            let point = interp.buffer.borrow().point() as i64;
+            let point = interp.current_buffer().pt() as i64;
             get_local_map(interp, point, "keymap")
         })?;
         if !property.is_nil() {
@@ -2019,7 +2019,7 @@ pub(crate) fn describe_buffer_bindings(
             with_keymap_description_buffer(interp, buffer, |interp| {
                 // BVAR (current_buffer, keymap).
                 let normal = interp.buffer.borrow().keymap();
-                let point = interp.buffer.borrow().point() as i64;
+                let point = interp.current_buffer().pt() as i64;
                 let local = get_local_map(interp, point, "local-map")?;
                 let major = interp
                     .symbol_value_key(cached_symbol!("major-mode"))
@@ -2426,7 +2426,7 @@ fn describe_vector(
         }
         describe_vector_element(interp, elt_describer, definition, &describer, env)?;
         if this_shadowed {
-            let point = interp.buffer.borrow().point();
+            let point = interp.current_buffer().pt();
             interp.buffer.borrow_mut().goto_char(point - 1);
             if let Kind::Symbol(command) = shadowed_by.kind() {
                 super::dispatch::insert_string(
@@ -2437,7 +2437,7 @@ fn describe_vector(
             } else {
                 super::dispatch::insert_string(interp, "  (currently shadowed)", env)?;
             }
-            let point = interp.buffer.borrow().point();
+            let point = interp.current_buffer().pt();
             interp.buffer.borrow_mut().goto_char(point + 1);
         }
         i += 1;
@@ -2621,7 +2621,7 @@ fn click_position(interp: &Interpreter, position: &Value) -> Result<i64, LispErr
         Kind::Integer(_) | Kind::Marker(_) => {
             super::textprop::fixnum_coerce_marker(interp, position)?
         }
-        _ => interp.buffer.borrow().point() as i64,
+        _ => interp.current_buffer().pt() as i64,
     };
     let (begv, zv) = interp.buffer.borrow().restriction();
     if !(begv as i64 <= pos && pos <= zv as i64) {
@@ -2711,7 +2711,7 @@ fn current_active_maps_1(
         if string.is_nil() {
             // POSN_INBUFFER_P: the clicked buffer position's maps.
             if let Kind::Integer(pos) = posn_nth(&position, 5)?.kind() {
-                let z = interp.buffer.borrow().size_total() as i64 + 1;
+                let z = interp.current_buffer().z() as i64;
                 if (1..=z).contains(&pos) {
                     local_map = get_local_map(interp, pos, "local-map")?;
                     keymap = get_local_map(interp, pos, "keymap")?;

@@ -18,10 +18,13 @@ The counts used for HANDOVER's tables:
     lex-rec:2000:6000 dyn-rec:2000:6000 looking-at:200000:600000
     string-match:200000:600000 make-symbol:200000:600000
     intern-new:20000:60000 priv-intern:20000:60000 read-gensym:100000:300000
+    char-after:100000:300000 set-buffer:100000:300000 insert:100000:300000
+    goto-char:100000:300000 buffer-name:100000:300000
     mapatoms-bc:20:60 mapatoms-closure:20:60 maphash-bc:200:600
     mapc-bc:200:600 mapc-interp:200:600 interp-ignore:200000:600000
     princ-interp:50000:150000 windows:100000:300000 ucs-names:1:3
-    read-file:2:6 mapc-bc-bc:200:600
+    read-file:2:6 mapc-bc-bc:200:600 concat-uni-multi:100000:300000
+    mapc-subr:200:600 lex-dyn-calls:20000:60000
 
 and for a subr called from native code, each at 100000:300000
 (native-base is the loop they share, with no call in it):

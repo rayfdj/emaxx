@@ -181,7 +181,7 @@ fn forward_line_treats_nil_as_default_step() {
         call(&mut interp, "forward-line", &[Value::Nil], &mut env).expect("forward-line with nil"),
         Value::Integer(0)
     );
-    assert_eq!(interp.buffer.borrow().point(), 3);
+    assert_eq!(interp.current_buffer().pt(), 3);
 }
 
 #[test]
@@ -196,7 +196,7 @@ fn forward_char_treats_nil_as_default_step() {
         call(&mut interp, "forward-char", &[Value::Nil], &mut env).expect("forward-char with nil"),
         Value::Nil
     );
-    assert_eq!(interp.buffer.borrow().point(), 2);
+    assert_eq!(interp.current_buffer().pt(), 2);
 }
 
 #[test]

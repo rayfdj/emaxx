@@ -39,6 +39,27 @@ impl Output {
         self.filled += bytes.len();
     }
 
+    fn byte(&mut self, byte: u8) {
+        assert!(self.filled < self.length);
+        // SAFETY: the constructor owns this fresh allocation, and the
+        // checked offset lies within it.
+        unsafe { *self.data.add(self.filled) = byte };
+        self.filled += 1;
+    }
+
+    /// character.c:str_to_multibyte of a unibyte string's bytes: an ASCII
+    /// byte as itself, any other as its raw-byte character's two bytes.
+    fn unibyte_as_multibyte(&mut self, bytes: &[u8]) {
+        for &byte in bytes {
+            if byte < 0x80 {
+                self.byte(byte);
+            } else {
+                self.byte(0xc0 + ((byte >> 6) & 1));
+                self.byte(0x80 + (byte & 0x3f));
+            }
+        }
+    }
+
     fn character(&mut self, code: u32, multibyte: bool) {
         if multibyte {
             let (encoded, width) = encode_character(code).expect("validated character");
@@ -148,14 +169,7 @@ impl StringObjectRef {
                             if state.is_multibyte() == multibyte {
                                 bytes.extend(state.bytes());
                             } else {
-                                for &byte in state.bytes() {
-                                    let code = if byte < 128 {
-                                        u32::from(byte)
-                                    } else {
-                                        0x3fff00 + u32::from(byte)
-                                    };
-                                    bytes.character(code, true);
-                                }
+                                bytes.unibyte_as_multibyte(state.bytes());
                             }
                             offset += state.len();
                         }

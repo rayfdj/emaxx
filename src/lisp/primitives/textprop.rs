@@ -759,7 +759,7 @@ pub(crate) fn text_property_stickiness(
     // Fassq, which signals for DEFAULTS not a list.
     let default = crate::intervals::assq_by(|car| prop.is(car), defaults)?;
     let begv = match buffer.kind() {
-        Kind::Nil => interp.buffer.borrow().point_min(),
+        Kind::Nil => interp.current_buffer().begv(),
         Kind::Buffer(object) => buffer_object_bounds(interp, object).0,
         _ => return Err(LispError::WrongTypeArgument("bufferp".into(), buffer)),
     } as i64;
@@ -973,7 +973,7 @@ pub(crate) fn next_single_char_property_change(
     with_set_buffer(interp, &object, |interp| {
         let mut position = fixnum_coerce_marker(interp, position)?;
         let initial = get_char_property(interp, &Value::Integer(position), name, object)?;
-        let zv = interp.buffer.borrow().point_max() as i64;
+        let zv = interp.current_buffer().zv() as i64;
         let limit = if limit.is_nil() {
             zv
         } else {
@@ -1021,7 +1021,7 @@ pub(crate) fn previous_single_char_property_change(
     let name = PropertyName::new(prop);
     with_set_buffer(interp, &object, |interp| {
         let mut position = fixnum_coerce_marker(interp, position)?;
-        let begv = interp.buffer.borrow().point_min() as i64;
+        let begv = interp.current_buffer().begv() as i64;
         let limit = if limit.is_nil() {
             begv
         } else {

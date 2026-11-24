@@ -427,9 +427,7 @@ impl GlState {
     fn read_state(&mut self, interp: &Interpreter) {
         self.buffer_table = interp.current_syntax_table_id();
         self.check_ascii();
-        self.lookup_properties = interp
-            .local_variable_value_key(cached_symbol!("parse-sexp-lookup-properties"))
-            .is_some_and(|value| value.is_truthy());
+        self.lookup_properties = interp.parse_sexp_lookup_properties;
         self.propertize_done = interp
             .local_variable_value_key(cached_symbol!("syntax-propertize--done"))
             .and_then(|value| value.integer_value())
@@ -545,7 +543,7 @@ impl GlState {
         env: &mut Env,
         charpos: usize,
     ) -> Result<(), LispError> {
-        let zv = interp.buffer.borrow().point_max() as i64;
+        let zv = interp.current_buffer().zv() as i64;
         let pos = charpos as i64;
         if self.propertize_done <= pos && self.propertize_done < zv {
             // A runtime without syntax.el has nothing to propertize with.
@@ -553,7 +551,7 @@ impl GlState {
                 self.propertize_done = i64::MAX;
                 return Ok(());
             }
-            let modiffs = interp.buffer.borrow().chars_modified_tick();
+            let modiffs = interp.current_buffer().chars_modiff();
             // safe_calln: an error in the propertizer is not the scan's,
             // and its internal_condition_case_n with Qt keeps it from
             // handler-bind handlers and the debugger.
@@ -567,7 +565,7 @@ impl GlState {
             );
             interp.pop_handler_bindings(handlers);
             self.ran_lisp = true;
-            if modiffs != interp.buffer.borrow().chars_modified_tick() {
+            if modiffs != interp.current_buffer().chars_modiff() {
                 return Err(error("internal--syntax-propertize modified the buffer!"));
             }
             self.read_state(interp);
@@ -815,7 +813,7 @@ impl GlState {
         }
         gl.setup_buffer_syntax_table();
         (gl.b_property, gl.e_property) = match object {
-            GlObject::Buffer => (1, interp.buffer.borrow().point_max()),
+            GlObject::Buffer => (1, interp.current_buffer().zv()),
             GlObject::String(string) => (0, 1 + string_chars(&string)),
         };
         let error = gl.update_syntax_table(interp, charpos(), 1, true).err();
@@ -1117,7 +1115,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
     }
 
     fn point(&self) -> usize {
-        self.interp.buffer.borrow().point()
+        self.interp.current_buffer().pt()
     }
 
     /// SET_PT_BOTH.
@@ -1286,7 +1284,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
         pos_byte: usize,
     ) -> Result<(usize, usize), LispError> {
         let buffer_id = self.interp.current_buffer_id();
-        let modiff = self.interp.buffer.borrow().modified_tick();
+        let modiff = self.interp.current_buffer().modiff();
         // Reuse the defun start even if POS is a little farther on: it
         // may be in the next defun, which is all right.
         if let Some(found) = FIND_START.get()
@@ -1300,7 +1298,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
         }
 
         let (value, value_byte) = if self.comment_use_syntax_ppss() {
-            let modiffs = self.interp.buffer.borrow().chars_modified_tick();
+            let modiffs = self.interp.current_buffer().chars_modiff();
             let opoint = self.point();
             let ppss = self.interp.call_function_value(
                 Value::Symbol("syntax-ppss".into()),
@@ -1308,7 +1306,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
                 &[Value::Integer(pos as i64)],
                 self.env,
             )?;
-            if modiffs != self.interp.buffer.borrow().chars_modified_tick() {
+            if modiffs != self.interp.current_buffer().chars_modiff() {
                 return Err(error("syntax-ppss modified the buffer!"));
             }
             self.set_point(opoint);
@@ -1354,7 +1352,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
             value,
             value_byte,
             begv: self.begv,
-            modiff: self.interp.buffer.borrow().modified_tick(),
+            modiff: self.interp.current_buffer().modiff(),
         }));
         Ok((value, value_byte))
     }
@@ -2406,14 +2404,14 @@ impl<'a, 'r> Scanner<'a, 'r> {
             // Now CH0 is a character which begins a word and FROM is the
             // position of the next character.
             if let Some(func) = self.word_boundary_function(ch0)? {
-                let modiff = self.interp.buffer.borrow().chars_modified_tick();
+                let modiff = self.interp.current_buffer().chars_modiff();
                 let pos = self.interp.call_function_value(
                     func,
                     None,
                     &[Value::Integer(from as i64 - 1), Value::Integer(end as i64)],
                     self.env,
                 )?;
-                let zv = self.interp.buffer.borrow().point_max();
+                let zv = self.interp.current_buffer().zv();
                 if let Kind::Integer(pos) = pos.kind()
                     && (from as i64) < pos
                     && pos <= zv as i64
@@ -2421,7 +2419,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
                     from = pos as usize;
                 }
                 count -= 1;
-                if modiff != self.interp.buffer.borrow().chars_modified_tick() {
+                if modiff != self.interp.current_buffer().chars_modiff() {
                     return Ok(Words::Changed { from, count });
                 }
                 self.read_state();
@@ -2463,14 +2461,14 @@ impl<'a, 'r> Scanner<'a, 'r> {
             // Now CH1 is a character which ends a word and FROM is the
             // position of it.
             if let Some(func) = self.word_boundary_function(ch1)? {
-                let modiff = self.interp.buffer.borrow().chars_modified_tick();
+                let modiff = self.interp.current_buffer().chars_modiff();
                 let pos = self.interp.call_function_value(
                     func,
                     None,
                     &[Value::Integer(from as i64), Value::Integer(beg as i64)],
                     self.env,
                 )?;
-                let begv = self.interp.buffer.borrow().point_min();
+                let begv = self.interp.current_buffer().begv();
                 if let Kind::Integer(pos) = pos.kind()
                     && begv as i64 <= pos
                     && pos < from as i64
@@ -2478,7 +2476,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
                     from = pos as usize;
                 }
                 count += 1;
-                if modiff != self.interp.buffer.borrow().chars_modified_tick() {
+                if modiff != self.interp.current_buffer().chars_modiff() {
                     return Ok(Words::Changed { from, count });
                 }
                 self.read_state();
@@ -3173,7 +3171,7 @@ pub(super) fn forward_word(
         Some(arg) if !arg.is_nil() => check_fixnum(arg)?,
         _ => 1,
     };
-    let point = interp.buffer.borrow().point();
+    let point = interp.current_buffer().pt();
     let orig_val = scan_words(interp, env, point, count)?;
     let val = orig_val.unwrap_or_else(|| {
         let buffer = interp.buffer.borrow();

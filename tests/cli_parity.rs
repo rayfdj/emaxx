@@ -1321,6 +1321,336 @@ fn dynamic_binding_byte_code_binds_as_funcall_lambda() {
 }
 
 #[test]
+fn byte_code_called_from_c_enters_the_debugger_as_ffuncall_does() {
+    // eval.c:Ffuncall of a byte-code function from C (mapcar1, Fmaphash,
+    // mapc): a frame marked by backtrace-debug enters the debugger as it
+    // returns, the debugger's value replacing the call's; debug-on-next-call
+    // set in one call enters at the next; a throw and a signal leave mapc
+    // and mapcar with their frames gone.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "dbg.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defvar d17-seen nil)
+(setq debugger (lambda (&rest args) (push args d17-seen) (if (eq (car args) 'exit) (list 'replaced (cadr args)) nil)))
+(defun d17-mark (x) (backtrace-debug 1 t #'backtrace-debug) (* x 10))
+(byte-compile 'd17-mark)
+(defun d17-next (x) (when (= x 2) (setq debug-on-next-call t)) x)
+(byte-compile 'd17-next)
+(defun d17-depth () (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n))
+(princ (format "1 %S\n" (list (mapcar #'d17-mark '(1 2)) (reverse d17-seen))))
+(setq d17-seen nil)
+(princ (format "2 %S\n" (list (mapcar #'d17-next '(1 2 3)) (reverse d17-seen))))
+(setq d17-seen nil)
+(princ (format "3 %S\n" (list (let ((r nil)) (maphash (lambda (k v) (push (d17-mark (+ k v)) r)) #s(hash-table data (1 2 3 4))) r) (reverse d17-seen))))
+(setq d17-seen nil)
+(princ (format "4 %S\n" (list (mapc #'d17-mark '(5)) (funcall #'d17-mark 6) (apply #'d17-mark '(7)) (reverse d17-seen))))
+(setq d17-seen nil)
+(princ (format "5 %S\n" (catch 'd17 (mapc (byte-compile (lambda (x) (when (= x 2) (throw 'd17 (list 'thrown x (length (backtrace-frames))))))) '(1 2 3)))))
+(princ (format "6 %S\n" (condition-case e (mapc (byte-compile (lambda (x) (when (= x 2) (car x)))) '(1 2 3)) (error e))))
+(princ (format "7 %S\n" (condition-case e (mapcar (byte-compile (lambda (x) (/ 1 x))) '(1 0)) (error e))))
+(princ (format "8 %S\n" (list (d17-depth) d17-seen)))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
+fn byte_code_called_from_c_keeps_its_arguments_reentrant_and_redefinable() {
+    // Ffuncall of a byte-code function from C: an argument that only the
+    // call's argument vector holds (funcall's, apply's: a fresh key of a
+    // weak table, which the callee drops from its own slot) survives a
+    // collection in the callee; a mapcar callback re-enters mapcar; one
+    // that fsets its own name is read again from the function cell at the
+    // next element; two Lisp threads yield from callbacks of their own
+    // mapc, each thread's callbacks running in and out in its order.  (Which
+    // thread runs after a yield is the OS scheduler's choice in GNU, whose
+    // thread-yield releases the global lock for sched_yield; the probe
+    // does not compare the interleaving.)
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "gc.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defvar d17-w (make-hash-table :test 'eq :weakness 'key))
+(defun d17-mk (i) (let ((k (list i))) (puthash k t d17-w) k))
+(byte-compile 'd17-mk)
+(defun d17-held (i) (let (found) (maphash (lambda (k _v) (when (equal k (list i)) (setq found t))) d17-w) found))
+(byte-compile 'd17-held)
+(defun d17-gc (x i) (setq x nil) (garbage-collect) (list x (d17-held i)))
+(byte-compile 'd17-gc)
+(princ (format "1 %S\n" (list (funcall #'d17-gc (d17-mk 0) 0) (apply #'d17-gc (d17-mk 1) '(1)) (apply #'d17-gc (list (d17-mk 2) 2)))))
+(garbage-collect)
+(princ (format "2 %S\n" (hash-table-count d17-w)))
+(defun d17-re (x) (if (> x 0) (apply #'+ (mapcar #'d17-re (make-list 2 (1- x)))) 1))
+(byte-compile 'd17-re)
+(princ (format "3 %S\n" (mapcar #'d17-re '(0 3 6))))
+(defun d17-redef (x) (fset 'd17-redef (byte-compile '(lambda (y) (* 100 y)))) x)
+(byte-compile 'd17-redef)
+(princ (format "4 %S\n" (mapcar 'd17-redef '(1 2 3))))
+(defvar d17-th-log nil)
+(defun d17-th (x) (push (list 'in x) d17-th-log) (thread-yield) (push (list 'out x) d17-th-log) x)
+(byte-compile 'd17-th)
+(let ((th (make-thread (lambda () (mapc #'d17-th '(a b))))))
+  (mapc #'d17-th '(1 2))
+  (thread-join th))
+(princ (format "5 %S\n" (let ((log (reverse d17-th-log))) (list (seq-filter (lambda (e) (numberp (cadr e))) log) (seq-filter (lambda (e) (symbolp (cadr e))) log)))))
+(princ (format "6 %S\n" (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n)))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
+fn byte_code_called_from_c_sees_its_interpreted_callers_environment() {
+    // What byte code that C calls (mapcar, funcall, apply, a direct call
+    // from interpreted code) under an interpreted lexical caller sees of
+    // that caller's environment, through the subrs that read the
+    // interpreter's environment: eval with a nil and a t lexical
+    // environment, a dynamic-binding interpreted lambda, backtrace--locals
+    // and backtrace-eval of the frames out to the caller's, macroexpand
+    // and eval of a macro reading lexical-binding, an interpreted closure
+    // the caller made; and lexical byte code calling dynamic-binding byte
+    // code, which funcall_lambda gives the nil environment.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "env.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defmacro d17-try (form) `(condition-case e ,form (error (list 'err (car e)))))
+(defun d17-caller (fn arg)
+  (let ((d17x 'lexical))
+    (list (mapcar fn (list arg)) (funcall fn arg) (apply fn (list arg)) (d17-try (eval `(,fn ',arg) t)))))
+(defalias 'd17-ev (byte-compile '(lambda (_) (list (d17-try (eval 'd17x nil)) (d17-try (eval 'd17x t))))))
+(defvar d17-dyn (let ((lexical-binding nil)) (eval '(lambda () (d17-try d17x)) nil)))
+(defalias 'd17-dy (byte-compile '(lambda (_) (funcall d17-dyn))))
+(defalias 'd17-bl (byte-compile '(lambda (_) (mapcar (lambda (k) (d17-try (assq 'd17x (backtrace--locals k #'d17-bl)))) '(0 1 2 3 4)))))
+(defalias 'd17-be (byte-compile '(lambda (_) (mapcar (lambda (k) (d17-try (backtrace-eval 'd17x k #'d17-be))) '(0 1 2 3 4)))))
+(defalias 'd17-b1 (byte-compile '(lambda (_) (d17-try (backtrace-eval 'd17x 1 #'backtrace-eval)))))
+(defmacro d17-m () (list 'quote lexical-binding))
+(defalias 'd17-mx (byte-compile '(lambda (_) (list (macroexpand '(d17-m)) (eval '(d17-m) nil) (eval '(d17-m) t)))))
+(defalias 'd17-cl (byte-compile '(lambda (f) (funcall f))))
+(dolist (fn '(d17-ev d17-dy d17-bl d17-be d17-b1 d17-mx))
+  (princ (format "%s %S\n" fn (d17-caller fn 1))))
+(princ (format "d17-cl %S\n" (let ((d17x 'outer)) (d17-caller #'d17-cl (lambda () d17x)))))
+(princ (format "direct %S\n" (let ((d17x 'lexical)) (list (d17-ev 1) (d17-dy 1) (d17-b1 1) (d17-mx 1) (d17-cl (lambda () d17x))))))
+(defvar d17-s 'top)
+(let ((lexical-binding nil))
+  (eval '(defun d17-dn (d17-s n) (if (> n 0) (d17-dn (list d17-s) (1- n)) (list d17-s (d17-try (symbol-value 'd17z))))) nil))
+(byte-compile 'd17-dn)
+(defalias 'd17-lx (byte-compile '(lambda (x) (d17-dn x 3))))
+(princ (format "dyn %S\n" (let ((d17z 'lexical)) (list (mapcar #'d17-lx '(a)) (funcall #'d17-lx 'b) (d17-lx 'c) d17-s))))
+(princ (format "end %S\n" (list (boundp 'd17x) (special-variable-p 'd17x) (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n))))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
+fn byte_code_called_from_c_defines_and_evaluates_in_its_callers_environment() {
+    // eval.c:funcall_lambda hands a lexical-binding byte-code function's
+    // arguments to exec_byte_code with no specbind of
+    // internal-interpreter-environment, so the subrs the function calls
+    // run in its interpreted caller's environment, which no binding has
+    // saved: defvar-1, defconst-1 and
+    // internal--define-uninitialized-variable of a name the caller binds
+    // lexically find no saved environment binding it (lexbound_p) and
+    // define it, whether mapcar, funcall, apply or the interpreter calls
+    // the function; backtrace-eval at the frame of its own call evaluates
+    // in that environment; the obsolete Bcatch's eval_sub of its body
+    // reads it, and a (defvar X) there declares X in it for the rest of
+    // the caller's `let', as the obsolete Bcondition_case's body, the
+    // obsolete Bsave_window_excursion's forms and the form list an
+    // obsolete Bunwind_protect runs at its Bunbind read it.  Through a
+    // dynamic-binding interpreted lambda, which specbinds the environment
+    // to nil, the caller's binding is saved and the definition refused.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "defs.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defmacro d17-try (form) `(condition-case e ,form (error (list 'err e))))
+(defalias 'd17-dv (byte-compile '(lambda (s) (d17-try (progn (defvar-1 s 5 nil) (list 'ok (special-variable-p s)))))))
+(defalias 'd17-dc (byte-compile '(lambda (s) (d17-try (progn (defconst-1 s 6 nil) (list 'ok (special-variable-p s)))))))
+(defalias 'd17-ud (byte-compile '(lambda (s) (d17-try (progn (internal--define-uninitialized-variable s) (list 'ok (special-variable-p s)))))))
+(defun d17-defs (fn)
+  (let ((d17a 1) (d17b 2) (d17c 3) (d17d 4))
+    (list (mapcar fn '(d17a)) (funcall fn 'd17b) (apply fn '(d17c)) (funcall fn 'd17d) d17a d17b d17c d17d)))
+(princ (format "1 %S\n" (list (d17-defs #'d17-dv) (mapcar #'special-variable-p '(d17a d17b d17c d17d)))))
+(defun d17-defs2 (fn)
+  (let ((d17e 1) (d17f 2))
+    (list (mapcar fn '(d17e)) (d17-dc 'd17f) d17e d17f)))
+(princ (format "2 %S\n" (list (d17-defs2 #'d17-ud) (mapcar #'special-variable-p '(d17e d17f)))))
+(defvar d17-dynf (let ((lexical-binding nil)) (eval '(lambda (s) (d17-dv s)) nil)))
+(princ (format "3 %S\n" (let ((d17g 1)) (list (funcall d17-dynf 'd17g) (special-variable-p 'd17g)))))
+(defalias 'd17-bs (byte-compile '(lambda (_) (d17-try (backtrace-eval 'd17x 0 #'backtrace-eval)))))
+(defalias 'd17-oc (make-byte-code 257 (unibyte-string #o300 #o301 #o215 #o207) [d17tag d17x] 3))
+(defun d17-caller (fn)
+  (let ((d17x 'lexical))
+    (list (d17-try (mapcar fn '(1))) (d17-try (funcall fn 1)) (d17-try (apply fn '(1))))))
+(princ (format "4 %S\n" (list (d17-caller #'d17-bs) (d17-caller #'d17-oc) (let ((d17x 'lexical)) (list (d17-bs 1) (d17-try (d17-oc 1)))))))
+(defalias 'd17-od (make-byte-code 257 (unibyte-string #o300 #o301 #o215 #o207) [d17tag (defvar d17z)] 3))
+(princ (format "5 %S\n" (let ((d17z 1)) (list (funcall #'d17-od 1) (let ((d17z 2)) (d17-try (symbol-value 'd17z))) (special-variable-p 'd17z)))))
+(defvar d17-out nil)
+(defalias 'd17-occ (make-byte-code 257 (unibyte-string #o300 #o301 #o302 #o217 #o207) [nil d17x nil] 4))
+(defalias 'd17-osw (make-byte-code 257 (unibyte-string #o300 #o213 #o207) [(d17x)] 3))
+(defalias 'd17-ouw (make-byte-code 257 (unibyte-string #o300 #o216 #o301 #o051 #o207) [((setq d17-out d17x)) done] 3))
+(princ (format "6 %S\n" (let ((d17x 'lexical)) (list (d17-try (mapcar #'d17-occ '(1))) (d17-try (funcall #'d17-osw 1)) (d17-try (d17-ouw 1)) d17-out))))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
+fn dynamic_binding_byte_code_binds_its_formals_then_the_environment() {
+    // eval.c:funcall_lambda binds a dynamic-binding function's formals and
+    // only then specbinds internal-interpreter-environment to its nil
+    // lexenv, when the caller's is another; unbind_to undoes the two in
+    // turn.  A watcher of a formal, at its let and at its unlet, so runs
+    // under the interpreted caller's environment, unsaved: defvar-1 of a
+    // name the caller binds lexically defines it, whether mapcar, funcall,
+    // the interpreter or lexical byte code calls the function.  Lexical
+    // byte code under a lexical caller calling dynamic-binding byte code:
+    // inside the callee the caller's environment is saved (defvar-1
+    // refused); after a return, a signal or a throw out of the callee it
+    // is in effect again (defvar-1 defines).
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "dynenv.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defmacro d17-try (form) `(condition-case e ,form (error (car e))))
+;; A watcher of a dynamic-binding function's formal runs defvar-1 at the
+;; formal's let and unlet, of names the interpreted caller binds lexically.
+(defvar d17-wlog nil)
+(defvar d17-names nil)
+(defvar d17wf nil)
+(add-variable-watcher 'd17wf (byte-compile '(lambda (_s _n op _w)
+  (when (memq op '(let unlet))
+    (push (list op (d17-try (progn (defvar-1 (pop d17-names) 5 nil) 'ok))) d17-wlog)))))
+(defalias 'd17-dynf (let ((lexical-binding nil)) (byte-compile '(lambda (d17wf) d17wf))))
+(defalias 'd17-lexf (byte-compile '(lambda (x) (d17-dynf x))))
+(defmacro d17-watched (names form)
+  `(progn (setq d17-wlog nil d17-names ,names) (list ,form (reverse d17-wlog))))
+(princ (format "1 %S\n" (let ((d17w1 1) (d17w2 2)) (d17-watched '(d17w1 d17w2) (mapcar #'d17-dynf '(1))))))
+(princ (format "2 %S\n" (let ((d17w3 1) (d17w4 2)) (d17-watched '(d17w3 d17w4) (funcall #'d17-dynf 2)))))
+(princ (format "3 %S\n" (let ((d17w5 1) (d17w6 2)) (d17-watched '(d17w5 d17w6) (d17-dynf 3)))))
+(princ (format "4 %S\n" (let ((d17w7 1) (d17w8 2)) (d17-watched '(d17w7 d17w8) (d17-lexf 4)))))
+;; Lexical byte code under a lexical caller calling dynamic-binding byte
+;; code: inside the callee the environment is nil and the caller's saved
+;; (defvar-1 refused); once it returns, or a signal or throw leaves it,
+;; the caller's is in effect again (defvar-1 defines).
+(defalias 'd17-dd (let ((lexical-binding nil)) (byte-compile '(lambda (s) (d17-try (progn (defvar-1 s 5 nil) 'ok))))))
+(defalias 'd17-ds (let ((lexical-binding nil)) (byte-compile '(lambda (s) (if (eq s 'throw) (throw 'd17-tag s) (signal 'error (list s)))))))
+(defalias 'd17-lx (byte-compile '(lambda (a b c d)
+  (list (d17-dd a)
+        (d17-try (progn (defvar-1 b 5 nil) 'ok))
+        (condition-case nil (d17-ds 'sig) (error 'caught))
+        (d17-try (progn (defvar-1 c 5 nil) 'ok))
+        (catch 'd17-tag (d17-ds 'throw))
+        (d17-try (progn (defvar-1 d 5 nil) 'ok))))))
+(princ (format "5 %S\n" (let ((d17a 1) (d17b 2) (d17c 3) (d17d 4)) (list (d17-lx 'd17a 'd17b 'd17c 'd17d) d17a d17b d17c d17d))))
+(princ (format "6 %S\n" (list (mapcar #'special-variable-p '(d17w1 d17w2 d17w3 d17w4 d17w5 d17w6 d17w7 d17w8 d17a d17b d17c d17d)) (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n))))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
+fn a_dynamic_byte_code_callees_bindings_are_undone_before_its_exit_debugger() {
+    // eval.c:funcall_lambda's unbind_to of a dynamic-binding function's
+    // formals and of its binding of internal-interpreter-environment
+    // returns before Ffuncall's (or Bcall's) `if (backtrace_debug_on_exit
+    // (count)) val = call_debugger (list2 (Qexit, val))': a callee marked
+    // by backtrace-debug enters the debugger with its formal unbound and
+    // the caller's lexical environment unsaved (defvar-1 of a name the
+    // interpreted caller binds lexically defines it), the debugger's value
+    // replacing the call's, whether lexical byte code, mapcar or dynamic
+    // byte code calls it; a signal from the unbinding (a watcher at the
+    // formal's unlet) comes out of the call with the debugger unentered.
+    let corpus = Corpus::new();
+    for (name, program) in [
+        (
+            "exit-lex.el",
+            r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defmacro d17-try (form) `(condition-case e ,form (error (car e))))
+(defvar d17f 'global)
+(defvar d17-log nil)
+(defvar d17-names nil)
+(defun d17-dbg (&rest args)
+  (push (list (car args) d17f (d17-try (progn (defvar-1 (pop d17-names) 5 nil) 'ok))) d17-log)
+  (if (eq (car args) 'exit) (list 'replaced (cadr args)) nil))
+(byte-compile 'd17-dbg)
+(defalias 'd17-dmark (let ((lexical-binding nil)) (byte-compile '(lambda (d17f) (backtrace-debug 1 t #'backtrace-debug) (list 'ret d17f)))))
+(defalias 'd17-lmark (byte-compile '(lambda (x) (list (d17-dmark x) d17f))))
+(princ (format "1 %S %S\n" (let ((debugger #'d17-dbg) (d17q1 1)) (setq d17-names '(d17q1) d17-log nil) (d17-lmark 'v)) d17-log))
+(princ (format "2 %S %S\n" (let ((debugger #'d17-dbg) (d17q2 1)) (setq d17-names '(d17q2) d17-log nil) (mapcar #'d17-dmark '(w))) d17-log))
+(princ (format "3 %S %S\n" (let ((debugger #'d17-dbg) (d17q3 1)) (setq d17-names '(d17q3) d17-log nil) (mapcar #'d17-lmark '(u))) d17-log))
+;; A watcher of the marked callee's formal signals at its unlet: the
+;; signal comes out of the call and the exit debugger is not entered.
+(defvar d17wf nil)
+(defvar d17-wmode nil)
+(add-variable-watcher 'd17wf (lambda (_s _n op _w) (when (and (eq op 'unlet) d17-wmode) (error "unlet boom"))))
+(defalias 'd17-dwmark (let ((lexical-binding nil)) (byte-compile '(lambda (d17wf) (backtrace-debug 1 t #'backtrace-debug) d17wf))))
+(defalias 'd17-lwmark (byte-compile '(lambda (x) (condition-case e (d17-dwmark x) (error (list 'caught (cadr e)))))))
+(princ (format "4 %S %S\n" (let ((debugger #'d17-dbg) (d17q4 1)) (setq d17-names '(d17q4) d17-log nil d17-wmode t) (prog1 (d17-lwmark 'z) (setq d17-wmode nil))) d17-log))
+(princ (format "5 %S %S\n" (mapcar #'special-variable-p '(d17q1 d17q2 d17q3 d17q4)) (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n)))
+"#,
+        ),
+        (
+            "exit-dyn.el",
+            r#";;; -*- lexical-binding: nil -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defvar d17f 'global)
+(defvar d17-log nil)
+(defalias 'd17-dmark (byte-compile '(lambda (d17f) (backtrace-debug 1 t #'backtrace-debug) (list 'ret d17f))))
+(defalias 'd17-dcall (byte-compile '(lambda (x) (list (d17-dmark x) d17f))))
+(setq debugger (byte-compile '(lambda (&rest args) (push (list (car args) d17f) d17-log) (if (eq (car args) 'exit) (list 'replaced (cadr args)) nil))))
+(princ (format "1 %S %S\n" (d17-dcall 'v) d17-log))
+(setq d17-log nil)
+(princ (format "2 %S %S\n" (mapcar #'d17-dmark '(w)) d17-log))
+(setq d17-log nil)
+(princ (format "3 %S %S\n" (let ((d17f 'outer)) (d17-dcall 'x)) d17-log))
+"#,
+        ),
+    ] {
+        let probe = corpus.write(name, program);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+    }
+}
+
+#[test]
+fn the_memory_profiler_files_a_byte_code_callback_under_mapc() {
+    // profiler.c's malloc_probe from a byte-code callback that mapc calls:
+    // the sample's backtrace holds the callback with mapc as its caller.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "prof.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(defun d17-alloc (_) (make-string 4096 ?x))
+(byte-compile 'd17-alloc)
+(profiler-memory-start)
+(mapc #'d17-alloc (make-list 200 0))
+(let ((log (profiler-memory-log)) (found nil))
+  (profiler-memory-stop)
+  (maphash (lambda (k _v) (let ((l (append k nil))) (when (and (memq 'd17-alloc l) (eq (cadr (memq 'd17-alloc l)) 'mapc)) (setq found t)))) log)
+  (princ (format "%S\n" found)))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
 fn set_buffer_multibyte_is_fset_buffer_multibyte() {
     // buffer.c:Fset_buffer_multibyte: the undo list is t before the
     // narrowed buffer's error, which leaves it so; each eight-bit
@@ -13381,5 +13711,172 @@ fn a_dumped_window_is_a_dead_window_of_the_process_that_loads_the_dump() {
         run(emaxx(), "emaxx"),
         expected,
         "Emaxx (left) and GNU (right) differ for a dumped window"
+    );
+}
+
+#[test]
+fn a_dumped_session_s_buffer_local_c_variables_are_the_loading_process_s() {
+    // search.c's Vcase_fold_search and syntax.c's
+    // parse_sexp_lookup_properties are C variables: the process started
+    // from a dump has them as its current buffer's bindings leave them
+    // (here *scratch*'s own parse-sexp-lookup-properties, the dumped
+    // default case-fold-search), and another buffer's own binding when
+    // that one is current.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "dumped-c-variables-probe.el",
+        r#"(princ (format "%S\n"
+               (list (buffer-name) case-fold-search parse-sexp-lookup-properties
+                     (default-value 'case-fold-search)
+                     (string-match "abc" "ABC")
+                     (save-excursion (goto-char 1) (forward-word) (point))
+                     (save-excursion (goto-char 1) (looking-at "\\w+") (match-end 0))
+                     (with-current-buffer "zz-folding"
+                       (list case-fold-search (save-excursion (goto-char 1) (search-forward "WORLD" nil t))))
+                     (with-temp-buffer (list case-fold-search parse-sexp-lookup-properties
+                                             (string-match "abc" "ABC")))
+                     (progn (setq-default case-fold-search t) (string-match "abc" "ABC")))))
+"#,
+    );
+    let run = |binary: &Path, name: &str| {
+        let image = corpus
+            .directory
+            .join(format!("{name}-dumped-c-variables.pdmp"))
+            .display()
+            .to_string();
+        let dump = corpus.write(
+            &format!("{name}-dump-c-variables.el"),
+            &format!(
+                r#"(setq-default case-fold-search nil)
+(with-current-buffer (get-buffer-create "zz-folding")
+  (insert "Hello World")
+  (setq-local case-fold-search t))
+(setq-local parse-sexp-lookup-properties t)
+(insert "a_b c")
+(put-text-property 2 3 'syntax-table (string-to-syntax "w"))
+(let ((load--bin-dest-dir (file-truename invocation-directory))
+      (load--eln-dest-dir (file-truename source-directory)))
+  (dump-emacs-portable "{image}"))
+"#
+            ),
+        );
+        let dumped = corpus.run(binary, &["--batch", "-Q", "-l", &dump]);
+        assert_eq!(dumped.2, Some(0), "{name} did not dump: {dumped:?}");
+        corpus.run(
+            binary,
+            &["--dump-file", &image, "--batch", "-Q", "-l", &probe],
+        )
+    };
+    let expected = run(&oracle(), "gnu");
+    assert_eq!(expected.2, Some(0), "GNU's probe failed: {expected:?}");
+    assert!(
+        expected.0.starts_with("(\"*scratch*\" nil t nil nil"),
+        "GNU keeps the dumped default and *scratch*'s binding: {expected:?}"
+    );
+    assert_eq!(
+        run(emaxx(), "emaxx"),
+        expected,
+        "Emaxx (left) and GNU (right) differ for the dumped C variables"
+    );
+}
+
+#[test]
+fn dumped_buffers_keep_their_text_tables_and_indirect_family() {
+    // pdumper.c:dump_buffer writes a live buffer with its text, point,
+    // local variables (a buffer-local case-fold-search among them), its
+    // syntax and case tables and its base_buffer; the process started
+    // from the dump has those buffers, the dumped *scratch* current and
+    // in the first window (window.c:init_window_once_for_pdumper), and an
+    // indirect buffer that shares its base's text and markers again.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "dumped-buffers-probe.el",
+        r#"(dolist (name '(zz-scratch zz-base zz-indirect zz-window-buffer))
+  (let ((b (symbol-value name)))
+    (princ (format "%s: %S\n" name
+                   (list (bufferp b) (buffer-live-p b) (buffer-name b)
+                         (buffer-base-buffer b)
+                         (with-current-buffer b (buffer-string))
+                         (eq b (current-buffer)) (and (memq b (buffer-list)) t))))))
+(princ (format "window: %S\n"
+               (list (buffer-name (window-buffer)) (eq (window-buffer) zz-scratch)
+                     (eq (get-buffer "*scratch*") zz-scratch)
+                     (eq (current-buffer) zz-scratch))))
+(princ (format "list: %S\n"
+               (seq-remove (lambda (name) (string-prefix-p " *load*" name))
+                           (mapcar #'buffer-name (buffer-list)))))
+(with-current-buffer zz-base
+  (princ (format "base: %S\n"
+                 (list case-fold-search (local-variable-p 'case-fold-search)
+                       (string (char-syntax ?_)) (downcase ?X) (upcase ?y)
+                       (save-excursion (goto-char 1) (search-forward "text" nil t))
+                       (point)))))
+(with-current-buffer zz-indirect
+  (princ (format "indirect: %S\n"
+                 (list case-fold-search (string (char-syntax ?_)) (downcase ?X)
+                       (point) (marker-buffer zz-marker) (marker-position zz-marker)
+                       (save-excursion (goto-char 1) (search-forward "text" nil t)))))
+  (goto-char 1)
+  (insert "!"))
+(princ (format "after: %S\n"
+               (list (with-current-buffer zz-base (list (buffer-string) (point)))
+                     (marker-position zz-marker))))
+(garbage-collect)
+(princ (format "gc: %S\n"
+               (list (buffer-live-p zz-base) (buffer-live-p zz-indirect)
+                     (buffer-name (window-buffer)) (marker-position zz-marker))))
+(princ (format "kill: %S\n"
+               (list (kill-buffer zz-base) (buffer-live-p zz-indirect)
+                     (marker-buffer zz-marker) (buffer-live-p zz-base))))
+"#,
+    );
+    let run = |binary: &Path, name: &str| {
+        let image = corpus
+            .directory
+            .join(format!("{name}-dumped-buffers.pdmp"))
+            .display()
+            .to_string();
+        let dump = corpus.write(
+            &format!("{name}-dump-buffers.el"),
+            &format!(
+                r#"(setq zz-scratch (current-buffer))
+(setq zz-base (get-buffer-create "zz-base"))
+(with-current-buffer zz-base
+  (insert "Base TEXT")
+  (goto-char 2)
+  (setq-local case-fold-search nil)
+  (let ((table (make-syntax-table)))
+    (modify-syntax-entry ?_ "w" table)
+    (set-syntax-table table))
+  (let ((table (copy-case-table (standard-case-table))))
+    (set-case-syntax-pair ?X ?y table)
+    (set-case-table table)))
+(setq zz-indirect (make-indirect-buffer zz-base "zz-indirect"))
+(with-current-buffer zz-indirect (goto-char 6) (setq zz-marker (copy-marker 4)))
+(with-current-buffer zz-scratch (insert "dumped scratch"))
+(setq zz-window-buffer (window-buffer (selected-window)))
+(let ((load--bin-dest-dir (file-truename invocation-directory))
+      (load--eln-dest-dir (file-truename source-directory)))
+  (dump-emacs-portable "{image}"))
+"#
+            ),
+        );
+        let dumped = corpus.run(binary, &["--batch", "-Q", "-l", &dump]);
+        assert_eq!(dumped.2, Some(0), "{name} did not dump: {dumped:?}");
+        corpus.run(
+            binary,
+            &["--dump-file", &image, "--batch", "-Q", "-l", &probe],
+        )
+    };
+    let expected = run(&oracle(), "gnu");
+    assert_eq!(expected.2, Some(0), "GNU's probe failed: {expected:?}");
+    assert!(
+        expected.0.contains("base: (nil t \"w\" 121 88 nil 2)"),
+        "GNU keeps the base's local variable and tables: {expected:?}"
+    );
+    assert_eq!(
+        run(emaxx(), "emaxx"),
+        expected,
+        "Emaxx (left) and GNU (right) differ for dumped buffers"
     );
 }

@@ -373,8 +373,8 @@ pub(crate) fn command_loop_1(interp: &mut Interpreter, env: &mut Env) -> Result<
         // Do redisplay processing after this command except in special
         // cases identified below.
         let prev_buffer = interp.current_buffer_id();
-        let prev_modiff = interp.buffer.borrow().modified_tick();
-        let last_point_position = interp.buffer.borrow().point();
+        let prev_modiff = interp.current_buffer().modiff();
+        let last_point_position = interp.current_buffer().pt();
         carried = Some((prev_buffer, prev_modiff, last_point_position));
         interp.set_symbol_value_key(cached_symbol!("disable-point-adjustment"), Value::Nil);
         // Process filters and timers may have messed with
@@ -535,7 +535,7 @@ fn update_mark_after_command(
     } else {
         set_primary_from_region(interp, env)?;
         if interp.current_buffer_id() != prev_buffer
-            || interp.buffer.borrow().modified_tick() != prev_modiff
+            || interp.current_buffer().modiff() != prev_modiff
         {
             crate::lisp::primitives::run_hook(
                 interp,
@@ -645,7 +645,7 @@ fn finalize_command(
 ) -> Result<(), LispError> {
     if interp.current_buffer_id() == prev_buffer
         && interp.selected_window_contents_buffer_id() == Some(prev_buffer)
-        && last_point_position != interp.buffer.borrow().point()
+        && last_point_position != interp.current_buffer().pt()
     {
         let (begv, zv) = interp.buffer.borrow().accessible_bounds();
         if !interp
@@ -671,12 +671,12 @@ fn finalize_command(
             {
                 interp.windows_or_buffers_changed = 21;
             }
-            let modified = interp.buffer.borrow().modified_tick() != prev_modiff;
+            let modified = interp.current_buffer().modiff() != prev_modiff;
             adjust_point_for_property(interp, env, last_point_position, modified)?;
         } else {
             // Point within a grapheme cluster: the display updated
             // de-composes the cluster on the screen and places the cursor.
-            let point = interp.buffer.borrow().point();
+            let point = interp.current_buffer().pt();
             if point > begv
                 && point < zv
                 && crate::lisp::primitives::dispatch::composition_adjust_point(
@@ -713,7 +713,7 @@ fn adjust_point_for_property(
     last_pt: usize,
     modified: bool,
 ) -> Result<(), LispError> {
-    let point = |interp: &Interpreter| interp.buffer.borrow().point();
+    let point = |interp: &Interpreter| interp.current_buffer().pt();
     let bounds = |interp: &Interpreter| {
         let buffer = interp.buffer.borrow();
         (buffer.point_min(), buffer.point_max())

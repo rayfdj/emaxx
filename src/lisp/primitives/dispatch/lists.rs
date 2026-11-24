@@ -1354,7 +1354,7 @@ define_dispatch!(
                 // buffer.c: POSITION point for nil, else CHECK_FIXNUM; an
                 // `inhibit-read-only' property there lets it pass.
                 let position = match args.first().map(|value| value.kind()) {
-                    None | Some(Kind::Nil) => Value::Integer(interp.buffer.borrow().point() as i64),
+                    None | Some(Kind::Nil) => Value::Integer(interp.current_buffer().pt() as i64),
                     Some(Kind::Integer(_)) => args[0],
                     Some(_) => {
                         return Err(LispError::WrongTypeArgument("fixnump".into(), args[0]));

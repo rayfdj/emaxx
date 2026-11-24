@@ -6,7 +6,7 @@ use crate::lisp::types::LispErrorKind;
 impl Interpreter {
     pub(crate) fn save_excursion_state(&mut self) -> SavedExcursion {
         let buffer_id = self.current_buffer_id();
-        let point = self.buffer.borrow().point();
+        let point = self.current_buffer().pt();
         let marker_id = match self.make_marker().kind() {
             Kind::Marker(id) => id,
             _ => unreachable!("make_marker returns a marker"),
@@ -26,10 +26,7 @@ impl Interpreter {
             let point = self
                 .marker_position(saved.marker_id)
                 .unwrap_or(saved.point)
-                .clamp(
-                    self.buffer.borrow().point_min(),
-                    self.buffer.borrow().point_max(),
-                );
+                .clamp(self.current_buffer().begv(), self.current_buffer().zv());
             self.buffer.borrow_mut().goto_char(point);
         }
         let _ = self.set_marker(saved.marker_id, None, None);
@@ -37,10 +34,10 @@ impl Interpreter {
 
     pub(crate) fn save_restriction_state(&mut self) -> SavedRestriction {
         let buffer_id = self.current_buffer_id();
-        let beginning = self.buffer.borrow().point_min();
-        let end = self.buffer.borrow().point_max();
+        let beginning = self.current_buffer().begv();
+        let end = self.current_buffer().zv();
         let labeled = self.labeled_restrictions_snapshot(buffer_id);
-        let bounds = if beginning == 1 && end == self.buffer.borrow().size_total() + 1 {
+        let bounds = if beginning == 1 && end == self.current_buffer().z() {
             SavedRestrictionBounds::Wide
         } else {
             let beginning_marker_id = match self.make_marker().kind() {
@@ -83,7 +80,7 @@ impl Interpreter {
             let bounds = self.buffer.borrow().accessible_bounds();
             match saved.bounds {
                 SavedRestrictionBounds::Wide => {
-                    let full_end = self.buffer.borrow().size_total() + 1;
+                    let full_end = self.current_buffer().z();
                     self.buffer.borrow_mut().restore_restriction(1, full_end);
                 }
                 SavedRestrictionBounds::Narrow {

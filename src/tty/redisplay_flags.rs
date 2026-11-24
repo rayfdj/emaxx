@@ -77,7 +77,7 @@ pub(super) fn mode_line_update_needed(
     let Some(displayed) = window_column_number_displayed(window) else {
         return false;
     };
-    let point = interp.buffer.borrow().point();
+    let point = interp.current_buffer().pt();
     let last_point = window_last_point(window);
     if last_point == Some(point as i64) && !window_outdated(interp, window) {
         return false;

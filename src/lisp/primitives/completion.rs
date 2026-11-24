@@ -859,7 +859,7 @@ fn match_regexps(
         if !regexp.is_string() {
             return Err(LispError::WrongTypeArgument("stringp".into(), regexp));
         }
-        let case_table = ignore_case.then(|| interp.current_case_tables().canon);
+        let case_table = ignore_case.then(|| interp.current_case_canon_table());
         if search::fast_string_match(interp, env, &regexp, string, case_table, true)?.is_none() {
             return Ok(false);
         }
@@ -1684,7 +1684,7 @@ pub(crate) fn activate_minibuffer_with_history(
         with_minibuffer_edits_inhibited(interp, env, |interp, env| {
             super::call(interp, "erase-buffer", &[], env)?;
             super::call(interp, "insert", &[*prompt], env)?;
-            let prompt_end = Value::Integer(interp.buffer.borrow().point() as i64);
+            let prompt_end = Value::Integer(interp.current_buffer().pt() as i64);
             if prompt_length == 0 {
                 return Ok(());
             }
@@ -1728,7 +1728,7 @@ pub(crate) fn activate_minibuffer_with_history(
             if matches!(initial_input.kind(), Kind::StringObject(_)) {
                 super::call(interp, "insert", &[*initial_input], env)?;
             } else {
-                let initial_start = interp.buffer.borrow().point();
+                let initial_start = interp.current_buffer().pt();
                 let props = match &initial_string.props {
                     Some(intervals) => crate::buffer::InsertedProperties::Intervals {
                         source: intervals,

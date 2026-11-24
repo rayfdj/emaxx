@@ -250,7 +250,7 @@ pub(crate) const STORE_CONVERTING_VARIABLES: [&str; 1] = ["display-hourglass"];
 /// The forwarded variables `Interpreter::set_global_binding_resolved' does
 /// more for than store the cell: the evaluator's own C cells and the
 /// buffers' text conversion style.
-pub(crate) const STORE_EFFECT_VARIABLES: [&str; 11] = [
+pub(crate) const STORE_EFFECT_VARIABLES: [&str; 13] = [
     "quit-flag",
     "inhibit-quit",
     "throw-on-input",
@@ -262,6 +262,8 @@ pub(crate) const STORE_EFFECT_VARIABLES: [&str; 11] = [
     "text-conversion-style",
     "undo-inhibit-record-point",
     "attempt-orderly-shutdown-on-fatal-signal",
+    "case-fold-search",
+    "parse-sexp-lookup-properties",
 ];
 
 const IMAGE_CELL: u8 = 1;

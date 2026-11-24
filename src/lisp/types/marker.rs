@@ -158,11 +158,42 @@ impl Iterator for Markers {
 }
 
 impl BufferRef {
+    /// buffer.h's base_buffer, which Fkill_buffer keeps.
+    #[inline]
+    pub(crate) fn base_buffer(&self) -> Option<BufferRef> {
+        self.base_buffer.get()
+    }
+
+    /// buffer.h's indirections.
+    #[inline]
+    pub(crate) fn indirections(&self) -> i32 {
+        self.indirections.get()
+    }
+
+    /// The buffer whose own_text this buffer's text is, when it is not
+    /// its own: a live indirect buffer's base.  A killed indirect buffer
+    /// has an empty text of its own (free_buffer_text's counts kept).
+    #[inline]
+    pub(crate) fn text_base(&self) -> Option<BufferRef> {
+        if self.is_live() {
+            self.base_buffer.get()
+        } else {
+            None
+        }
+    }
+
+    /// Whether another buffer's text is this one's or this one's is
+    /// another's: a live indirect buffer, or a base of one.
+    #[inline]
+    pub(crate) fn shares_text(&self) -> bool {
+        self.text_base().is_some() || self.indirections.get() > 0
+    }
+
     /// The buffer whose chain holds this buffer's markers: its base while
     /// it shares the base's text (BUF_MARKERS of the one buffer_text).
     #[inline]
     pub(crate) fn chain_owner(&self) -> BufferRef {
-        self.base.get().unwrap_or(*self)
+        self.text_base().unwrap_or(*self)
     }
 
     /// BUF_MARKERS: every marker of the buffer's text, those of the rest
@@ -174,7 +205,7 @@ impl BufferRef {
     /// Unchain the buffer's markers: all of its text's for a buffer with
     /// its own text, only its own for an indirect buffer (Fkill_buffer).
     pub(crate) fn detach_markers(&self) {
-        if let Some(base) = self.base.get() {
+        if let Some(base) = self.text_base() {
             let mut previous: Option<MarkerRef> = None;
             let mut current = base.markers.get();
             while let Some(marker) = current {
@@ -201,16 +232,23 @@ impl BufferRef {
         self.markers.set(None);
     }
 
-    /// Fmake_indirect_buffer's sharing of BASE's text: the buffer, which
-    /// has no markers yet, takes its markers on BASE's chain.
-    pub(crate) fn share_marker_chain(&self, base: BufferRef) {
+    /// Fmake_indirect_buffer's `b->base_buffer = ...', `b->indirections
+    /// = -1' and `b->base_buffer->indirections++': the buffer, which has
+    /// no markers yet, shares BASE's text and takes its markers on BASE's
+    /// chain.
+    pub(crate) fn make_indirect_of(&self, base: BufferRef) {
         debug_assert!(self.markers.get().is_none());
-        self.base.set(Some(base));
+        self.base_buffer.set(Some(base));
+        self.indirections.set(-1);
+        base.indirections.set(base.indirections.get() + 1);
     }
 
-    /// The buffer no longer shares a base's text (it was killed).
-    pub(crate) fn leave_marker_chain(&self) {
-        self.base.set(None);
+    /// Fkill_buffer's `b->base_buffer->indirections--' for an indirect
+    /// buffer, which stops sharing its base's text as its name goes nil.
+    pub(crate) fn note_indirect_killed(&self) {
+        if let Some(base) = self.base_buffer.get() {
+            base.indirections.set(base.indirections.get() - 1);
+        }
     }
 
     /// buffer.c:Fbuffer_swap_text moves the weak chains with buffer_text and
@@ -252,7 +290,7 @@ impl BufferRef {
             self.detach_markers();
             return;
         }
-        if self.base.get().is_some() {
+        if self.text_base().is_some() {
             // The base's sweep walks the one chain of their text.
             return;
         }

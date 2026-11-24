@@ -216,7 +216,7 @@ fn replace_match(
 
     // The replacement text, in the buffer's multibyteness when NEWTEXT's
     // directives rebuild it (and then without properties).
-    let buf_multibyte = interp.buffer.borrow().is_multibyte();
+    let buf_multibyte = interp.current_buffer().multibyte();
     let newtext_parts = string_like(&newtext).expect("newtext is a string");
     let (text, extended, props) = if literal {
         (
@@ -309,14 +309,12 @@ fn replace_match(
         true,
         env,
         |interp, from, env| {
-            let to = (from + length)
-                .min(interp.buffer.borrow().point_max())
-                .max(from);
+            let to = (from + length).min(interp.current_buffer().zv()).max(from);
             // replace_range's make_buffer_string_both of the old text.
             crate::lisp::primitives::textprop::update_deleted_text_properties(
                 interp, from, to, false, env,
             )?;
-            let to = to.min(interp.buffer.borrow().point_max()).max(from);
+            let to = to.min(interp.current_buffer().zv()).max(from);
             // insdel.c:replace_range grafts the new text's intervals
             // without inheritance.
             let source = match &props {
@@ -518,7 +516,7 @@ fn apply_buffer_replacement_hunks(
             // GNU records the excursion before applying its diff.  A marker, rather
             // than a numeric point, is essential here: if a matching character near
             // point survives, point must continue to follow that character.
-            let saved_point = interp.buffer.borrow().point();
+            let saved_point = interp.current_buffer().pt();
             let saved_point_marker = match interp.make_marker().kind() {
                 Kind::Marker(id) => id,
                 _ => unreachable!("make_marker returns a marker"),
@@ -575,10 +573,7 @@ fn apply_buffer_replacement_hunks(
             let restored_point = interp
                 .marker_position(saved_point_marker)
                 .unwrap_or(saved_point)
-                .clamp(
-                    interp.buffer.borrow().point_min(),
-                    interp.buffer.borrow().point_max(),
-                );
+                .clamp(interp.current_buffer().begv(), interp.current_buffer().zv());
             interp.buffer.borrow_mut().goto_char(restored_point);
             let _ = interp.set_marker(saved_point_marker, None, None);
             edit_result?;
@@ -832,8 +827,8 @@ define_dispatch!(
                         source.copy_intervals(source.point_min(), source.point_max()),
                     )
                 };
-                let target_start = interp.buffer.borrow().point_min();
-                let target_end = interp.buffer.borrow().point_max();
+                let target_start = interp.current_buffer().begv();
+                let target_end = interp.current_buffer().zv();
                 let target_text = interp
                     .buffer
                     .borrow()
@@ -914,7 +909,7 @@ define_dispatch!(
                 let toc = character(args[3])?;
                 // editfns.c: in a multibyte buffer the two characters must
                 // be as long; in a unibyte one each stands for its byte.
-                let multibyte = interp.buffer.borrow().is_multibyte();
+                let multibyte = interp.current_buffer().multibyte();
                 let (fromc, toc) = if multibyte {
                     if emacs_multibyte_char_len(fromc)? != emacs_multibyte_char_len(toc)? {
                         return Err(crate::lisp::primitives::values::doprnt_error(
@@ -938,7 +933,7 @@ define_dispatch!(
                 let changed = from + first;
                 let noundo = args.get(4).is_some_and(Value::is_truthy);
                 modify_current_buffer(interp, changed, to, false, env, |interp, _, env| {
-                    let to = to.min(interp.buffer.borrow().point_max()).max(changed);
+                    let to = to.min(interp.current_buffer().zv()).max(changed);
                     let mut codes = buffer_region_codes(interp, changed, to);
                     let Some(last) = codes.iter().rposition(|&code| code == fromc) else {
                         return Ok((None, ()));
@@ -1030,15 +1025,9 @@ define_dispatch!(
                 // yet), Fnarrow_to_region, then the bounds after under
                 // LABEL.
                 let buffer_id = interp.current_buffer_id();
-                let outermost = (
-                    interp.buffer.borrow().point_min(),
-                    interp.buffer.borrow().point_max(),
-                );
+                let outermost = (interp.current_buffer().begv(), interp.current_buffer().zv());
                 super::buffer_edit::narrow_current_buffer(interp, &args[0], &args[1])?;
-                let (start, end) = (
-                    interp.buffer.borrow().point_min(),
-                    interp.buffer.borrow().point_max(),
-                );
+                let (start, end) = (interp.current_buffer().begv(), interp.current_buffer().zv());
                 interp.push_labeled_restriction(buffer_id, args[2], start, end, outermost)?;
                 Ok(Value::Nil)
             }
@@ -1107,7 +1096,7 @@ define_dispatch!(
                     }
                     // GNU rearranges the text the hooks left without looking
                     // again; text they removed is out of range here.
-                    if end2 > interp.buffer.borrow().size_total() + 1 {
+                    if end2 > interp.current_buffer().z() {
                         return Err(LispError::SignalValue(Value::list([
                             Value::symbol("args-out-of-range"),
                             Value::Integer(start1 as i64),
@@ -1207,7 +1196,7 @@ define_dispatch!(
                     // buffer as it is, multibyte or not; a string result
                     // follows the coding.
                     let dst_multibyte = match destination {
-                        Destination::Replace => Some(interp.buffer.borrow().is_multibyte()),
+                        Destination::Replace => Some(interp.current_buffer().multibyte()),
                         Destination::Return => None,
                         Destination::Buffer(id) => interp
                             .get_buffer_by_id(id)
@@ -1265,7 +1254,7 @@ define_dispatch!(
                             None => (String::new(), Vec::new()),
                         };
                         let form = if decoding
-                            && !interp.buffer.borrow().is_multibyte()
+                            && !interp.current_buffer().multibyte()
                             && transformed_string.multibyte
                         {
                             unibyte_destination_form(&transformed_string)?
@@ -1278,7 +1267,7 @@ define_dispatch!(
                         // save point and mark the markers to put back
                         // before the hooks and the deletion, which a
                         // decoding makes with point at FROM.
-                        let saved_pt = interp.buffer.borrow().point();
+                        let saved_pt = interp.current_buffer().pt();
                         interp.mark_markers_for_conversion(start, end);
                         if decoding {
                             interp.buffer.borrow_mut().goto_char(start);
@@ -1318,7 +1307,7 @@ define_dispatch!(
                                     .and_then(|decode| decode.overrun.clone())
                                 {
                                     let (from, to) = (start + from, start + to);
-                                    if to > interp.buffer.borrow().point_max() {
+                                    if to > interp.current_buffer().zv() {
                                         return Err(LispError::SignalValue(Value::list([
                                             Value::symbol("args-out-of-range"),
                                             Value::Integer(from as i64),
@@ -1526,7 +1515,7 @@ define_dispatch!(
                 // json.c Fjson_insert copies the UTF-8 bytes into the gap: a
                 // multibyte buffer reads them as its own characters, a real
                 // U+E000..U+E0FF included.
-                if interp.buffer.borrow().is_multibyte() {
+                if interp.current_buffer().multibyte() {
                     let text = serialized.text();
                     let extended: Vec<(usize, u32)> =
                         if memchr::memchr(0xEE, text.as_bytes()).is_some() {
@@ -1697,11 +1686,11 @@ fn insert_converted_text(
     // window shows it for the conversion.
     let saved_buffer_id = interp.current_buffer_id();
     interp.set_current_buffer_id(buffer_id)?;
-    let dst_pos = interp.buffer.borrow().point();
+    let dst_pos = interp.current_buffer().pt();
     // A decode inserted a call at a time writes each call's characters
     // into a unibyte buffer itself.
     let converted =
-        if layout.is_none() && converted.multibyte && !interp.buffer.borrow().is_multibyte() {
+        if layout.is_none() && converted.multibyte && !interp.current_buffer().multibyte() {
             match unibyte_destination_form(&converted) {
                 Ok(converted) => converted,
                 Err(error) => {

@@ -89,17 +89,17 @@ pub(crate) fn public_buffer_char_code(ch: char, multibyte: bool) -> i64 {
 /// every public character accessor must consult that sidecar through this
 /// one boundary rather than leaking the placeholder value.
 pub(crate) fn public_buffer_char_code_at(interp: &Interpreter, position: usize) -> Option<i64> {
-    interp
-        .buffer
-        .borrow()
+    let buffer = interp.buffer.borrow();
+    if let Some(byte) = buffer.ascii_char_at(position) {
+        return byte.map(i64::from);
+    }
+    buffer
         .extended_char_at(position)
         .map(i64::from)
         .or_else(|| {
-            interp
-                .buffer
-                .borrow()
+            buffer
                 .char_at(position)
-                .map(|ch| public_buffer_char_code(ch, interp.buffer.borrow().is_multibyte()))
+                .map(|ch| public_buffer_char_code(ch, buffer.is_multibyte()))
         })
 }
 
@@ -593,7 +593,7 @@ pub(crate) fn casify_value(
         }
         let flags = character as u32 & FLAG_BITS;
         let mut code = character as u32 & !FLAG_BITS;
-        let multibyte = code >= 256 || interp.buffer.borrow().is_multibyte();
+        let multibyte = code >= 256 || interp.current_buffer().multibyte();
         if !multibyte && code >= 128 {
             code += RAW_BYTE8_BASE;
         }
@@ -713,12 +713,12 @@ pub(crate) fn casify_buffer_region(
     // do_casify_multibyte_region cases it; record_insert of the result;
     // then a signal of the characters that changed, none when none did.
     modify_current_buffer(interp, lo, hi, false, env, |interp, _, env| {
-        let hi = hi.min(interp.buffer.borrow().point_max()).max(lo);
+        let hi = hi.min(interp.current_buffer().zv()).max(lo);
         interp.buffer.borrow_mut().modify_text(lo, hi);
         let context = CasingContext::prepare(interp, action, env);
         crate::lisp::primitives::textprop::update_buffer_properties(interp, lo, hi, env)?;
-        let hi = hi.min(interp.buffer.borrow().point_max()).max(lo);
-        let multibyte = interp.buffer.borrow().is_multibyte();
+        let hi = hi.min(interp.current_buffer().zv()).max(lo);
+        let multibyte = interp.current_buffer().multibyte();
         interp.buffer.borrow_mut().record_casing_deletion(lo, hi);
         if !multibyte {
             interp
@@ -755,7 +755,7 @@ pub(crate) fn casify_buffer_region(
                 casify_multibyte_text(&mut casing, &text, &extended, true).codes
             };
             let vars = interp.insertion_property_variables();
-            let mut opoint = interp.buffer.borrow().point();
+            let mut opoint = interp.current_buffer().pt();
             let mut next_extended = 0;
             let (mut pos, mut out) = (lo, 0);
             let bytes = crate::lisp::primitives::buffers::multibyte_char_bytes;

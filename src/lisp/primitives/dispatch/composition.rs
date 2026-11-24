@@ -621,12 +621,12 @@ impl CompositionIterator {
             endpos = start;
             self.ch = -1;
         }
-        if !interp.buffer.borrow().is_multibyte() || inhibit_auto_composition(interp) {
+        if !interp.current_buffer().multibyte() || inhibit_auto_composition(interp) {
             return;
         }
         let start = charpos;
         while charpos < endpos {
-            let c = interp.buffer.borrow().char_at(charpos);
+            let c = interp.current_buffer().char_at(charpos);
             charpos += 1;
             let Some(c) = c else {
                 break;
@@ -1128,7 +1128,7 @@ fn inhibit_auto_composition(interp: &Interpreter) -> bool {
 
 fn target_char_at(interp: &Interpreter, string: &Value, pos: usize) -> Option<char> {
     if string.is_nil() {
-        interp.buffer.borrow().char_at(pos)
+        interp.current_buffer().char_at(pos)
     } else {
         string_like(string)?.text.chars().nth(pos)
     }
@@ -1178,13 +1178,10 @@ fn autocmp_chars(
 ) -> Result<Value, LispError> {
     let saved_match_data = interp.last_match_data.clone();
     let saved_match_buffer = interp.last_thing_searched;
-    let saved_point = string.is_nil().then(|| interp.buffer.borrow().point());
+    let saved_point = string.is_nil().then(|| interp.current_buffer().pt());
     let result = autocmp_chars_inner(interp, env, rule_items, charpos, limit, string);
     if let Some(point) = saved_point {
-        let clamped = point.clamp(
-            interp.buffer.borrow().point_min(),
-            interp.buffer.borrow().point_max(),
-        );
+        let clamped = point.clamp(interp.current_buffer().begv(), interp.current_buffer().zv());
         interp.buffer.borrow_mut().goto_char(clamped);
     }
     interp.last_match_data = saved_match_data;
@@ -1305,7 +1302,7 @@ fn find_automatic_composition(
                 head = begv;
             }
         }
-        (head, interp.buffer.borrow().point_max())
+        (head, interp.current_buffer().zv())
     } else {
         (
             0,
@@ -1478,7 +1475,7 @@ pub(crate) fn composition_adjust_point(
         }
         return Ok(new_pt);
     }
-    if !interp.buffer.borrow().is_multibyte() || inhibit_auto_composition(interp) {
+    if !interp.current_buffer().multibyte() || inhibit_auto_composition(interp) {
         return Ok(new_pt);
     }
     // Next check the automatic composition.
@@ -1534,10 +1531,7 @@ fn find_composition_internal(
         )?)
     };
     let (minimum, maximum) = if string.is_nil() {
-        (
-            interp.buffer.borrow().point_min(),
-            interp.buffer.borrow().point_max(),
-        )
+        (interp.current_buffer().begv(), interp.current_buffer().zv())
     } else {
         let string = string_like(string).ok_or_else(|| wrong_type_argument("stringp", *string))?;
         (0, string.text.chars().count())
@@ -1553,7 +1547,7 @@ fn find_composition_internal(
     let position = fixed_pos as usize;
     // composite.c clips LIMIT to the current buffer's ZV, a string's
     // search included; a negative one is no limit.
-    let zv = interp.buffer.borrow().point_max() as i64;
+    let zv = interp.current_buffer().zv() as i64;
     let limit = raw_limit.and_then(|raw| {
         let clipped = raw.min(zv);
         (clipped >= 0).then(|| clipped.clamp(minimum as i64, maximum as i64) as usize)
@@ -1565,7 +1559,7 @@ fn find_composition_internal(
         // through the GNU Lisp owners (`auto-compose-chars',
         // `compose-gstring-for-terminal') over the ported C substrate.
         let multibyte = if string.is_nil() {
-            interp.buffer.borrow().is_multibyte()
+            interp.current_buffer().multibyte()
         } else {
             string_like(&string).is_some_and(|text| text.multibyte)
         };
@@ -1764,7 +1758,7 @@ fn get_glyph_string(interp: &mut Interpreter, args: &[Value]) -> Result<Value, L
     let codes: Vec<i64> = if args[3].is_nil() {
         // composite.c: a unibyte buffer cannot be shaped, checked before
         // validate_region.
-        if !interp.buffer.borrow().is_multibyte() {
+        if !interp.current_buffer().multibyte() {
             return Err(LispError::Signal("Attempt to shape unibyte text".into()));
         }
         let (start, end) = checked_buffer_region(interp, &args[0], &args[1])?;

@@ -1011,14 +1011,16 @@ impl Loader<'_> {
                     let id = self.reader.word(offset)?;
                     let flags = self.reader.word(offset + 8 * BUFFER_FLAGS)?;
                     if flags & BUFFER_FLAG_DEAD != 0 {
-                        // A killed buffer: the object, and nothing to
-                        // install but its id's reservation.
+                        // A killed buffer: the object, not live (its name
+                        // nil), and nothing to install but its id's
+                        // reservation.
                         self.interp.reserve_buffer_id(id);
-                        self.objects[number] =
-                            Value::Buffer(crate::lisp::types::BufferRef::for_restore(
-                                id,
-                                crate::buffer::Buffer::new(""),
-                            ));
+                        let object = crate::lisp::types::BufferRef::for_restore(
+                            id,
+                            crate::buffer::Buffer::named(Value::Nil),
+                        );
+                        object.live.set(false);
+                        self.objects[number] = Value::Buffer(object);
                         continue;
                     }
                     let name = self.value_at(offset + 8 * BUFFER_NAME)?;
@@ -1153,19 +1155,18 @@ impl Loader<'_> {
         // order (the `finalizers.next' root leads the chain; a finalizer
         // off the chain follows in image order).
         let mut marker_chains = Vec::with_capacity(buffers.len());
+        let mut bases = Vec::with_capacity(buffers.len());
         for (offset, number, id) in buffers {
-            marker_chains.push(self.load_buffer(offset, number, id)?);
+            let (buffer, chain, base) = self.load_buffer(offset, number, id)?;
+            marker_chains.push((buffer, chain));
+            bases.push(base);
         }
         // An indirect buffer's text and marker chain are its base's.
         let mut families = Vec::new();
-        for (buffer, _) in &marker_chains {
-            if let Some(base) = self
-                .interp
-                .buffer_base_id(buffer.id)
-                .and_then(|base| self.interp.buffer_object(base))
-            {
-                buffer.share_marker_chain(base);
-                buffer.borrow_mut().share_text_of(&base.borrow(), base);
+        for ((buffer, _), base) in marker_chains.iter().zip(bases) {
+            if let Some(base) = base.filter(|base| base.is_live()) {
+                buffer.make_indirect_of(base);
+                buffer.borrow_mut().share_text_of(&base.borrow());
                 families.push((*buffer, base));
             }
         }
@@ -2231,7 +2232,8 @@ impl Loader<'_> {
 
     /// A buffer record: the fields `dump_buffer' wrote, the text from the
     /// cold section, the property spans, the local bindings and the syntax
-    /// and case tables; the buffer is installed with its id.
+    /// and case tables; the buffer is installed with its id, and returned
+    /// with its marker chain and the buffer its base_buffer word names.
     fn load_buffer(
         &mut self,
         offset: u32,
@@ -2241,6 +2243,7 @@ impl Loader<'_> {
         (
             crate::lisp::types::BufferRef,
             Vec<crate::lisp::types::MarkerRef>,
+            Option<crate::lisp::types::BufferRef>,
         ),
         LoadError,
     > {
@@ -2286,7 +2289,7 @@ impl Loader<'_> {
             size: word(self, BUFFER_MODTIME_SIZE).map_or(-1, |size| size as i64),
         };
         let base = match (self.value_at(offset + 8 * BUFFER_BASE)?).kind() {
-            Kind::Buffer(base) => Some(base.id),
+            Kind::Buffer(base) => Some(base),
             Kind::Nil => None,
             other => {
                 return Err(LoadError::Error(format!(
@@ -2388,10 +2391,11 @@ impl Loader<'_> {
         };
         object.detach_markers();
         *object.borrow_mut() = buffer;
+        object.adopt_text();
         object.borrow_mut().install_mark_object(object, mark_marker);
         self.interp.install_buffer(object);
         if let Some(base) = base {
-            self.interp.register_indirect_buffer(id, base);
+            self.interp.take_base_undo_list(id, base.id);
         }
         self.interp.install_buffer_local_cells(id, locals);
         if let Some(table) = syntax_table {
@@ -2403,7 +2407,7 @@ impl Loader<'_> {
         if let Some(tables) = case_tables {
             self.interp.install_buffer_case_tables(id, tables);
         }
-        Ok((object, marker_chain))
+        Ok((object, marker_chain, base))
     }
 
     /// Relocate a marker into the object allocated before graph restoration.

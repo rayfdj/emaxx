@@ -365,6 +365,13 @@ impl<'a> GapRange<'a> {
         }
     }
 
+    /// FIRST then SECOND, the bytes of whole characters of a buffer's
+    /// stored text.
+    #[inline(always)]
+    pub(crate) fn from_parts(first: &'a [u8], second: &'a [u8]) -> Self {
+        GapRange { first, second }
+    }
+
     #[inline]
     pub(crate) fn len_bytes(&self) -> usize {
         self.first.len() + self.second.len()

@@ -92,7 +92,7 @@ fn compare_buffer_substrings(
 ) -> Result<Value, LispError> {
     let trt = interp
         .case_fold_search_active()
-        .then(|| interp.current_case_tables().canon);
+        .then(|| interp.current_case_canon_table());
     let (buffer1, begp1, endp1) = comparison_range(interp, &args[0], &args[1], &args[2])?;
     let (buffer2, begp2, endp2) = comparison_range(interp, &args[3], &args[4], &args[5])?;
     // char_table_translate: the entry when it is a character, else C.
@@ -354,9 +354,9 @@ define_dispatch!(
                         &[args[0]],
                     )
                 })?;
-                let base_id = interp
-                    .live_buffer_id(base)
-                    .ok_or_else(|| LispError::Signal("Base buffer has been killed".into()))?;
+                if !base.is_live() {
+                    return Err(LispError::Signal("Base buffer has been killed".into()));
+                }
                 if crate::lisp::primitives::string_char_count(&new_name) == Some(0) {
                     return Err(LispError::Signal(
                         "Empty string for buffer name is not allowed".into(),
@@ -364,20 +364,15 @@ define_dispatch!(
                 }
                 let clone = args.get(2).is_some_and(|value| value.is_truthy());
                 let inhibit_hooks = args.get(3).is_some_and(|value| value.is_truthy());
-                // No double indirection: an indirect buffer's base is a
-                // buffer with its own text.
-                let base_id = interp.root_buffer_id(base_id);
+                // No double indirection: `b->base_buffer = (XBUFFER
+                // (base_buffer)->base_buffer ? XBUFFER
+                // (base_buffer)->base_buffer : XBUFFER (base_buffer))'.
+                let base_object = base.base_buffer().unwrap_or(base);
+                let base_id = base_object.id;
                 let new_id = interp.create_buffer_named(new_name);
-                let (base_object, object) =
-                    match (interp.buffer_object(base_id), interp.buffer_object(new_id)) {
-                        (Some(base), Some(object)) => (base, object),
-                        _ => {
-                            return Err(LispError::Signal(format!(
-                                "No buffer with id {}",
-                                base_id
-                            )));
-                        }
-                    };
+                let object = interp
+                    .buffer_object(new_id)
+                    .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", new_id)))?;
                 // The name and last_name create_buffer_named gave it, a
                 // copy of NAME.
                 let new_name = object.borrow().name();
@@ -387,11 +382,11 @@ define_dispatch!(
                 object.replace_state(state);
                 // Use the base buffer's text object, and its chain of
                 // markers.
-                object.share_marker_chain(base_object);
+                object.make_indirect_of(base_object);
                 let base_overlays = {
                     let mut base = base_object.borrow_mut();
                     let mut buffer = object.borrow_mut();
-                    buffer.share_text_of(&base, base_object);
+                    buffer.share_text_of(&base);
                     // GNU indirect buffers never visit their base's file:
                     // make-indirect-buffer clears buffer-file-name and
                     // buffer-file-truename even when CLONE is non-nil.
@@ -439,7 +434,7 @@ define_dispatch!(
                     overlay.set_plist(Value::list(source.plist().to_vec()?));
                     overlay.move_to(object, source.beg(), source.end());
                 }
-                interp.register_indirect_buffer(new_id, base_id);
+                interp.take_base_undo_list(new_id, base_id);
 
                 if clone {
                     interp.clone_buffer_local_state(base_id, new_id);
@@ -495,7 +490,7 @@ define_dispatch!(
                 // buffer.c:Frename_buffer.
                 let mut new_name = args[0];
                 let requested_name = new_name;
-                let old_name = interp.buffer.borrow().name();
+                let old_name = interp.current_buffer().name();
                 let Some(chars) = crate::lisp::primitives::string_char_count(&new_name) else {
                     return Err(LispError::WrongTypeArgument("stringp".into(), new_name));
                 };
@@ -582,7 +577,7 @@ define_dispatch!(
                     )?;
                 }
                 // Refetch since that last call may have done GC.
-                Ok(interp.buffer.borrow().name())
+                Ok(interp.current_buffer().name())
             }
             "other-buffer" => {
                 need_arg_range(name, args, 0, 3)?;
@@ -600,8 +595,7 @@ define_dispatch!(
                 // current buffer, exactly like an omitted argument.
                 // A killed indirect buffer keeps its base.
                 let buffer = interp.decode_buffer(args.first())?;
-                let base = buffer.borrow().base_buffer();
-                Ok(base.map_or(Value::Nil, Value::Buffer))
+                Ok(buffer.base_buffer().map_or(Value::Nil, Value::Buffer))
             }
             "buffer-swap-text" => {
                 need_args(name, args, 1)?;
@@ -633,6 +627,15 @@ define_dispatch!(
                     ));
                 }
                 interp.swap_buffer_text_state(current_id, other_id)?;
+                // bset_point_before_scroll (current_buffer, Qnil), and the
+                // other's.
+                for buffer_id in [current_id, other_id] {
+                    interp.set_buffer_local_value_key(
+                        buffer_id,
+                        cached_symbol!("point-before-scroll"),
+                        Value::Nil,
+                    );
+                }
                 // "Some of the C code expects that both window markers of
                 // a live window points to that window's buffer.  So since
                 // we just swapped the markers between the two buffers, we
@@ -1350,7 +1353,7 @@ define_dispatch!(
                 let codes = (start..end)
                     .map(|pos| public_buffer_char_code_at(interp, pos).unwrap_or(0) as u32)
                     .collect::<Vec<_>>();
-                let multibyte = interp.buffer.borrow().is_multibyte();
+                let multibyte = interp.current_buffer().multibyte();
                 let table = args.get(2).copied().unwrap_or(Value::Nil);
                 Ok(Value::list(find_charsets_in_text(
                     interp, &codes, multibyte, &table,

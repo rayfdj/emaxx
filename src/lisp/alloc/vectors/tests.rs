@@ -1059,3 +1059,68 @@ fn a_list_of_windows_keeps_them_for_the_collector() {
         windows_before
     );
 }
+
+#[test]
+fn a_buffer_marks_each_of_its_char_table_words_and_a_killed_one_lets_its_own_go() {
+    // alloc.c:mark_buffer marks the buffer's Lisp words, the syntax,
+    // category and four case tables among them: tables only the buffer
+    // holds live through collections.  Fkill_buffer's
+    // reset_buffer_local_variables gives the killed buffer the standard
+    // tables, and its own are garbage.
+    const HIDE: usize = 0x5555_5555_5555_5555;
+    #[inline(never)]
+    fn give_tables(buffer: crate::lisp::types::BufferRef) -> [usize; 6] {
+        let table = || CharTableRef::new(Value::symbol("buffer-table-test"), Value::Nil, 0);
+        let tables: [CharTableRef; 6] = std::array::from_fn(|_| table());
+        buffer.set_syntax_table(tables[0]);
+        buffer.set_category_table(Some(tables[1]));
+        buffer.set_case_tables(Some(crate::lisp::eval::coding::CaseTables {
+            down: tables[2],
+            up: tables[3],
+            canon: tables[4],
+            eqv: tables[5],
+        }));
+        tables.map(|table| table.identity() ^ HIDE)
+    }
+    #[inline(never)]
+    fn is_live(hidden: usize) -> bool {
+        let address = hidden ^ HIDE;
+        matches!(unsafe { crate::lisp::alloc::mem_find(address) },
+            Some(crate::lisp::alloc::Found::Vectorlike(header))
+                if header as usize == address
+                    && unsafe { header_tag(header) } == VectorTag::CharTable)
+    }
+    #[inline(never)]
+    fn words(buffer: crate::lisp::types::BufferRef) -> [usize; 6] {
+        buffer.char_table_words().map(|word| match word.kind() {
+            Kind::CharTable(table) => table.identity() ^ HIDE,
+            other => panic!("a table word: {other:?}"),
+        })
+    }
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let environment = Env::new();
+    // buffer.c's buffer_defaults holds a standard category table from
+    // init_category_once; this interpreter makes it at its first use.
+    interpreter.ensure_standard_category_table();
+    let (id, _) = interpreter.create_buffer("buffer-table-test");
+    let buffer = interpreter.buffer_object(id).expect("the new buffer");
+    let standard = words(buffer);
+    assert!(standard.iter().all(|word| is_live(*word)));
+    let hidden = give_tables(buffer);
+    for _ in 0..3 {
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+        assert!(hidden.iter().all(|table| is_live(*table)));
+        assert_eq!(words(buffer), hidden);
+    }
+    interpreter.kill_buffer_id(id).expect("kill the buffer");
+    assert_eq!(
+        words(buffer),
+        standard,
+        "a killed buffer's are the standard tables"
+    );
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+    assert!(hidden.iter().all(|table| !is_live(*table)));
+    assert!(standard.iter().all(|word| is_live(*word)));
+}

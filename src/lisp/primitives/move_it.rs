@@ -325,7 +325,7 @@ fn screen_line_start_row(
     {
         return (start, index);
     }
-    let begv = interp.buffer.borrow().point_min();
+    let begv = interp.current_buffer().begv();
     let index = if from > bol || from <= begv {
         let text = text_reached(interp, from);
         starts
@@ -407,7 +407,7 @@ fn back_to_previous_line_start_in_string(interp: &Interpreter, pos: usize) -> us
 /// back_to_previous_visible_line_start: the start of the line holding
 /// POS - 1, earlier while the newline before it is invisible.
 pub(crate) fn back_to_previous_visible_line_start(interp: &Interpreter, pos: usize) -> usize {
-    let begv = interp.buffer.borrow().point_min();
+    let begv = interp.current_buffer().begv();
     if pos <= begv {
         return begv;
     }
@@ -426,7 +426,7 @@ fn zv_strings_row(
     bol: usize,
     pos: usize,
 ) -> Option<usize> {
-    if pos != interp.buffer.borrow().point_max()
+    if pos != interp.current_buffer().zv()
         || pos <= bol
         || !super::dispatch::interactive_motion(interp)
     {
@@ -460,7 +460,7 @@ pub(crate) fn rows_between(
         return 0;
     }
     let to = pos_reached(interp, env, window, from, to, fetches);
-    let zv = interp.buffer.borrow().point_max();
+    let zv = interp.current_buffer().zv();
     let zv_row = zv_strings_row(interp, env, window, visual_line_bounds(interp, to).0, to);
     let (mut bol, mut eol) = visual_line_bounds(interp, from);
     let mut starts = screen_row_starts(interp, env, window, bol, eol);
@@ -537,7 +537,7 @@ fn forward_rows(
     {
         IteratorWalk::at(interp, window, geometry, from).walk_rows(fetches, from, count as usize);
     }
-    let zv = interp.buffer.borrow().point_max();
+    let zv = interp.current_buffer().zv();
     // screen_row_starts, keeping a terminal's layout of the line, whose
     // glyphs say what each row begins with.
     let interactive = interactive_motion(interp);
@@ -636,7 +636,7 @@ fn move_it_by_lines_back(
         moved,
         row: None,
     };
-    let begv = interp.buffer.borrow().point_min();
+    let begv = interp.current_buffer().begv();
     let orig_charpos = from;
     let (start_charpos, start_row) = screen_line_start_row(interp, env, window, from, fetches);
     let truncate = crate::tty::window_truncates(interp, window, interp.current_buffer_id());
@@ -774,7 +774,7 @@ pub(crate) fn move_it_by_lines_from(
     if moved < dvpos {
         // move_it_to runs out at ZV.
         return Landing {
-            pos: interp.buffer.borrow().point_max(),
+            pos: interp.current_buffer().zv(),
             moved,
             row: Some(down.index),
         };
@@ -789,7 +789,7 @@ pub(crate) fn move_it_by_lines_from(
         // move_it_to reseats at the next line's start, past its target.
         if let Some((passed, landing)) = down.truncated_before_text {
             let (_, eol) = super::dispatch::visual_line_bounds(interp, pos);
-            let zv = interp.buffer.borrow().point_max();
+            let zv = interp.current_buffer().zv();
             let (pos, row) = landing.unwrap_or(((eol + 1).min(zv), 0));
             return Landing {
                 pos,
@@ -853,7 +853,7 @@ pub(crate) fn vertical_motion(
         let buffer = interp.buffer.borrow();
         (buffer.point_min(), buffer.point_max(), buffer.point())
     };
-    let char_at = |interp: &Interpreter, pos: usize| interp.buffer.borrow().char_at(pos);
+    let char_at = |interp: &Interpreter, pos: usize| interp.current_buffer().char_at(pos);
     // start_display: init_iterator reseats at PT.
     crate::tty::fetch_start_display(interp, window, fetches, pt);
     let started = reseat_current(interp, pt);

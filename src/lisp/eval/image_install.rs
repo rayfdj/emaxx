@@ -110,6 +110,10 @@ impl Interpreter {
             self.note_obarray_removal();
         }
         *self.known_symbols_cache.borrow_mut() = None;
+        // The forwarded C variables hold the current buffer's bindings, its
+        // own (installed with the buffer, before the symbols' defaults) or
+        // the default.
+        self.refresh_forwarded_eval_cells();
         self.pdumper_loaded = Some(record);
         Ok(())
     }

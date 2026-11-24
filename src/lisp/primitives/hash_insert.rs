@@ -553,7 +553,7 @@ pub(crate) fn insert_impl(
         if let Kind::Integer(code) = arg.kind()
             && (0..=0x3F_FFFF).contains(&code)
         {
-            let multibyte = interp.buffer.borrow().is_multibyte();
+            let multibyte = interp.current_buffer().multibyte();
             let mut text = String::new();
             let mut extended_chars = Vec::new();
             push_buffer_character(&mut text, &mut extended_chars, 0, code as u32, multibyte);
@@ -665,7 +665,7 @@ pub(crate) fn insert_char_impl(
     if count <= 0 {
         return Ok(Value::Nil);
     }
-    let multibyte = interp.buffer.borrow().is_multibyte();
+    let multibyte = interp.current_buffer().multibyte();
     // The bytes of the character's form in the buffer (CHAR_STRING's in a
     // multibyte one, one in a unibyte one), COUNT copies within
     // BUF_BYTES_MAX or a buffer_overflow; then a STRINGLEN-byte string of
@@ -812,9 +812,9 @@ pub(crate) fn insert_text_before_point(
     if text.is_empty() {
         return Ok(());
     }
-    let point = interp.buffer.borrow().point();
+    let point = interp.current_buffer().pt();
     modify_current_buffer(interp, point, point, false, env, |interp, _, env| {
-        let start = interp.buffer.borrow().point();
+        let start = interp.current_buffer().pt();
         insert_converted_text_at(
             interp,
             start,
@@ -860,7 +860,7 @@ pub(crate) fn insert_converted_text_at(
     if let Some(layout) = layout {
         return insert_decoded_calls_at(interp, start, text, extended_chars, produced, layout, env);
     }
-    let unibyte_copy = if interp.buffer.borrow().is_multibyte() {
+    let unibyte_copy = if interp.current_buffer().multibyte() {
         None
     } else {
         crate::lisp::primitives::unibyte_buffer_copy(text, extended_chars)
@@ -939,7 +939,7 @@ fn insert_decoded_calls_at(
         Some(eol) => (&eol.text, &eol.extended),
         None => (text, extended_chars),
     };
-    let multibyte = interp.buffer.borrow().is_multibyte();
+    let multibyte = interp.current_buffer().multibyte();
     let undo_list = interp.buffer.borrow_mut().suspend_undo_for_decoding();
     let total = inserted.chars().count();
     let chunks: Vec<usize> = if layout.chunks.is_empty() {
@@ -981,7 +981,7 @@ fn insert_decoded_calls_at(
                 false,
             );
             interp.set_inserted_extended_chars(at, piece_extended);
-            at = interp.buffer.borrow().point();
+            at = interp.current_buffer().pt();
             interp.buffer.borrow_mut().goto_char(start);
             for annotation in
                 crate::lisp::primitives::coding::annotations(&layout.charsets, &layout.compositions)
@@ -1043,7 +1043,7 @@ fn insert_decoded_calls_at(
                 .collect();
             interp.delete_chars_each_current_buffer(&positions);
         } else if !crs.is_empty() {
-            let end = interp.buffer.borrow().point_max().min(start + length);
+            let end = interp.current_buffer().zv().min(start + length);
             let replaced = {
                 let buffer = interp.buffer.borrow();
                 buffer
@@ -1123,12 +1123,12 @@ fn insert_text_and_signal(
     if text.is_empty() {
         return Ok(());
     }
-    let point = interp.buffer.borrow().point();
+    let point = interp.current_buffer().pt();
     // insdel.c inserts at point as the before-change hooks left it.
     let inserted = modify_current_buffer(interp, point, point, false, env, |interp, _, _env| {
-        let start = interp.buffer.borrow().point();
+        let start = interp.current_buffer().pt();
         // insdel.c:copy_text: a unibyte buffer takes each character's byte.
-        let unibyte_copy = if interp.buffer.borrow().is_multibyte() {
+        let unibyte_copy = if interp.current_buffer().multibyte() {
             None
         } else {
             crate::lisp::primitives::unibyte_buffer_copy(text, extended_chars)
@@ -1200,9 +1200,9 @@ fn insert_text_and_signal(
         ))
     })?;
     if from_gap {
-        let point = interp.buffer.borrow().point();
+        let point = interp.current_buffer().pt();
         update_compositions(interp, point, point, CHECK_BORDER, env)?;
-        let target = (point + inserted).min(interp.buffer.borrow().point_max());
+        let target = (point + inserted).min(interp.current_buffer().zv());
         interp.buffer.borrow_mut().goto_char(target);
     }
     Ok(())
@@ -1219,12 +1219,12 @@ pub(crate) fn insert_print_buffer<R>(
     env: &mut crate::lisp::types::Env,
     text: impl FnOnce(&mut Interpreter) -> (String, Vec<(usize, u32)>, Option<usize>, R),
 ) -> Result<R, LispError> {
-    let point = interp.buffer.borrow().point();
+    let point = interp.current_buffer().pt();
     modify_current_buffer(interp, point, point, false, env, |interp, _, _env| {
         let (text, extended_chars, pos, value) = text(interp);
-        let start = interp.buffer.borrow().point();
+        let start = interp.current_buffer().pt();
         // insdel.c:copy_text: a unibyte buffer takes each character's byte.
-        let unibyte_copy = if interp.buffer.borrow().is_multibyte() {
+        let unibyte_copy = if interp.current_buffer().multibyte() {
             None
         } else {
             crate::lisp::primitives::unibyte_buffer_copy(&text, &extended_chars)
@@ -1243,7 +1243,7 @@ pub(crate) fn insert_print_buffer<R>(
             false,
         );
         interp.set_inserted_extended_chars(start, extended_chars);
-        let point = interp.buffer.borrow().point();
+        let point = interp.current_buffer().pt();
         let pos = pos.unwrap_or(point - start);
         Ok((
             Some(AfterChange::signed(

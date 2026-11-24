@@ -22,6 +22,10 @@ use crate::lisp::types::Kind;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
+        "case_fold_search",
+        "search.c's staticpro'd Vcase_fold_search, the forwarded C slot of case-fold-search, which install_image refills from the loaded current buffer's binding",
+    ),
+    (
         "require_nesting",
         "fns.c's staticpro'd require_nesting_list holds the features of the running `require' loads, none once the dump's own load ends; a session starts with none",
     ),
@@ -128,18 +132,6 @@ pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
         "buffer_locals",
         "written per buffer (dump_buffer's local_var_alist)",
-    ),
-    (
-        "buffer_syntax_tables",
-        "actual CharTableRef roots, written in dump_buffer's BUFFER_SYNTAX_TABLE slot and restored by load_buffer through install_buffer_syntax_table",
-    ),
-    (
-        "buffer_category_tables",
-        "actual CharTableRef roots, written in dump_buffer's BUFFER_CATEGORY_TABLE slot and restored by load_buffer through install_buffer_category_table",
-    ),
-    (
-        "buffer_case_tables",
-        "actual CharTableRef roots, written in dump_buffer's BUFFER_CASE_TABLE, BUFFER_UPCASE_TABLE, BUFFER_CASE_CANON_TABLE and BUFFER_CASE_EQV_TABLE slots and restored by load_buffer through install_buffer_case_tables",
     ),
     (
         "standard_obarray_id",
@@ -262,6 +254,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "undo_inhibit_record_point",
         "the forwarded C slot of undo-inhibit-record-point, refilled likewise with the buffers' copies",
+    ),
+    (
+        "parse_sexp_lookup_properties",
+        "the forwarded C slot of parse-sexp-lookup-properties, refilled likewise from the current buffer's binding (install_image)",
     ),
     (
         "executing_kbd_macro",
@@ -388,7 +384,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "image_reconstruction_handoff",
         "the startup reconstruction's flag",
     ),
-    ("indirect_buffers", "written as each buffer's base"),
     (
         "network_connect_counter",
         "the running process's connections",

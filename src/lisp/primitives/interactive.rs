@@ -1412,7 +1412,7 @@ pub(crate) fn parse_interactive_string(
                 values.push(event);
             }
             'd' => {
-                values.push(Value::Integer(interp.buffer.borrow().point() as i64));
+                values.push(Value::Integer(interp.current_buffer().pt() as i64));
                 vary = 1;
             }
             'D' | 'f' | 'F' | 'G' => {
@@ -1551,7 +1551,7 @@ pub(crate) fn parse_interactive_string(
             }
             'r' => {
                 let mark = check_mark(interp, true)?;
-                let point = interp.buffer.borrow().point();
+                let point = interp.current_buffer().pt();
                 values.push(Value::Integer(point.min(mark) as i64));
                 values.push(Value::Integer(point.max(mark) as i64));
                 // Two arguments: the region's beginning, then its end.

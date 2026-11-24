@@ -34,7 +34,7 @@ A round's review answers whether the round cheats or breaks something; it does
 not survey the neighbourhood of the change. Current user instructions take
 precedence over this plan as over everything here.
 
-### M2: structure and performance — 2 of 30 done
+### M2: structure and performance — 6 of 30 done
 
 **Baseline of 23 November 2026**, on `394d57de` (round 366's source) under
 Rust 1.100.0, with GNU 30.2 on this host as the oracle.
@@ -83,7 +83,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
 - **Not done by the baseline: D22.** Rebuilding `ucs-names` costs less
   than GNU's, but the first `char-from-name` still costs 106M more: the
   excess is in what the first call does once (the character-name
-  property table's load and decoding), not in the table's loop.
+  property table's load and decoding), not in the table's loop.  Round
+  380: `concat' copies a unibyte argument as str_to_multibyte does; the
+  first `char-from-name' is 1,052.5M instructions in all against GNU's
+  980.9M.
 - **What the three workloads nearest the bound are made of** (23
   November, the suite's own loops as probes `byte-calls', `conses' and
   `conses-nogc').  Byte-code calls: 463 instructions an iteration in the
@@ -154,6 +157,24 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   plan (docs/plans/d14-symbols.md: one name for the host text, identity
   carried as text and the comparisons with literals made symbols and
   keys, the host text deleted) belongs to A3.6 and is not done.
+- **How the exit test is judged on a noisy host** (decided 24
+  November 2026): each workload's median at or under 1.00 of GNU in
+  the diagnostic run, and the bound of 1.03 applied to each workload
+  that the same session's run of GNU against itself resolves (its
+  interval within 0.97 and 1.03).
+- **In progress: D13 and A3.6** (buffers).  Round 381: the plan
+  (docs/plans/d13-buffers.md) and its first three stages; the current
+  buffer is its object, a buffer has one liveness and buffer.h's one
+  base_buffer with its `indirections' count.  `set-buffer' 703.6
+  instructions a switch against GNU's 515.0 (697.6 before),
+  `buffer-name' 382.6 against 355.0 (407.6), `looking-at' 1,387.6
+  against 1,147.0 (unchanged; the tables, the forwarded words and the
+  text as buffer_text take it down).  Round 382: the tables are the
+  buffer's words and `case-fold-search' and
+  `parse-sexp-lookup-properties' C variables; `looking-at' 1,291.6,
+  `string-match' 1,323.6 (GNU 1,148.0).  Round 384: the text is
+  buffer_text and point and the bounds keep their bytes; `looking-at'
+  1,237.6, `char-after' 368.6 (GNU 260.0).
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -164,6 +185,13 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   against 459, of `maphash' 415.9 against 291.  Ffuncall's part is
   level with GNU's; what is left is in the frame entry (the round's
   entry lists it by piece).
+- **Done: D25; D17 in progress** (round 383).  The call from C into
+  byte code is entered as funcall_lambda enters it (the plan:
+  docs/plans/d17-c-to-bytecode.md): a byte-compiled closure called by
+  `mapatoms' costs 458.0 instructions against GNU's 458.6 (503.0
+  before), a byte-compiled `mapc' callback 352.7 against 288.9 (415.7),
+  of `maphash' 355.0 against 291.1, of `mapatoms' 342.1 against 298.9.
+  The parked D130 is fixed with it.
 
 ## Where things stand — 15 October 2026
 
@@ -20068,6 +20096,343 @@ setup_process_coding_systems's check now refuses). A 13-form
   assertion changed (the symbol cell's layout assert of byte 57, which
   holds the image bit and now the interned bits, renamed with the field)
   and 1,391 changed lines with ten tests and 56 assertions added.
+- **Round 380: `concat' copies a unibyte argument as str_to_multibyte
+  does (M2, part of D22; not closed).**  The first `char-from-name'
+  builds `ucs-names', and in that build `concat' cost twice GNU's
+  concat_to_string (46.6M instructions over 34,366 calls, about 1,356 a
+  call): a unibyte argument going into a multibyte result was copied a
+  byte at a time through the character encoder, a raw byte made its
+  character code and encoded again, and each character's bytes went
+  out through a call of memcpy.  It is now copied as character.c's
+  str_to_multibyte copies it: an ASCII byte as itself, any other byte B
+  as 0xc0 + ((B >> 6) & 1) and 0x80 + (B & 0x3f), the bytes the encoder
+  wrote for the raw-byte character before.  **Counts**: the new probe
+  `concat-uni-multi' (a unibyte name with two raw bytes joined to a
+  multibyte character, collections included) 3,352 instructions a call
+  before, 2,537 after, GNU 3,172; the first `char-from-name' 1,052.5
+  million instructions in all, 4.8 million fewer, against GNU's 980.9
+  million, so D22 stays open: the rest of its excess is the byte-code
+  calls and loop the D9 and D17 plans take down; building the table
+  again is 419.6 million against GNU's 463.0 million, as before.  A test
+  records GNU 30.2's answers for unibyte arguments with raw bytes in a
+  multibyte result, before and after one another and repeated, and for
+  a unibyte result.  The independent review checked the two formulas
+  against the encoder for every byte, the length the first pass
+  computes against what is written, and every byte 0 to 255 joined to
+  multibyte, ASCII-only multibyte and propertied strings through
+  `string-bytes', `aref', `string-as-unibyte', encoding, insertion,
+  `string-match' and printing: GNU, the build before and this one
+  byte-identical.  It found no cheat and nothing broken.
+  Validation of the round's commit (gate profile, one test thread a
+  process): the grouped gate 3,567 passed, 0 failed, 2 ignored (one
+  library test more); cli 30, cli_parity 175, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean (the probe's two raw bytes were added after the
+  validation; probes are not built or tested).  The round audit reports
+  no hard finding, 55 changed lines with one test and two assertions
+  added.
+- **Round 381: the current buffer is its object, and a buffer has one
+  liveness and one base, as buffer.h's (M2, the first stages of D13
+  and A3.6; neither closed).**  The first three stages of the buffers
+  plan (docs/plans/d13-buffers.md), with two fixes the review asked
+  for.  **The tests first**: oracle forms of GNU 30.2 for buffer
+  creation, killing, indirect families, markers, narrowing,
+  `save-current-buffer' and the tables, the census of a buffer pinned
+  as formulas of the object's size, and an image whose buffer numbers
+  collide with the loading process's own (the counterpart of D119:
+  it does not crash).  **The current buffer is an object**: the
+  interpreter holds it as one, and the 426 places that read its point,
+  bounds and text through a borrow of the interpreter's buffer state
+  (dispatch 178, primitives 205, the evaluator and byte code 24, the
+  terminal 19) read them through it.  **One liveness**: a buffer is
+  live while it is registered, and the object's flag is that, where a
+  separate `killed' flag was written and never read and the object's
+  flag could disagree with the registry for three image-related
+  objects.  **One base**: the base was kept three times, in the object
+  while the text was shared, in the buffer state after a kill, and in
+  the interpreter's table of (buffer, base) numbers that every switch
+  of buffer tested; it is now buffer.h's base_buffer with its lifetime
+  and an `indirections' count (-1 in an indirect buffer, the number of
+  its live indirect buffers in a base), the collector marks it as
+  mark_buffer does, the table is gone, and set_buffer_internal_2
+  records the old buffer's point and bound markers and fetches the new
+  one's whenever the buffer has them, as GNU does, not only while some
+  indirect buffer existed.  **The review's two fixes**:
+  `buffer-swap-text' exchanges the point, begv and zv markers and the
+  `indirections' count with the text (swapfield_), the buffer that is
+  not current reading its point and bounds from the markers it was
+  given (BUF_PT), and sets `point-before-scroll' nil in both buffers;
+  `kill-buffer' of a base walks the buffer list as each kill leaves
+  it, after the hooks, so that an indirect buffer a hook makes during
+  the base's kill dies with the base (FOR_EACH_LIVE_BUFFER), and
+  `make-indirect-buffer' refuses a killed base and takes GNU's base of
+  an indirect one.  **Lisp sees these changes, each now GNU's**: a
+  killed buffer read from an image answers nil to `buffer-live-p' (it
+  answered t); `set-buffer' of the current buffer after `kill-buffer'
+  killed it signals "Selecting deleted buffer"; the loading process's
+  own buffers that an image's buffers replace are dead; a base that
+  was current when its last indirect buffer died, given a new
+  indirect buffer whose edit moved its markers, reads its point and
+  bounds right ((7 2 11) where it read (13 1 13)); after
+  `buffer-swap-text' between buffers of which one had had an indirect
+  buffer, each buffer's point, bounds and size are GNU's ((15 3 18)
+  where the build before read (20 8 21) while any indirect buffer was
+  alive, and the second stage alone always);
+  an indirect buffer made by a hook during its base's kill is killed
+  with the base (it outlived it), and an indirect buffer of it signals
+  "Base buffer has been killed".  GNU swaps four bidi variables'
+  per-buffer values without their local flags in `buffer-swap-text',
+  which the per-buffer variable store cannot hold until the plan's
+  last stage; Emaxx swaps them neither before nor after.  **Counts**
+  (callgrind, the release build; before = round 379's build, round 380
+  having changed no buffer code): `set-buffer' 697.6 instructions a
+  switch, 703.6 after (GNU 515.0): the registry scan of the lookup is
+  gone (-52) and the markers are recorded and fetched at every switch
+  under a borrow of the buffer state (+46), which the plan's sixth
+  stage removes with the borrow; `buffer-name' 407.6 to 382.6 (GNU
+  355.0); `point' from native code 75.1 to 70.2 (GNU 57.0); `insert'
+  2,079.7 to 2,093.7 (GNU 3,692.5), the 14 in the family lookup an
+  insertion makes, which now finds the buffer by number before it can
+  tell the buffer has none (GNU's insdel.c makes no such lookup; the
+  next stage removes it); `looking-at' 1,387.6 (GNU 1,147.0) and
+  `string-match' 1,374.6 (GNU 1,148.0) unchanged, their excess being
+  in the next stages; the call and interpreter guards unchanged (a
+  byte-code recursion 357.1 lexical and 631.0 dynamic, a `mapc'
+  callback 415.7, six window accessors 318.4, the interpreted loop
+  2,752.7 and 2,753.1).  The independent review (the one question: does
+  the round cheat or break something) read the funnel and its
+  conversions, the base's lifetime and marking, the switch's record
+  and fetch, the loader and the swap, and ran buffer probes on GNU, the
+  build before and this one.  It found two breaks, both fixed above:
+  after the second stage `buffer-swap-text' left each buffer's point
+  and bound markers in the other's text, so a buffer that had ever had
+  an indirect buffer read wrong positions after a swap; and an indirect
+  buffer made during its base's kill outlived the base, older than the
+  round but extended by it.  The fixes' review ran its probes again
+  and variants (a swap with either buffer current, then motion and
+  narrowing in the other; a sibling killed by a hook during the base's
+  kill; indirect buffers of indirect buffers, cloned and not) and found
+  every answer GNU's, no cheat and no new break.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,584 passed, 0 failed, 2 ignored
+  (seventeen library tests more); cli 30, cli_parity 176, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings'
+  and rustfmt clean.  The round audit reports no hard finding, 2,598
+  changed lines with 18 tests and 59 assertions added and 12
+  assertions changed (the conversion of tests reading the current
+  buffer's point through a borrow to reading it through the object).
+- **Round 382: a buffer's tables are its own words, and
+  `case-fold-search' and `parse-sexp-lookup-properties' are C variables
+  (M2, stages S3 and S4 of D13 and A3.6; neither closed).**  **The
+  tables**: a buffer's syntax, category and four case tables are six
+  words of the buffer object, as buffer.h's syntax_table,
+  category_table, downcase_table, upcase_table, case_canon_table and
+  case_eqv_table are, traced in the buffer's arm of the mark; the three
+  side tables keyed by buffer number, their root marks and their rows
+  in the image's list of fields not carried are gone.  A buffer gets
+  the standard tables when it is made, when it is killed and from
+  `kill-all-local-variables' (reset_buffer_local_variables), and
+  `set-standard-case-table' no longer puts the new tables into other
+  buffers that had none of their own (it changes only the standard
+  ones, and each buffer keeps the table it holds, as GNU's).  An image
+  writes the six words as the buffer's tables, the standard ones
+  included, where it wrote nil for a buffer without its own; the layout
+  is unchanged and a nil word still loads as the standard table.  **The
+  variables**: both are forwarded C variables, as buffer.c's
+  Vcase_fold_search and syntax.c's parse_sexp_lookup_properties are,
+  automatically buffer-local; the matcher and the syntax scanners read
+  the C word, where each search looked the binding up; a switch of
+  buffer refreshes the forwarded words when either buffer has a local
+  binding of one (set_buffer_internal_2's walk of the local variables
+  that forward into C), an image's load refills them from the current
+  buffer, and `makunbound' of a buffer-local binding detaches the
+  variable from its C word, as set_internal does.  Two smaller
+  commits: an insertion asks the current buffer's `indirections' count
+  whether it has a family, as insdel.c does, before any lookup (the 14
+  instructions round 381 added to `insert' are gone), and a
+  case-folding search reads the canonicalize table alone.  **Lisp sees
+  one change, GNU's**: after `makunbound' of `case-fold-search''s
+  buffer-local binding the C word keeps its last value, so in a buffer
+  whose own binding is t `(string-match "abc" "xABC")' answers nil, as
+  GNU's does (it answered 1).  **Counts** (before = round 381's build):
+  `looking-at' at a failing position 1,387.6 instructions, 1,291.6
+  after (GNU 1,147.0), the binding lookup's 68 gone and setup_syntax
+  43 to 32; `string-match' 1,374.6 to 1,323.6 (GNU 1,148.0);
+  `char-after' 466.6 to 445.6 (GNU 260.0); `insert' 2,093.7 to 2,080.7
+  (GNU 3,692.5); `set-buffer' 703.6 unchanged (GNU 515.0); the call
+  and interpreter guards unchanged.  The independent review (the one
+  question: does the round cheat or break something) ran the
+  implementer's probes and its own on GNU, the build before and this
+  one: fourteen search primitives under local, let-bound, killed,
+  default and indirect bindings and in a thread;
+  `parse-sexp-lookup-properties' across the scanners with syntax-table
+  properties; `make-local-variable', `set-default-toplevel-value',
+  killing a buffer with a local value and major-mode changes; a
+  natively compiled function binding and switching buffers; the tables
+  through `set-standard-case-table', `with-case-table',
+  `with-syntax-table' across a `set-buffer', category tables and
+  clones; tables only a buffer holds surviving collections and released
+  with it; and an image written and loaded by each build with own and
+  standard tables, a clone, a killed buffer and local values.  Every
+  answer was GNU's.  It found no cheat and nothing broken.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,593 passed, 0 failed, 2 ignored (nine
+  library tests more); cli 30, cli_parity 177, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 1,040
+  changed lines with 10 tests and 23 assertions added.
+- **Round 383: byte code that C calls is entered as funcall_lambda
+  enters it (M2, D25 done, D17 not closed; the parked D130 fixed).**
+  The first four stages of the plan of the call from C into byte code
+  (docs/plans/d17-c-to-bytecode.md), with three fixes the review asked
+  for.  **The tests first**: what Lisp sees of a byte-code callback of
+  `mapcar', `maphash', `mapc', `funcall' and `apply' (the debugger on
+  a marked frame and at the next call, throws and signals out, the
+  backtrace's depth, an argument only the call holds through a
+  collection, re-entry, a callback that redefines itself, two threads
+  yielding from their callbacks, the interpreted caller's environment
+  as `eval', `backtrace--locals', `backtrace-eval' and `macroexpand'
+  see it); and hand-made byte code returning to C with a binding or a
+  catch left, which GNU keeps and a later throw then crashes it, where
+  Emaxx undoes both.  **Lexical byte code runs in its caller's
+  environment**: funcall_lambda gives a lexical function's arguments to
+  exec_byte_code with no binding of internal-interpreter-environment
+  and binds it to nil only for a dynamic-binding function, after the
+  formals; every call from Rust into byte code pushed a nil environment
+  frame over a lexical one, so a subr the byte code called found the
+  caller's environment saved and not in effect.  The frame is gone for
+  lexical byte code, and for dynamic-binding byte code the binding is a
+  specpdl entry of its own (UnwindAction::InterpreterEnvironment) made
+  after the formals, undone with them on a return, an unwind or a stack
+  overflow's exit; Fbyte_code binds none, as GNU's.  **The entry is in
+  Ffuncall's own frame**: the call from C was three Rust frames where
+  GNU's is two, and a closure whose cached program takes the arguments
+  now enters its frame and the loop at once.  **The record leaves as
+  specpdl_ptr--**: after the call returns, the record is read once for
+  its debug-on-exit flag and popped by the length.  **The review's
+  fixes**: dynamic-binding byte code called from lexical byte code
+  under a non-nil environment is entered in place (it took the full
+  call, so the first fix had made such calls nearly twice as slow);
+  a watcher of a formal runs with the environment not yet saved, as
+  funcall_lambda's order has it; the tests of rooting and of threads
+  check what they say; and an in-place return undoes the frame's
+  bindings before the exit debugger runs, as funcall_lambda's
+  unbind_to returns before Ffuncall's backtrace_debug_on_exit (it ran
+  with the formals bound, older than the round for dynamic-to-dynamic
+  calls).  **Lisp sees these changes, each now GNU's**: `defvar-1',
+  `defconst-1' and `internal--define-uninitialized-variable' in byte
+  code called by `mapcar', `funcall', `apply', the interpreter or
+  native code, of a name the interpreted caller's `let' binds
+  lexically, define the variable, where they signaled "Defining as
+  dynamic an already lexical var" (the parked D130); `backtrace-eval'
+  at the frame of its own call evaluates in the caller's environment;
+  the forms the obsolete `catch', `condition-case',
+  `save-window-excursion' and `unwind-protect' ops evaluate read the
+  caller's lexical bindings, where they signaled void-variable;
+  `defvar-1' in a watcher of a dynamic-binding function's formal, at
+  its `let' or `unlet', defines the name; the exit debugger of a
+  dynamic-binding callee sees the global value of its formal, where it
+  saw the binding.  **Counts** (callgrind, the release build; before =
+  round 379's build, the call paths unchanged since): a byte-compiled
+  `mapc' callback 415.7 instructions, 352.7 after (GNU 288.9);
+  `maphash' 417.9 to 355.0 (291.1); `mapatoms' 405.1 to 342.1 (298.9),
+  a closure there 503.0 to 458.0 (GNU 458.6: D25 is done); lexical
+  byte code calling dynamic-binding byte code at a file's top level
+  (the new probe `lex-dyn-calls') 690.6 to 876.6 (GNU 1,063.0), the
+  binding of the environment GNU also makes; the dynamic recursion
+  631.0 to 634.0 (GNU 636.2; D9 closed at 634.0), the lexical one 357.1
+  to 358.1 (314.9), the suite's byte-code-calls loop 444.9 to 446.2
+  (468.1); a subr called by `mapc' 191.7 to 193.7 and an interpreted
+  callback 1,452.0 to 1,454.2 (call_function_value's frame holds the
+  byte-code entry's state); the other guards within one instruction.
+  The independent review (the one question: does the round cheat or
+  break something) read each stage and ran probes on GNU, the build
+  before and each version.  It found the stages sound and no cheat; its
+  first reading sent back the slow call, the watcher's order and the
+  two tests; its second found that the first fix made the exit debugger
+  of an in-place dynamic callee run before its bindings were undone and
+  that the dynamic recursion's three instructions over D9's count were
+  Emaxx's own; its third found both fixed, the dynamic recursion back at
+  634.0 and the exit debugger GNU's in every case it tried (a watcher
+  that signals at the unbinding, a marked callee that throws out,
+  nested marked frames, `backtrace-frame' and `backtrace--locals' from
+  inside the debugger, a debugger that signals or throws), no cheat and
+  nothing broken.  What the new probe pays over the build before (876.6
+  against 690.6, the binding GNU also makes aside) is the entry split
+  that keeps the dynamic recursion at 634.0 (+35) and the environment's
+  undo out of line on the return (+43); a lexical-to-dynamic call takes
+  0.137 s for three million against GNU's 0.150 and the build before's
+  0.104.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,595 passed, 0 failed, 2 ignored (two
+  library tests more); cli 30, cli_parity 184 (seven more), ert_runner
+  3, native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 857 changed
+  lines with 9 tests and 10 assertions added.
+- **Round 384: a buffer's text is buffer.h's buffer_text, and point and
+  the bounds keep their byte positions (M2, stage S5 of D13 and A3.6;
+  neither closed).**  **The text**: a buffer's text is its object's
+  own_text, which an indirect buffer reads through its `text' pointer,
+  as `b->text' is `&b->own_text' or the base's; the gap's beg, gpt,
+  gpt_byte, z, z_byte and gap_size are its fields, the caches one boxed
+  record, where the text was a shared cell holding a gap buffer.
+  **Positions**: pt_byte, begv_byte and zv_byte are kept where GNU keeps
+  them (SET_PT_BOTH and SET_PT, insdel's adjustments, narrowing, the
+  swap, the record and fetch of the position markers, an image's load),
+  SET_PT testing PT, BEGV and ZV first and then the ASCII case, and
+  `position-bytes' of point or a bound reads the kept byte.  **The
+  matcher**: a match in a buffer reads the text in place, its two
+  halves cut once as looking_at_1 cuts them and its start at
+  PT_BYTE - BEGV_BYTE, and shares the bytes as soon as the match can
+  run Lisp (`parse-sexp-lookup-properties' at once; otherwise before the
+  slow path of a quit check, before `syntax-propertize' and in the plain
+  search's quit check), so a callout that edits the buffer leaves the
+  match reading what it began with; `char-after' reads an ASCII byte
+  directly.  **Lisp sees one change, GNU's**: a regexp search whose
+  `syntax-propertize' callout signals no longer leaves that search's
+  match data set ((9 12 buffer) before, nil as GNU's).  **Counts**
+  (callgrind, the release build; before = round 381's build, whose
+  matcher round 382 changed to 1,291.6): `looking-at' at a failing
+  position 1,387.6 instructions, 1,237.6 after (GNU 1,147.0);
+  `string-match' 1,374.6 to 1,324.6 (GNU 1,148.0); the new probe
+  `re-search-forward' 2,017.6 to 1,963.6 (GNU 2,445.0); `char-after'
+  466.6 to 368.6 (GNU 260.0); `goto-char' 132.6 to 138.6 in ASCII and
+  multibyte text (GNU 231.0 and 239.0), the six SET_PT's test of PT
+  and its store of PT_BYTE, which GNU's set_point_both also makes;
+  `set-buffer' 703.6 to 705.6 (GNU 515.0), code layout; `insert'
+  2,093.7 to 2,077.7 (GNU 3,692.5); the call and interpreter guards
+  unchanged.  What `looking-at' still pays over GNU is in reaching the
+  buffer's state and the tables around the match (393 instructions
+  against looking_at_1's, RE_SETUP's and re_set_registers' 139), where
+  the call, the unwind and the matcher itself cost Emaxx less; the next
+  stage takes it down.  The independent review (the one question: does
+  the round cheat or break something) read the text pointer's lifetime
+  through kills, collections, clones and images, every path on which a
+  match can run Lisp, and the byte positions, and ran probes on GNU,
+  the build before and this one: twelve seeds of 120 random edits
+  checking point, the bounds, `position-bytes' and `byte-to-position'
+  after each (GNU's own build crashes on one seed), fourteen seeds of
+  edits each followed by eleven matches, 180 matches at the
+  accessible region's ends with the gap placed at each, 72 destructive
+  `syntax-propertize' callouts under six matchers (the same answers as
+  the build before), a quit's debugger replacing the text or killing
+  the buffer mid-match in a terminal, and an image with an indirect
+  family.  Every answer was GNU's or, where GNU's differed before, the
+  build before's.  It found no cheat and nothing broken.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,604 passed, 0 failed, 2 ignored (nine
+  library tests more); cli 30, cli_parity 184, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 2,295
+  changed lines with 9 tests and 46 assertions added and 11 changed
+  (the same checks reading the text's caches through the new path);
+  its two notes of new state are the character cache, moved into the
+  text's boxed caches, and the match's slot for the shared bytes.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23415,7 +23780,132 @@ ert-tests as a whole 26,307 ms against 27,211.
   passed: 3,573 library tests, the seven integration targets (218) and
   the binaries' tests (61), none failed.
 
+**On `41202f7`** (round 380): the frozen run (run 45299400422) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 54.8 s against 47.1 s (1.162), test bodies 235.4 s
+  against 224.0 s (1.051), in all 1.070 (GNU's suite took 271 s).  The
+  widest body gaps are tramp-tests (14.9 s against 13.5 s), comp-tests
+  (12.4 against 11.4), semantic-utest-ia (2.82 against 2.00),
+  process-tests (2.22 against 1.50), mule-tests (2.02 against 1.38),
+  epg-tests (2.30 against 1.77) and package-tests (5.89 against 5.49).
+  The Rust gate (run 45299396856) passed: 3,574 library tests, the seven
+  integration targets (218) and the binaries' tests (61), none
+  failed.
+
+**On `e26e60b`** (round 381): the frozen run (run 45315684465) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, on a slow runner (GNU's suite took 338 s).  Setup 78.8 s
+  against 64.9 s (1.215), test bodies 299.3 s against 272.8 s (1.097),
+  in all 1.120.  The widest body gaps are tramp-tests (24.2 s against
+  20.4 s), ert-tests (41.6 against 38.1), comp-tests (18.8 against
+  16.2), semantic-utest-ia (3.80 against 2.46), mule-tests (3.19
+  against 1.98), process-tests (2.59 against 1.91) and package-tests
+  (6.88 against 6.28).  The Rust gate (run 45315681152) passed: 3,591
+  library tests, the seven integration targets (219) and the binaries'
+  tests (61), none failed.
+
+**On `13cf476`** (round 382): the frozen run (run 45331209962) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 52.7 s against 45.5 s (1.159), test bodies 230.3 s
+  against 219.5 s (1.049), in all 1.068 (GNU's suite took 265 s), so
+  round 381's 1.120 was its slow runner's (ert-tests, the file new among
+  its gaps, runs as long on the builds of rounds 379 and 381 here).  The
+  widest body gaps are tramp-tests (14.9 s against 13.4 s),
+  semantic-utest-ia (2.62 against 1.88), process-tests (2.19 against
+  1.47), comp-tests (10.9 against 10.2), mule-tests (1.91 against 1.28)
+  and package-tests (5.86 against 5.42).  The Rust gate (run
+  45331205154) passed: 3,600 library tests, the seven integration
+  targets (220) and the binaries' tests (61), none failed.
+
+**On `acce68b`** (round 383): the frozen run (run 45340586985) matched
+  7,927 of the 7,928 outcomes on both its attempts.  The one mismatch was
+  the same both times: GNU's own run of
+  `eglot-test-rust-completion-exit-function' failed with a
+  `jsonrpc-error' (its wait for rust-analyzer's indexing progress gave
+  up on the runner), and Emaxx's passed; the test is the known one
+  that fails on either side now and then, and its failing twice on
+  GNU's side, with no Emaxx outcome different, is recorded as it is and
+  not run a third time.  The first attempt: setup 54.7 s against 47.1 s
+  (1.163), test bodies 234.6 s against 229.4 s (1.023), in all 1.047
+  (GNU's suite took 276 s); the second, on a slow runner (342 s), 1.150.
+  The widest body gaps of the first are tramp-tests (15.3 s against
+  13.8 s), comp-tests (12.2 against 11.0), semantic-utest-ia (2.70
+  against 1.92), process-tests (2.21 against 1.49), mule-tests (1.92
+  against 1.33) and package-tests (5.87 against 5.46).  The Rust gate
+  (run 45340584137) passed: 3,602 library tests, the seven integration
+  targets (227) and the binaries' tests (61), none failed.
+
+**On `b693c28`** (round 384): the frozen run (run 45374047173) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, the eglot test GNU's side had failed twice on round 383
+  passing on both sides.  Setup 54.7 s against 47.2 s (1.159), test
+  bodies 235.1 s against 227.0 s (1.036), in all 1.057 (GNU's suite
+  took 274 s).  The widest body gaps are tramp-tests (15.1 s against
+  13.5 s), comp-tests (12.3 against 11.2), semantic-utest-ia (2.70
+  against 1.97), mule-tests (1.96 against 1.34), process-tests (2.23
+  against 1.72) and package-tests (5.90 against 5.57).  The Rust gate
+  (run 45374040978) passed: 3,611 library tests, the seven integration
+  targets (227) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 384 and its review), outside the
+  round and in no milestone.**  One line each: an indirect buffer made
+  of a dying base after the kill's walk of its indirect buffers (by an
+  advice on `replace-buffer-in-windows') survives with the killed
+  base's emptied text where the build before kept the base's text and
+  GNU's points at freed text and signals "Marker does not point
+  anywhere"; a `syntax-propertize' callout that swaps the buffer's text
+  leaves point 1 where GNU's has 25, and a `quit-flag' a callout sets
+  is not acted on where GNU quits (both older); GNU 30.2 aborts in
+  regex-emacs.c on a `posix-search-forward' the round's oracle test
+  leaves out.
+- **Found after the scope lock (round 383 and its review), outside the
+  round and in no milestone.**  One line each: after an in-place
+  `(defvar Y)' inside a `let', lexbound_p still finds the `let''s
+  environment saved, so `defvar-1' of a name that `let' binds
+  lexically signals "Defining as dynamic an already lexical var" where
+  GNU defines it (older than the round; no byte code needed); which
+  thread runs after `thread-yield' differs from GNU's, whose order is
+  the OS scheduler's (GNU ran the main thread's whole `mapc' first in
+  six runs of six, Emaxx alternates at each yield), and `defvar-1' in a
+  dynamic callee after a yield answers ok where GNU signals; the C
+  stack overflow's exit restores the interpreter's environment where
+  GNU's longjmp leaves it as it was (GNU crashes in every batch case
+  tried, so the two cannot be compared).
+- **Found after the scope lock (round 382 and its review), outside the
+  round and in no milestone.**  One line each: `char-equal' reads
+  `case-fold-search''s Lisp binding, not the C word, which shows only
+  in GNU's detached state after `makunbound' inside a `let' (the other
+  thirteen search primitives read the word); after a buffer is killed
+  GNU keeps one more of its tables alive than Emaxx does (likely a C
+  root such as gl_state's last syntax table; unchanged by the round);
+  a buffer with a local binding of either variable makes each switch
+  into or out of it refresh all twelve forwarded words, where GNU
+  refreshes that buffer's own local forwarded variables (the mirrors
+  plan's first stages take the evaluator's copies away).
+- **Found after the scope lock (round 381, its review and the plan of
+  the thread items made beside it), outside the round and in no
+  milestone.**  One line each: `save-excursion' and `save-restriction'
+  around `buffer-swap-text' restore into the buffer they saved, where
+  GNU's saved markers have gone with the text to the other buffer and
+  restore there (wrong before and after the round, differently when
+  the buffers have point markers); a killed buffer written to an image
+  loses its file name and a killed indirect buffer its base (GNU keeps
+  both); the buffer printer decides by registration, so the loading
+  process's replaced `*scratch*' prints as a live buffer; `kill-buffer'
+  goes on after `replace-buffer-in-windows' has killed the buffer,
+  where GNU returns; the initial window holds its buffer as a number
+  (the buffers plan's holder stage takes it); finding 157's recorded
+  cause no longer holds (Lisp runs on the main thread, and both editors
+  answer ("R" 1 t) to the probe of `process-attributes'), so its row in
+  the honesty audit is stale; `.cargo/config.toml' sets two test
+  threads with a comment that the tests share no interpreter state, and
+  docs/testing.md describes two gate groups as run on two threads that
+  tools/grouped_gate.py runs on one.  The thread plan also found that
+  Lisp objects kept in thread-locals (the profiler's log, the atimers,
+  the echo area) are marked only by the thread that collects, a
+  use-after-free a second thread reaches through the public API; that
+  is A2.5's and C5.3's, already in M2.
 - **Found after the scope lock (round 379, its review and the plans
   made beside it), outside the round and in no milestone.**  One line
   each: a buffer killed before `dump-emacs-portable' answers t to

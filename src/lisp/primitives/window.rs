@@ -1101,10 +1101,9 @@ pub(crate) fn current_window_start(interp: &Interpreter) -> usize {
 }
 
 pub(crate) fn buffer_point_bounds(interp: &Interpreter, buffer_id: u64) -> (usize, usize) {
-    interp.buffer_bounds_by_id(buffer_id).unwrap_or((
-        interp.buffer.borrow().point_min(),
-        interp.buffer.borrow().point_max(),
-    ))
+    interp
+        .buffer_bounds_by_id(buffer_id)
+        .unwrap_or((interp.current_buffer().begv(), interp.current_buffer().zv()))
 }
 
 /// BUFFERP of a window's contents SLOT: the buffer a leaf window shows
@@ -1166,7 +1165,7 @@ pub(crate) fn window_start_marker(
 /// BUFFER_ID's Z: one past its last character, narrowing ignored.
 pub(crate) fn buffer_z(interp: &Interpreter, buffer_id: u64) -> usize {
     if buffer_id == interp.current_buffer_id() {
-        interp.buffer.borrow().size_total() + 1
+        interp.current_buffer().z()
     } else {
         interp
             .get_buffer_by_id(buffer_id)
@@ -1313,7 +1312,7 @@ pub(crate) fn recenter_selected_window(
     }
     let ht = text_height.max(1) as i64;
     let margin = selected_scroll_margin(interp, text_height) as i64;
-    let point = interp.buffer.borrow().point();
+    let point = interp.current_buffer().pt();
     // The display code is not used for initial frames, whose data
     // structures may not be set up yet, nor for a buffer with very long
     // lines, which it slows down tremendously.
@@ -1461,8 +1460,8 @@ pub(crate) fn move_screen_lines_in(
     count: isize,
 ) -> (usize, isize) {
     use crate::lisp::primitives::dispatch::{row_index_of, screen_row_starts, visual_line_bounds};
-    let point_min = interp.buffer.borrow().point_min();
-    let point_max = interp.buffer.borrow().point_max();
+    let point_min = interp.current_buffer().begv();
+    let point_max = interp.current_buffer().zv();
     let from = from.clamp(point_min, point_max);
     let (mut bol, mut eol) = visual_line_bounds(interp, from);
     let mut starts = screen_row_starts(interp, env, window, bol, eol);
@@ -1655,7 +1654,7 @@ fn window_scroll_for_long_lines(
         startpos = vmotion(interp, env, point, -(ht / 2), win).bufpos;
     }
     interp.buffer.borrow_mut().goto_char(startpos);
-    let lose = n < 0 && interp.buffer.borrow().point() == interp.buffer.borrow().point_min();
+    let lose = n < 0 && interp.current_buffer().pt() == interp.current_buffer().begv();
     let pos = vmotion(interp, env, startpos, n, win).bufpos;
     if lose {
         return if noerror {
@@ -1723,7 +1722,7 @@ fn window_scroll_line_based(
         hscroll,
     } = geometry;
     let window = w.value();
-    let opoint = interp.buffer.borrow().point();
+    let opoint = interp.current_buffer().pt();
     let ht = text_height.max(1) as i64;
     let mut startpos = interp.selected_window_start();
     let adjust_old_pointm = window_marker_position(w, WindowMarker::OldPointm) == Some(opoint);
@@ -1770,10 +1769,10 @@ fn window_scroll_line_based(
     )?;
     if visible.is_nil() {
         visual_vertical_motion(interp, env, w, -(ht / 2), None)?;
-        startpos = interp.buffer.borrow().point();
+        startpos = interp.current_buffer().pt();
     }
     interp.buffer.borrow_mut().goto_char(startpos);
-    let lose = n < 0 && interp.buffer.borrow().point() <= interp.buffer.borrow().point_min();
+    let lose = n < 0 && interp.current_buffer().pt() <= interp.current_buffer().begv();
     visual_vertical_motion(interp, env, w, n, None)?;
     let (pos, bolp, zv) = {
         let buffer = interp.buffer.borrow();
@@ -1811,7 +1810,7 @@ fn window_scroll_line_based(
         let top_margin = if margin > 0 {
             goto(interp, pos);
             visual_vertical_motion(interp, env, w, margin, None)?;
-            interp.buffer.borrow().point()
+            interp.current_buffer().pt()
         } else {
             pos
         };
@@ -1836,9 +1835,9 @@ fn window_scroll_line_based(
         goto(interp, pos);
         let moved = visual_vertical_motion(interp, env, w, ht - margin, None)?;
         let bottom_margin = if moved == ht - margin {
-            interp.buffer.borrow().point()
+            interp.current_buffer().pt()
         } else {
-            interp.buffer.borrow().point() + 1
+            interp.current_buffer().pt() + 1
         };
         if bottom_margin > opoint {
             goto(interp, opoint);
@@ -1859,7 +1858,7 @@ fn window_scroll_line_based(
     if adjust_old_pointm {
         // Fset_marker (w->old_pointm, BUF_PT (XBUFFER (w->contents)),
         // w->contents): scroll_command has made the buffer current.
-        let point = interp.buffer.borrow().point();
+        let point = interp.current_buffer().pt();
         let buffer_id = interp.current_buffer_id();
         set_window_marker(interp, w, WindowMarker::OldPointm, buffer_id, point);
     }

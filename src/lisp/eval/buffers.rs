@@ -1,10 +1,20 @@
 use super::*;
 
+/// buffer.c's `CHECK_BUFFER' and `BUFFER_LIVE_P' of VALUE: the buffer
+/// VALUE is, when it is a live one.
+#[inline]
+pub(crate) fn decode_live_buffer(value: &Value) -> Option<crate::lisp::types::BufferRef> {
+    match value.kind() {
+        Kind::Buffer(buffer) if buffer.is_live() => Some(buffer),
+        _ => None,
+    }
+}
+
 impl Interpreter {
-    /// buffer.c:Fmake_indirect_buffer's link to the base, whose undo list
-    /// the new buffer shares (Bug#18180).
-    pub fn register_indirect_buffer(&mut self, buffer_id: u64, base_id: u64) {
-        self.indirect_buffers.push((buffer_id, base_id));
+    /// buffer.c:Fmake_indirect_buffer's `bset_undo_list (b, BVAR
+    /// (b->base_buffer, undo_list))': the new buffer shares its base's
+    /// undo list (Bug#18180).
+    pub fn take_base_undo_list(&mut self, buffer_id: u64, base_id: u64) {
         let base_undo = self.get_buffer_by_id(base_id).map(|base| base.undo_list());
         if let Some(list) = base_undo
             && let Some(mut buffer) = self.get_buffer_by_id_mut(buffer_id)
@@ -185,17 +195,19 @@ impl Interpreter {
         {
             buffer.set_point_before_last_command_or_undo(None);
         }
-        let point = self.buffer.borrow().point();
+        let point = self.current_buffer().pt();
         self.buffer
             .borrow_mut()
             .set_point_before_last_command_or_undo(Some(point));
     }
 
+    /// The base of buffer BUFFER_ID, a live indirect buffer, while the
+    /// base is live too.
     pub fn buffer_base_id(&self, buffer_id: u64) -> Option<u64> {
-        self.indirect_buffers
-            .iter()
-            .find(|(id, _)| *id == buffer_id)
-            .map(|(_, base_id)| *base_id)
+        self.buffer_object(buffer_id)?
+            .text_base()
+            .filter(crate::lisp::types::BufferRef::is_live)
+            .map(|base| base.id)
     }
 
     pub fn root_buffer_id(&self, mut buffer_id: u64) -> u64 {
@@ -205,10 +217,25 @@ impl Interpreter {
         buffer_id
     }
 
+    /// The buffers of Vbuffer_alist that share the text of buffer
+    /// BUFFER_ID, in the list's order: its indirect family, or the buffer
+    /// alone when its text is its own (the current buffer counted even
+    /// when the list does not hold it).
     pub fn related_buffer_ids(&self, buffer_id: u64) -> smallvec::SmallVec<[u64; 4]> {
-        if self.indirect_buffers.is_empty() {
-            // Every buffer is its own root: BUFFER_ID's text is its own,
-            // and the current buffer is live.
+        // insdel.c's `if (!current_buffer->indirections)': the current
+        // buffer, at hand, is neither indirect (-1) nor a base of live
+        // indirect buffers, so its text is its own.
+        if buffer_id == self.current_buffer_id && self.buffer.indirections() == 0 {
+            return smallvec::smallvec![buffer_id];
+        }
+        let root = self.buffer_object(buffer_id).and_then(|buffer| {
+            let root = buffer
+                .text_base()
+                .filter(crate::lisp::types::BufferRef::is_live)
+                .unwrap_or(buffer);
+            (root.is_live() && root.indirections() > 0).then_some(root)
+        });
+        let Some(root) = root else {
             if buffer_id == self.current_buffer_id {
                 return smallvec::smallvec![buffer_id];
             }
@@ -218,12 +245,20 @@ impl Interpreter {
                 .map(|(id, _)| *id)
                 .filter(|id| *id == buffer_id)
                 .collect();
-        }
-        let root = self.root_buffer_id(buffer_id);
+        };
+        // insdel.c's FOR_EACH_LIVE_BUFFER walk for the buffers whose
+        // base_buffer is ROOT.
+        let family: smallvec::SmallVec<[u64; 4]> = std::iter::once(self.buffer)
+            .chain(self.inactive_buffers.iter().map(|(_, buffer)| *buffer))
+            .filter(|buffer| {
+                buffer.ptr_eq(&root) || buffer.text_base().is_some_and(|base| base.ptr_eq(&root))
+            })
+            .map(|buffer| buffer.id)
+            .collect();
         self.buffer_list
             .iter()
             .map(|(id, _)| *id)
-            .filter(|id| self.root_buffer_id(*id) == root)
+            .filter(|id| family.contains(id))
             .collect()
     }
 
@@ -291,7 +326,7 @@ impl Interpreter {
     /// of its family shares the text and its markers, and reads its point
     /// and bounds from them.
     pub(crate) fn family_after_in_place_edit(&mut self) {
-        if self.indirect_buffers.is_empty() {
+        if !self.current_buffer().shares_text() {
             return;
         }
         let related = self.related_buffer_ids(self.current_buffer_id());
@@ -396,7 +431,7 @@ impl Interpreter {
         props: crate::buffer::InsertedProperties<'_>,
         before_markers: bool,
     ) {
-        let pos = self.buffer.borrow().point();
+        let pos = self.current_buffer().pt();
         let related = self.related_buffer_ids(self.current_buffer_id());
         let vars = self.insertion_property_variables();
         // adjust_markers_for_insert (PT, ..., PT + nchars, ...).
@@ -422,7 +457,7 @@ impl Interpreter {
     /// insert_from_gap_1 of BYTES at point in the current unibyte buffer,
     /// their characters written straight into its gap.
     pub(crate) fn insert_current_buffer_raw_bytes(&mut self, bytes: &[u8]) {
-        let pos = self.buffer.borrow().point();
+        let pos = self.current_buffer().pt();
         let related = self.related_buffer_ids(self.current_buffer_id());
         let vars = self.insertion_property_variables();
         // The insertion's adjust_markers_for_insert, a character a byte.
@@ -558,8 +593,8 @@ impl Interpreter {
         to: usize,
         ret_string: bool,
     ) -> Result<Option<String>, crate::buffer::BufferError> {
-        let from = from.max(self.buffer.borrow().point_min());
-        let to = to.min(self.buffer.borrow().point_max());
+        let from = from.max(self.current_buffer().begv());
+        let to = to.min(self.current_buffer().zv());
         // undo.c:record_delete's record_marker_adjustments, read before
         // the deletion moves the markers and recorded under it after.
         let marker_adjustments = if self.buffer.borrow().undo_recording_disabled() {
@@ -659,55 +694,31 @@ impl Interpreter {
         }
     }
 
+    /// buffer.c:Fbuffer_swap_text's exchange of the two buffers' texts
+    /// and the fields that go with them (`Buffer::swap_text_state'), then
+    /// `swapfield (indirections, ptrdiff_t)'; each buffer then reads its
+    /// point and bounds from the markers it was given unless it is the
+    /// current one.
     pub fn swap_buffer_text_state(&mut self, left_id: u64, right_id: u64) -> Result<(), LispError> {
         if left_id == right_id {
             return Ok(());
         }
-        if left_id == self.current_buffer_id {
-            let pos = self
-                .inactive_buffers
-                .iter()
-                .position(|(buffer_id, _)| *buffer_id == right_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", right_id)))?;
-            let state = &mut **self;
-            let (buffer, inactive_buffers) = (&mut state.buffer, &mut state.inactive_buffers);
-            buffer
-                .borrow_mut()
-                .swap_text_state(&mut inactive_buffers[pos].1.borrow_mut());
-            return Ok(());
-        }
-        if right_id == self.current_buffer_id {
-            let pos = self
-                .inactive_buffers
-                .iter()
-                .position(|(buffer_id, _)| *buffer_id == left_id)
-                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", left_id)))?;
-            let state = &mut **self;
-            let (buffer, inactive_buffers) = (&mut state.buffer, &mut state.inactive_buffers);
-            buffer
-                .borrow_mut()
-                .swap_text_state(&mut inactive_buffers[pos].1.borrow_mut());
-            return Ok(());
-        }
-
-        let left_index = self
-            .inactive_buffers
-            .iter()
-            .position(|(buffer_id, _)| *buffer_id == left_id)
-            .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", left_id)))?;
-        let right_index = self
-            .inactive_buffers
-            .iter()
-            .position(|(buffer_id, _)| *buffer_id == right_id)
-            .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", right_id)))?;
-        let (first, second) = if left_index < right_index {
-            let (left_slice, right_slice) = self.inactive_buffers.split_at_mut(right_index);
-            (&mut left_slice[left_index].1, &mut right_slice[0].1)
-        } else {
-            let (right_slice, left_slice) = self.inactive_buffers.split_at_mut(left_index);
-            (&mut left_slice[0].1, &mut right_slice[right_index].1)
+        let object = |interp: &Self, id: u64| {
+            interp
+                .buffer_object(id)
+                .ok_or_else(|| LispError::Signal(format!("No buffer with id {}", id)))
         };
-        first.borrow_mut().swap_text_state(&mut second.borrow_mut());
+        let left = object(self, left_id)?;
+        let right = object(self, right_id)?;
+        left.borrow_mut().swap_text_state(&mut right.borrow_mut());
+        // No indirect buffer is in sight, so both counts are 0.
+        let indirections = left.indirections.get();
+        left.indirections.set(right.indirections.get());
+        right.indirections.set(indirections);
+        for buffer in [left, right] {
+            let current = buffer.ptr_eq(&self.buffer);
+            buffer.borrow_mut().take_swapped_position_markers(current);
+        }
         Ok(())
     }
 

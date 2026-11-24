@@ -239,10 +239,10 @@ pub(crate) fn safe_run_hooks_maybe_narrowed(
             if interp.buffer.borrow().long_line_optimizations_p()
                 && super::long_lines::region_size(interp) > 0
             {
-                let point = interp.buffer.borrow().point();
+                let point = interp.current_buffer().pt();
                 let begv = super::long_lines::large_narrowing_begv(interp, point);
                 let zv = super::long_lines::large_narrowing_zv(interp, point);
-                let z = interp.buffer.borrow().size_total() + 1;
+                let z = interp.current_buffer().z();
                 if begv != 1 || zv != z {
                     super::long_lines::labeled_narrow_to_region(
                         interp,
@@ -652,13 +652,13 @@ fn delete_region_with_hooks_then<R>(
     let range_length = to - from;
     modify_current_buffer(interp, from, to, true, env, |interp, from, env| {
         let to = (from + range_length)
-            .min(interp.buffer.borrow().point_max())
+            .min(interp.current_buffer().zv())
             .max(from);
         // del_range_2's make_buffer_string_both, before the text goes.
         crate::lisp::primitives::textprop::update_deleted_text_properties(
             interp, from, to, ret_string, env,
         )?;
-        let to = to.min(interp.buffer.borrow().point_max()).max(from);
+        let to = to.min(interp.current_buffer().zv()).max(from);
         let extra = before_delete(interp, from, to);
         // del_range_1's RET_STRING: the text is read out only for a
         // caller that wants it (the undo list takes its own string).

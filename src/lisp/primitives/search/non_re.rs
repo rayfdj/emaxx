@@ -257,7 +257,9 @@ pub(super) fn search_buffer_non_re(
     trt: Option<&Canon>,
     inverse_trt: Option<&Canon>,
 ) -> Result<i64, LispError> {
-    let snapshot = BufferSnapshot::take(interp);
+    // SAFETY: the search runs nothing but its quit checks, which keep the
+    // bytes before they run what could change them.
+    let snapshot = unsafe { BufferSnapshot::take(interp) };
     let multibyte = snapshot.multibyte;
     let (bytes, string_multibyte, _) = string_bytes(string)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *string))?;
@@ -438,7 +440,14 @@ pub(super) fn search_buffer_non_re(
     let forward = n > 0;
 
     let (outcome, last_hit) = if boyer_moore_ok {
-        let mut quit = || interp.maybe_quit(env);
+        let mut quit = || {
+            if interp.quit_check_clear() {
+                return Ok(());
+            }
+            // A quit's handler may run Lisp, which may change the text.
+            snapshot.keep_text();
+            interp.maybe_quit(env)
+        };
         if unibyte_bytes {
             let mut text = UnibyteBytes::new(parts);
             let size = snapshot.zv - snapshot.begv;

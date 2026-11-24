@@ -1060,9 +1060,29 @@ pub struct BufferValue {
     /// Weak chain, as in buffer_text.markers. It does not keep markers alive.
     /// An indirect buffer's markers are on its base's chain, the one text's.
     pub(crate) markers: Cell<Option<MarkerRef>>,
-    /// buffer.h's base_buffer while the buffer shares its base's text:
-    /// whose chain holds its markers.
-    pub(crate) base: Cell<Option<BufferRef>>,
+    /// buffer.h's own_text: the text of a buffer that is not indirect,
+    /// which an indirect buffer of it reads too (its `text' points here);
+    /// an indirect buffer's own is empty until it is killed.
+    pub(crate) own_text: RefCell<crate::buffer::BufferText>,
+    /// buffer.h's base_buffer: the buffer whose text an indirect buffer
+    /// was made to share, kept once either is killed (Fbuffer_base_buffer
+    /// of a killed buffer answers it).  A live indirect buffer's text and
+    /// marker chain are its base's.
+    pub(crate) base_buffer: Cell<Option<BufferRef>>,
+    /// buffer.h's indirections: -1 in an indirect buffer; in another, the
+    /// number of indirect buffers that share its text and are not killed.
+    pub(crate) indirections: Cell<i32>,
+    /// BVAR (b, syntax_table), category_table, downcase_table,
+    /// upcase_table, case_canon_table and case_eqv_table: the buffer's
+    /// char-tables, buffer_defaults' standard ones from
+    /// reset_buffer_local_variables on.  A buffer made without it (an
+    /// image's killed buffer) holds nil, read as the standard table.
+    pub(crate) syntax_table: Cell<Value>,
+    pub(crate) category_table: Cell<Value>,
+    pub(crate) downcase_table: Cell<Value>,
+    pub(crate) upcase_table: Cell<Value>,
+    pub(crate) case_canon_table: Cell<Value>,
+    pub(crate) case_eqv_table: Cell<Value>,
     /// The editable object, not a name/id proxy for an interpreter-owned copy.
     /// Rust callers must end these borrows before entering Lisp or collecting.
     pub(crate) state: RefCell<crate::buffer::Buffer>,
@@ -1204,19 +1224,182 @@ impl BufferRef {
     /// Allocate the buffer identity before relocating its existing mark.
     /// Restoring an image must not create a second, temporary mark object.
     pub(crate) fn for_restore(id: u64, buffer: crate::buffer::Buffer) -> Self {
-        Self::allocate(BufferValue {
+        let object = Self::allocate(BufferValue {
             id,
             markers: Cell::new(None),
-            base: Cell::new(None),
+            own_text: RefCell::new(crate::buffer::BufferText::default()),
+            base_buffer: Cell::new(None),
+            indirections: Cell::new(0),
+            syntax_table: Cell::new(Value::Nil),
+            category_table: Cell::new(Value::Nil),
+            downcase_table: Cell::new(Value::Nil),
+            upcase_table: Cell::new(Value::Nil),
+            case_canon_table: Cell::new(Value::Nil),
+            case_eqv_table: Cell::new(Value::Nil),
             state: RefCell::new(buffer),
             live: Cell::new(true),
-        })
+        });
+        object.adopt_text();
+        object
+    }
+
+    /// The text of the state placed in the object, taken as its
+    /// own_text: the state reads it there from now on.
+    pub(crate) fn adopt_text(&self) {
+        let text = self.borrow_mut().take_pending_text(*self);
+        if let Some(text) = text {
+            *self.own_text.borrow_mut() = text;
+        }
     }
 
     /// BUFFER_LIVE_P.
     #[inline]
     pub(crate) fn is_live(&self) -> bool {
         self.live.get()
+    }
+
+    // buffer.h's readers of a buffer's fields, BUF_PT (b) and the rest,
+    // under the names the fields have there.
+
+    /// BUF_PT: the buffer's point.
+    #[inline]
+    pub(crate) fn pt(&self) -> usize {
+        self.borrow().point()
+    }
+
+    /// BUF_BEGV: the start of the accessible text.
+    #[inline]
+    pub(crate) fn begv(&self) -> usize {
+        self.borrow().point_min()
+    }
+
+    /// BUF_ZV: the end of the accessible text.
+    #[inline]
+    pub(crate) fn zv(&self) -> usize {
+        self.borrow().point_max()
+    }
+
+    /// BUF_Z: the end of the whole text, BEG (1) plus its characters.
+    #[inline]
+    pub(crate) fn z(&self) -> usize {
+        self.borrow().size_total() + 1
+    }
+
+    /// BVAR (b, enable_multibyte_characters), non-nil.
+    #[inline]
+    pub(crate) fn multibyte(&self) -> bool {
+        self.borrow().is_multibyte()
+    }
+
+    /// BUF_MODIFF.
+    #[inline]
+    pub(crate) fn modiff(&self) -> crate::buffer::ModCount {
+        self.borrow().modified_tick()
+    }
+
+    /// BUF_CHARS_MODIFF.
+    #[inline]
+    pub(crate) fn chars_modiff(&self) -> crate::buffer::ModCount {
+        self.borrow().chars_modified_tick()
+    }
+
+    /// BVAR (b, name): the Lisp string, nil once the buffer is killed.
+    #[inline]
+    pub(crate) fn name(&self) -> Value {
+        self.borrow().name()
+    }
+
+    /// The character at POS of the accessible text, if POS is in it.
+    #[inline]
+    pub(crate) fn char_at(&self, pos: usize) -> Option<char> {
+        self.borrow().char_at(pos)
+    }
+
+    /// The buffer's text, its halves before and after the gap with the
+    /// gap's and the end's positions, and BEGV, ZV and PT with their
+    /// bytes (`Buffer::match_view'), with no guard counted: for a
+    /// matcher that reads it only while nothing runs that could change
+    /// it, as `StringRef::bytes_unguarded' is for a string.
+    ///
+    /// # Safety
+    /// Neither a change of the text nor any Lisp nor a collection happens
+    /// while the view is in use, unless a share of the bytes
+    /// (`Buffer::share_text_bytes') taken before the first of them keeps
+    /// them; a mutable guard of the state alive now panics.
+    #[inline(always)]
+    pub(crate) unsafe fn text_halves_unguarded<'a>(&self) -> crate::buffer::MatchView<'a> {
+        // SAFETY: as the caller's contract: no mutable guard aliases the
+        // state while its fields are read.
+        let state =
+            unsafe { self.state.try_borrow_unguarded() }.expect("buffer already mutably borrowed");
+        // SAFETY: as the caller's contract.
+        unsafe { state.match_view() }
+    }
+
+    /// BVAR (b, syntax_table), when the buffer holds one.
+    #[inline]
+    pub(crate) fn syntax_table(&self) -> Option<CharTableRef> {
+        char_table_slot(&self.syntax_table)
+    }
+
+    /// bset_syntax_table.
+    #[inline]
+    pub(crate) fn set_syntax_table(&self, table: CharTableRef) {
+        self.syntax_table.set(Value::CharTable(table));
+    }
+
+    /// BVAR (b, category_table), when the buffer holds one.
+    #[inline]
+    pub(crate) fn category_table(&self) -> Option<CharTableRef> {
+        char_table_slot(&self.category_table)
+    }
+
+    /// bset_category_table, of TABLE or nil.
+    #[inline]
+    pub(crate) fn set_category_table(&self, table: Option<CharTableRef>) {
+        self.category_table
+            .set(table.map_or(Value::Nil, Value::CharTable));
+    }
+
+    /// BVAR (b, case_canon_table), when the buffer holds one.
+    #[inline]
+    pub(crate) fn case_canon_table(&self) -> Option<CharTableRef> {
+        char_table_slot(&self.case_canon_table)
+    }
+
+    /// BVAR (b, downcase_table) and the three after it, when the buffer
+    /// holds them.
+    #[inline]
+    pub(crate) fn case_tables(&self) -> Option<crate::lisp::eval::coding::CaseTables> {
+        Some(crate::lisp::eval::coding::CaseTables {
+            down: char_table_slot(&self.downcase_table)?,
+            up: char_table_slot(&self.upcase_table)?,
+            canon: char_table_slot(&self.case_canon_table)?,
+            eqv: char_table_slot(&self.case_eqv_table)?,
+        })
+    }
+
+    /// bset_downcase_table and the three after it, of TABLES or nil.
+    pub(crate) fn set_case_tables(&self, tables: Option<crate::lisp::eval::coding::CaseTables>) {
+        let tables = tables.map(|tables| tables.each().map(Value::CharTable));
+        let [down, up, canon, eqv] = tables.unwrap_or([Value::Nil; 4]);
+        self.downcase_table.set(down);
+        self.upcase_table.set(up);
+        self.case_canon_table.set(canon);
+        self.case_eqv_table.set(eqv);
+    }
+
+    /// The six char-table words, as alloc.c:mark_buffer marks them.
+    pub(crate) fn char_table_words(&self) -> [Value; 6] {
+        [
+            &self.syntax_table,
+            &self.category_table,
+            &self.downcase_table,
+            &self.upcase_table,
+            &self.case_canon_table,
+            &self.case_eqv_table,
+        ]
+        .map(Cell::get)
     }
 
     pub fn borrow(&self) -> std::cell::Ref<'_, crate::buffer::Buffer> {
@@ -1231,10 +1414,16 @@ impl BufferRef {
     /// Ordinary Lisp edits operate on the existing buffer and marker fields.
     pub(crate) fn replace_state(&self, buffer: crate::buffer::Buffer) {
         self.detach_markers();
-        let mut state = self.borrow_mut();
-        *state = buffer;
-        state.install_mark_object(*self, None);
+        *self.borrow_mut() = buffer;
+        self.adopt_text();
+        self.borrow_mut().install_mark_object(*self, None);
     }
+}
+
+/// The char-table a buffer's table word holds, None for nil.
+#[inline(always)]
+fn char_table_slot(slot: &Cell<Value>) -> Option<CharTableRef> {
+    slot.get().char_table_ref()
 }
 
 /// `Lisp_Object' for an ordinary vector: alloc.c's `struct Lisp_Vector'
