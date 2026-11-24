@@ -37535,6 +37535,44 @@ fn a_signal_from_unbinding_a_byte_code_callee_comes_out_in_its_caller() {
 }
 
 #[test]
+fn bytecode_returning_to_c_with_a_binding_or_catch_left_has_them_undone() {
+    // Hand-made byte code that returns with a Bvarbind it never unbinds,
+    // or with a Bpushcatch it never pops, called directly, through
+    // funcall, apply and mapcar. GNU 30.2 leaves the binding and the
+    // handler on its stacks (a later throw to the tag jumps into the dead
+    // frame and the process crashes), so these are Emaxx's own answers:
+    // the activation's exit undoes the binding (the special variable is
+    // `global' again) and takes the handler off (a later throw to its tag
+    // is `no-catch'); the backtrace's depth is as it was.
+    assert_interpreter_prints(
+        r#"(progn
+  (defvar t17-v 'global)
+  (fset 't17-ub (make-byte-code 0 (unibyte-string #o301 #o030 #o301 #o207) [t17-v bound] 3))
+  (fset 't17-ub1 (make-byte-code 257 (unibyte-string #o301 #o030 #o301 #o207) [t17-v bound] 3))
+  (fset 't17-uc (make-byte-code 0 (unibyte-string #o300 #o062 5 0 #o301 #o207) [t17-tag normal] 3))
+  (fset 't17-uc1 (make-byte-code 257 (unibyte-string #o300 #o062 5 0 #o301 #o207) [t17-tag normal] 3))
+  (fset 't17-depth (lambda () (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n)))
+  (list (list (t17-ub) t17-v (special-variable-p 't17-v))
+        (list (mapcar #'t17-ub1 '(0)) t17-v)
+        (list (funcall #'t17-ub) t17-v)
+        (list (apply #'t17-ub1 '(0)) t17-v)
+        (list (t17-uc) (condition-case e (throw 't17-tag 1) (no-catch e)))
+        (list (mapcar #'t17-uc1 '(0)) (condition-case e (throw 't17-tag 2) (no-catch e)))
+        (list (funcall #'t17-uc) (condition-case e (throw 't17-tag 3) (no-catch e)))
+        (catch 't17-tag (t17-uc) (throw 't17-tag 'outer))
+        (let (before after)
+          (setq before (t17-depth))
+          (dotimes (_ 3) (t17-ub) (mapcar #'t17-uc1 '(0)) (funcall #'t17-ub1 0))
+          (setq after (t17-depth))
+          (list (= before after) t17-v))))"#,
+        "((bound global t) ((bound) global) (bound global) (bound global) \
+         (normal (no-catch t17-tag 1)) ((normal) (no-catch t17-tag 2)) \
+         (normal (no-catch t17-tag 3)) outer (t global))",
+        "byte code returning to C with a binding or a catch left",
+    );
+}
+
+#[test]
 fn byte_code_frames_leave_with_their_call_records_innermost() {
     // bytecode.c's Breturn reads the callee's record as `specpdl_ptr - 1':
     // after a byte op's signal caught in the frame (its record gone), in a

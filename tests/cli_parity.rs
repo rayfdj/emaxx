@@ -1321,6 +1321,150 @@ fn dynamic_binding_byte_code_binds_as_funcall_lambda() {
 }
 
 #[test]
+fn byte_code_called_from_c_enters_the_debugger_as_ffuncall_does() {
+    // eval.c:Ffuncall of a byte-code function from C (mapcar1, Fmaphash,
+    // mapc): a frame marked by backtrace-debug enters the debugger as it
+    // returns, the debugger's value replacing the call's; debug-on-next-call
+    // set in one call enters at the next; a throw and a signal leave mapc
+    // and mapcar with their frames gone.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "dbg.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defvar d17-seen nil)
+(setq debugger (lambda (&rest args) (push args d17-seen) (if (eq (car args) 'exit) (list 'replaced (cadr args)) nil)))
+(defun d17-mark (x) (backtrace-debug 1 t #'backtrace-debug) (* x 10))
+(byte-compile 'd17-mark)
+(defun d17-next (x) (when (= x 2) (setq debug-on-next-call t)) x)
+(byte-compile 'd17-next)
+(defun d17-depth () (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n))
+(princ (format "1 %S\n" (list (mapcar #'d17-mark '(1 2)) (reverse d17-seen))))
+(setq d17-seen nil)
+(princ (format "2 %S\n" (list (mapcar #'d17-next '(1 2 3)) (reverse d17-seen))))
+(setq d17-seen nil)
+(princ (format "3 %S\n" (list (let ((r nil)) (maphash (lambda (k v) (push (d17-mark (+ k v)) r)) #s(hash-table data (1 2 3 4))) r) (reverse d17-seen))))
+(setq d17-seen nil)
+(princ (format "4 %S\n" (list (mapc #'d17-mark '(5)) (funcall #'d17-mark 6) (apply #'d17-mark '(7)) (reverse d17-seen))))
+(setq d17-seen nil)
+(princ (format "5 %S\n" (catch 'd17 (mapc (byte-compile (lambda (x) (when (= x 2) (throw 'd17 (list 'thrown x (length (backtrace-frames))))))) '(1 2 3)))))
+(princ (format "6 %S\n" (condition-case e (mapc (byte-compile (lambda (x) (when (= x 2) (car x)))) '(1 2 3)) (error e))))
+(princ (format "7 %S\n" (condition-case e (mapcar (byte-compile (lambda (x) (/ 1 x))) '(1 0)) (error e))))
+(princ (format "8 %S\n" (list (d17-depth) d17-seen)))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
+fn byte_code_called_from_c_keeps_its_arguments_reentrant_and_redefinable() {
+    // mapcar1's Ffuncall of a byte-code callback: an argument only C's
+    // call holds (here the key of a weak table, reachable from the
+    // argument alone) survives a collection in the callee; the callback
+    // re-enters mapcar; one that fsets its own name is read again from the
+    // function cell at the next element; two Lisp threads yield to each
+    // other from callbacks of their own mapc.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "gc.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defvar d17-w (make-hash-table :test 'eq :weakness 'key))
+(defun d17-gc (x) (setq x (car x)) (garbage-collect) (list (hash-table-count d17-w) (car x)))
+(byte-compile 'd17-gc)
+(princ (format "1 %S\n" (mapcar #'d17-gc (let ((l nil)) (dotimes (i 3) (let ((k (list i))) (puthash k t d17-w) (push (list k) l))) l))))
+(garbage-collect)
+(princ (format "2 %S\n" (hash-table-count d17-w)))
+(defun d17-re (x) (if (> x 0) (apply #'+ (mapcar #'d17-re (make-list 2 (1- x)))) 1))
+(byte-compile 'd17-re)
+(princ (format "3 %S\n" (mapcar #'d17-re '(0 3 6))))
+(defun d17-redef (x) (fset 'd17-redef (byte-compile '(lambda (y) (* 100 y)))) x)
+(byte-compile 'd17-redef)
+(princ (format "4 %S\n" (mapcar 'd17-redef '(1 2 3))))
+(defvar d17-th-log nil)
+(defun d17-th (x) (push (list 'in x) d17-th-log) (thread-yield) (push (list 'out x) d17-th-log) x)
+(byte-compile 'd17-th)
+(let ((th (make-thread (lambda () (mapc #'d17-th '(a b))))))
+  (mapc #'d17-th '(1 2))
+  (thread-join th))
+(princ (format "5 %S\n" (length d17-th-log)))
+(princ (format "6 %S\n" (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n)))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
+fn byte_code_called_from_c_sees_its_interpreted_callers_environment() {
+    // What byte code that C calls (mapcar, funcall, apply, a direct call
+    // from interpreted code) under an interpreted lexical caller sees of
+    // that caller's environment, through the subrs that read the
+    // interpreter's environment: eval with a nil and a t lexical
+    // environment, a dynamic-binding interpreted lambda, backtrace--locals
+    // and backtrace-eval of the frames out to the caller's, macroexpand
+    // and eval of a macro reading lexical-binding, an interpreted closure
+    // the caller made; and lexical byte code calling dynamic-binding byte
+    // code, which funcall_lambda gives the nil environment.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "env.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defmacro d17-try (form) `(condition-case e ,form (error (list 'err (car e)))))
+(defun d17-caller (fn arg)
+  (let ((d17x 'lexical))
+    (list (mapcar fn (list arg)) (funcall fn arg) (apply fn (list arg)) (d17-try (eval `(,fn ',arg) t)))))
+(defalias 'd17-ev (byte-compile '(lambda (_) (list (d17-try (eval 'd17x nil)) (d17-try (eval 'd17x t))))))
+(defvar d17-dyn (let ((lexical-binding nil)) (eval '(lambda () (d17-try d17x)) nil)))
+(defalias 'd17-dy (byte-compile '(lambda (_) (funcall d17-dyn))))
+(defalias 'd17-bl (byte-compile '(lambda (_) (mapcar (lambda (k) (d17-try (assq 'd17x (backtrace--locals k #'d17-bl)))) '(0 1 2 3 4)))))
+(defalias 'd17-be (byte-compile '(lambda (_) (mapcar (lambda (k) (d17-try (backtrace-eval 'd17x k #'d17-be))) '(0 1 2 3 4)))))
+(defalias 'd17-b1 (byte-compile '(lambda (_) (d17-try (backtrace-eval 'd17x 1 #'backtrace-eval)))))
+(defmacro d17-m () (list 'quote lexical-binding))
+(defalias 'd17-mx (byte-compile '(lambda (_) (list (macroexpand '(d17-m)) (eval '(d17-m) nil) (eval '(d17-m) t)))))
+(defalias 'd17-cl (byte-compile '(lambda (f) (funcall f))))
+(dolist (fn '(d17-ev d17-dy d17-bl d17-be d17-b1 d17-mx))
+  (princ (format "%s %S\n" fn (d17-caller fn 1))))
+(princ (format "d17-cl %S\n" (let ((d17x 'outer)) (d17-caller #'d17-cl (lambda () d17x)))))
+(princ (format "direct %S\n" (let ((d17x 'lexical)) (list (d17-ev 1) (d17-dy 1) (d17-b1 1) (d17-mx 1) (d17-cl (lambda () d17x))))))
+(defvar d17-s 'top)
+(let ((lexical-binding nil))
+  (eval '(defun d17-dn (d17-s n) (if (> n 0) (d17-dn (list d17-s) (1- n)) (list d17-s (d17-try (symbol-value 'd17z))))) nil))
+(byte-compile 'd17-dn)
+(defalias 'd17-lx (byte-compile '(lambda (x) (d17-dn x 3))))
+(princ (format "dyn %S\n" (let ((d17z 'lexical)) (list (mapcar #'d17-lx '(a)) (funcall #'d17-lx 'b) (d17-lx 'c) d17-s))))
+(princ (format "end %S\n" (list (boundp 'd17x) (special-variable-p 'd17x) (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n))))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
+fn the_memory_profiler_files_a_byte_code_callback_under_mapc() {
+    // profiler.c's malloc_probe from a byte-code callback that mapc calls:
+    // the sample's backtrace holds the callback with mapc as its caller.
+    let corpus = Corpus::new();
+    let probe = corpus.write(
+        "prof.el",
+        r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(defun d17-alloc (_) (make-string 4096 ?x))
+(byte-compile 'd17-alloc)
+(profiler-memory-start)
+(mapc #'d17-alloc (make-list 200 0))
+(let ((log (profiler-memory-log)) (found nil))
+  (profiler-memory-stop)
+  (maphash (lambda (k _v) (let ((l (append k nil))) (when (and (memq 'd17-alloc l) (eq (cadr (memq 'd17-alloc l)) 'mapc)) (setq found t)))) log)
+  (princ (format "%S\n" found)))
+"#,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+}
+
+#[test]
 fn set_buffer_multibyte_is_fset_buffer_multibyte() {
     // buffer.c:Fset_buffer_multibyte: the undo list is t before the
     // narrowed buffer's error, which leaves it so; each eight-bit
