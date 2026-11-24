@@ -216,9 +216,8 @@ fn run_batch_actions(
             }
             BatchAction::Eval(expression) => {
                 // startup.el's command-line-1: `(read-from-string STR)',
-                // whose reader interns as it reads in the current obarray;
-                // only the blanks minibuf.c's string_to_object allows may
-                // follow the expression; then `(eval EXPR t)'.
+                // whose reader interns as it reads in the current obarray,
+                // then `(eval EXPR t)' of the form read.
                 match eval_command_line_expression(interpreter, expression, eval_env)
                     .map_err(LispError::into_kind)
                 {
@@ -255,9 +254,11 @@ fn run_batch_actions(
     Ok(Ok(BatchRunOutcome::Exit(0)))
 }
 
-/// command-line-1's `--eval': EXPRESSION read by `read-from-string',
-/// anything but blanks after it "Trailing garbage", the form evaluated
-/// lexically.
+/// command-line-1's `--eval': the first form of EXPRESSION, read by
+/// `read-from-string', evaluated lexically.  Its check of what follows,
+/// `(string-match-p "[\s\t\n]*\\'" str-expr end)', is a search that
+/// always matches, so whatever follows the form is neither read nor
+/// refused.
 fn eval_command_line_expression(
     interpreter: &mut Interpreter,
     expression: &str,
@@ -265,16 +266,9 @@ fn eval_command_line_expression(
 ) -> Result<Value, LispError> {
     let string = Value::String(expression.into());
     let read_data = lisp::primitives::call(interpreter, "read-from-string", &[string], env)?;
-    let (form, end) = read_data
+    let (form, _) = read_data
         .cons_values()
         .expect("read-from-string returns (OBJECT . END)");
-    let end = usize::try_from(end.integer_value().unwrap_or(0)).unwrap_or(0);
-    let rest = expression.chars().skip(end).collect::<String>();
-    if !rest.chars().all(|ch| matches!(ch, ' ' | '\t' | '\n')) {
-        return Err(LispError::Signal(format!(
-            "Trailing garbage following expression: {rest}"
-        )));
-    }
     lisp::primitives::call(interpreter, "eval", &[form, Value::T], env)
 }
 
@@ -1697,6 +1691,67 @@ mod tests {
                 .to_string(),
             "(\"arbitrary/workload\" 37 2 9)"
         );
+    }
+
+    #[test]
+    fn embedder_eval_evaluates_its_first_form_as_command_line_1_does() {
+        // startup.el's command-line-1: `(read-from-string STR)', then
+        // `(eval EXPR t)'; its check of the text after the form is a
+        // search that always matches.  GNU prints 1 for each of the first
+        // two, and an empty --eval is end-of-file, which batch's
+        // top-level error handler ends with (kill-emacs -1), status 255.
+        // Each run collects what `princ' prints through `standard-output'.
+        let gnu = crate::compat::project_root().join("../emacs/src/emacs");
+        let collect = "(setq zz-eval-out nil standard-output (lambda (c) (push c zz-eval-out)))";
+        let report = "(let ((standard-output t)) (princ (concat (nreverse zz-eval-out))))";
+        for (expression, printed, status) in [
+            ("(princ 1) (princ 2)", "1", 0),
+            ("(princ 1)  \t\n ", "1", 0),
+            ("", "", 255),
+        ] {
+            crate::test_support::mark_process_test();
+            let output = std::process::Command::new(&gnu)
+                .args(["-Q", "--batch", "--eval", collect, "--eval", expression])
+                .args(["--eval", report])
+                .output()
+                .expect("run GNU Emacs");
+            assert_eq!(
+                (
+                    String::from_utf8_lossy(&output.stdout).into_owned(),
+                    output.status.code()
+                ),
+                (printed.to_string(), Some(status)),
+                "GNU for {expression:?}"
+            );
+            let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+            let actions = vec![
+                BatchAction::Eval(collect.into()),
+                BatchAction::Eval(expression.into()),
+            ];
+            assert_eq!(
+                run_initialized_batch(&mut interpreter, &BatchRunOptions::default(), &actions)
+                    .expect("the actions run"),
+                BatchRunOutcome::Exit(if status == 0 { 0 } else { -1 }),
+                "the embedder for {expression:?}"
+            );
+            let collected = interpreter
+                .symbol_value("zz-eval-out")
+                .expect("the collector is bound");
+            let mut env = Env::new();
+            let collected =
+                lisp::primitives::call(&mut interpreter, "reverse", &[collected], &mut env)
+                    .and_then(|chars| {
+                        lisp::primitives::call(&mut interpreter, "concat", &[chars], &mut env)
+                    })
+                    .expect("the characters printed");
+            assert_eq!(
+                lisp::primitives::string_like(&collected)
+                    .expect("a string")
+                    .text,
+                printed,
+                "the embedder for {expression:?}"
+            );
+        }
     }
 
     #[test]

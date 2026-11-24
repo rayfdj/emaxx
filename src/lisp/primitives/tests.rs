@@ -27134,7 +27134,51 @@ fn an_unbound_ert_test_leaves_its_body_to_the_collector() {
             (list before (ert-test-boundp 't6-probe-test) (get 't6-probe-test 'ert--test)
                   (hash-table-count t6-w))))"#;
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "((t 1) nil nil 0)");
-    assert_interpreter_prints(program, "((t 1) nil nil 0)", "unbound ERT test");
+    // Here the body could survive the collection through a word an
+    // earlier frame of the same top-level form left on the stack (a
+    // `--eval' of the program keeps it, a `-l' does not).  So each step
+    // is a top-level evaluation of its own, and the stack below them is
+    // overwritten before the collection: what keeps the body then is
+    // only what the evaluator holds.
+    #[inline(never)]
+    fn step(interp: &mut Interpreter, text: &str) -> String {
+        let mut env = Env::new();
+        let form = crate::lisp::read_next_load_form(interp, text, &mut 0, &mut env)
+            .expect("the step parses")
+            .expect("a form");
+        let value = interp.eval(&form, &mut env).expect("the step runs");
+        let printed = call(interp, "prin1-to-string", &[value], &mut env).expect("print");
+        string_like(&printed).expect("printed").text
+    }
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let setup = program
+        .split_once("          (t6-define)")
+        .expect("the definitions")
+        .0;
+    assert_eq!(step(&mut interp, &format!("{setup} t)")), "t");
+    assert_eq!(
+        step(
+            &mut interp,
+            "(progn (t6-define) (list (ert-test-boundp 't6-probe-test) (hash-table-count t6-w)))"
+        ),
+        "(t 1)"
+    );
+    assert_eq!(
+        step(
+            &mut interp,
+            "(progn (t6-unbind) (list (ert-test-boundp 't6-probe-test) (get 't6-probe-test 'ert--test)))"
+        ),
+        "(nil nil)"
+    );
+    crate::lisp::alloc::clobber_stack();
+    assert_eq!(
+        step(
+            &mut interp,
+            "(progn (dotimes (_ 3) (garbage-collect)) (hash-table-count t6-w))"
+        ),
+        "0",
+        "unbound ERT test"
+    );
 }
 
 #[test]
