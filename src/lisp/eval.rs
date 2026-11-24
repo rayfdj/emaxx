@@ -7157,8 +7157,9 @@ pub struct InterpreterState {
     pub(crate) buffer_before_last_command_or_undo: Option<u64>,
     /// The matcher's registers in text offsets (search.c's search_regs
     /// before a search converts them to positions), held between searches
-    /// so their allocation serves every search.
-    pub(crate) search_registers: crate::lisp::regex_emacs::Registers,
+    /// so their allocation serves every search: lent to a search by their
+    /// box, none while one holds them (a search inside it has its own).
+    pub(crate) search_registers: Option<Box<crate::lisp::regex_emacs::Registers>>,
     pub message_capture_stack: Vec<MessageCapture>,
     /// Last character written to the batch `standard-output' stream.
     ///
@@ -7863,7 +7864,7 @@ impl Interpreter {
             running_asynch_code: false,
             last_known_column: (0, 0, 0),
             buffer_before_last_command_or_undo: None,
-            search_registers: Default::default(),
+            search_registers: None,
             message_capture_stack: Vec::new(),
             batch_standard_output_last_char: None,
             batch_stdout_need_newline: false,

@@ -11,7 +11,6 @@ use super::*;
 use crate::lisp::regex_emacs::{self as rx, MatchEnv, MatchError, Pattern, Registers, Text};
 use crate::lisp::types::{CharTableRef, Kind};
 use std::cell::{Cell, RefCell};
-use std::rc::Rc;
 
 mod non_re;
 
@@ -33,10 +32,6 @@ struct CacheEntry {
     syntax_table: Option<CharTableRef>,
     pattern: Pattern,
 }
-
-/// A canonicalization table read at a char-table store epoch: the
-/// table's identity, the epoch and its entries.
-type CanonSlot = Option<(usize, u64, Rc<Canon>)>;
 
 /// A cell of searchbufs: its compiled pattern, if any, and the next cell
 /// in most-recently-used order.  A busy cell's pattern is lent to the
@@ -90,10 +85,6 @@ thread_local! {
     /// The character codes of the pattern compiled last, kept for the
     /// next compilation to read its pattern's into.
     static PATTERN_CODES: Cell<Vec<u32>> = const { Cell::new(Vec::new()) };
-    /// The canonicalization tables last read, with the char-table store
-    /// epoch they were read at: a search folding case reads the
-    /// case_canon_table and its case_eqv_table.
-    static CANON_CACHE: RefCell<[CanonSlot; 2]> = const { RefCell::new([None, None]) };
 }
 
 #[cfg(test)]
@@ -256,13 +247,8 @@ enum Object<'t> {
     /// Compiling: no text.
     None,
     Buffer {
-        text: SnapshotRange<'t>,
-        /// BEGV, the position of the text's first character.
-        begv: usize,
-        /// Point's byte offset in the text.
-        point: usize,
-        /// The text is ASCII: byte offsets are character offsets.
-        ascii: bool,
+        /// The buffer text the match reads, with BEGV and point.
+        snapshot: &'t BufferSnapshot<'t>,
         /// A byte offset and its character offset, point's to begin with
         /// and then the one converted last: the position
         /// buf_bytepos_to_charpos counts a nearby one from.
@@ -281,78 +267,26 @@ enum Object<'t> {
 }
 
 /// The translate table a pattern folds with, a case_canon_table, read as
-/// char_table_translate does: a character value, else the character.
+/// char_table_translate does: CHAR_TABLE_REF (for an ASCII character the
+/// table's ascii sub-table, CHAR_TABLE_REF_ASCII), a character value,
+/// else the character.
+#[derive(Clone, Copy)]
 struct Canon {
     table: CharTableRef,
-    ascii: [u32; 128],
 }
 
 impl Canon {
-    fn new(table: CharTableRef) -> Self {
-        let mut this = Canon {
-            table,
-            ascii: [0; 128],
-        };
-        for c in 0..128u32 {
-            this.ascii[c as usize] = this.compute(c);
-        }
-        this
-    }
-
-    fn compute(&self, c: u32) -> u32 {
+    /// char_table_translate: the entry when CHARACTERP (a fixnum in
+    /// [0, MAX_CHAR]), else C.
+    #[inline(always)]
+    fn get(&self, c: u32) -> u32 {
         self.table
             .get(c)
-            .integer_value()
+            .fixnum()
             .and_then(|value| u32::try_from(value).ok())
             .filter(|&value| value <= rx::MAX_CHAR)
             .unwrap_or(c)
     }
-
-    #[inline]
-    fn get(&self, c: u32) -> u32 {
-        if c < 128 {
-            return self.ascii[c as usize];
-        }
-        self.get_other(c)
-    }
-
-    /// RE_TRANSLATE of a character beyond ASCII: char_table_translate's
-    /// char_table_ref, which reads the table's tree directly.
-    #[inline(never)]
-    fn get_other(&self, c: u32) -> u32 {
-        self.compute(c)
-    }
-}
-
-/// The entries of canonicalization TABLE, shared while no char-table
-/// changes.
-fn canon_for(table: CharTableRef) -> Rc<Canon> {
-    let epoch = crate::lisp::alloc::vectors::char_tables::char_table_store_epoch();
-    CANON_CACHE.with(|cache| {
-        let mut cache = cache.borrow_mut();
-        // The table read last, as a search folding case reads it again.
-        if let Some((id, at, canon)) = &cache[0]
-            && *id == table.identity()
-            && *at == epoch
-        {
-            return canon.clone();
-        }
-        for (index, slot) in cache.iter().enumerate().skip(1) {
-            if let Some((id, at, canon)) = slot
-                && *id == table.identity()
-                && *at == epoch
-            {
-                let canon = canon.clone();
-                // Most recently used first.
-                cache.swap(0, index);
-                return canon;
-            }
-        }
-        let canon = Rc::new(Canon::new(table));
-        cache.swap(0, 1);
-        cache[0] = Some((table.identity(), epoch, canon.clone()));
-        canon
-    })
 }
 
 /// The matcher's view of the interpreter (GNU's current buffer, gl_state
@@ -360,7 +294,7 @@ fn canon_for(table: CharTableRef) -> Rc<Canon> {
 pub(super) struct LispMatchEnv<'a, 't> {
     interp: &'a mut Interpreter,
     env: &'a mut Env,
-    canon: Option<Rc<Canon>>,
+    canon: Option<Canon>,
     syntax_table: CharTableRef,
     /// gl_state as RE_SETUP_SYNTAX_TABLE_FOR_OBJECT leaves it, when
     /// `parse-sexp-lookup-properties' is set; without it SYNTAX reads the
@@ -388,7 +322,7 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
     /// An environment folding case with the canonicalization CANON (a
     /// case_canon_table), or not at all.
     fn new(interp: &'a mut Interpreter, env: &'a mut Env, canon: Option<CharTableRef>) -> Self {
-        let canon = canon.map(canon_for);
+        let canon = canon.map(|table| Canon { table });
         let syntax_table = interp.current_syntax_table_id();
         LispMatchEnv {
             interp,
@@ -453,17 +387,11 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
     /// The character position of byte offset AT in the text.
     fn charpos(&self, at: usize) -> usize {
         match &self.object {
-            Object::Buffer {
-                text,
-                begv,
-                ascii,
-                known,
-                ..
-            } => {
-                if *ascii {
-                    begv + at
+            Object::Buffer { snapshot, known } => {
+                if snapshot.ascii {
+                    snapshot.begv + at
                 } else {
-                    begv + text.char_offset_from(known, at)
+                    snapshot.begv + snapshot.range.char_offset_from(known, at)
                 }
             }
             Object::String {
@@ -775,7 +703,7 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
 
     fn point(&self) -> Option<usize> {
         match &self.object {
-            Object::Buffer { point, .. } => Some(*point),
+            Object::Buffer { snapshot, .. } => Some(snapshot.point_byte - snapshot.begv_byte),
             _ => None,
         }
     }
@@ -1041,13 +969,16 @@ fn release_cell(cell: u8, entry: Option<Box<CacheEntry>>) {
 /// internal--syntax-propertize: a change of the text then copies them,
 /// and the match goes on reading the bytes it started with.
 struct BufferSnapshot<'t> {
-    text: crate::buffer::ScanView<'t>,
+    /// The view the snapshot was taken from, for the checks of `take's
+    /// contract.
+    #[cfg(debug_assertions)]
+    seen: crate::buffer::ScanView<'t>,
     /// The accessible text's parts before the gap and after it, as
     /// looking_at_1 takes BEGV_ADDR, GPT_BYTE and GAP_END_ADDR.
     range: SnapshotRange<'t>,
     /// The buffer the text is of, and the share of its bytes once kept.
     buffer: crate::lisp::types::BufferRef,
-    kept: std::cell::OnceCell<crate::buffer::TextPin>,
+    kept: std::cell::OnceCell<crate::buffer::ScanText>,
     begv: usize,
     begv_byte: usize,
     zv: usize,
@@ -1097,13 +1028,14 @@ impl Drop for BufferSnapshot<'_> {
     fn drop(&mut self) {
         // `take's contract: a text read in place, its bytes not kept, saw
         // no change.
-        debug_assert!(
+        #[cfg(debug_assertions)]
+        assert!(
             self.kept.get().is_some()
                 || self
                     .buffer
                     .state
                     .try_borrow()
-                    .map_or(true, |buffer| buffer.text_is_viewed_by(&self.text)),
+                    .map_or(true, |buffer| buffer.text_is_viewed_by(&self.seen)),
             "the text changed under a match that read it in place"
         );
     }
@@ -1127,7 +1059,8 @@ impl BufferSnapshot<'_> {
         let view = unsafe { buffer.text_halves_unguarded() };
         let (first, second) = view.text.parts_of(view.begv_byte, view.zv_byte);
         BufferSnapshot {
-            text: view.text,
+            #[cfg(debug_assertions)]
+            seen: view.text,
             range: SnapshotRange {
                 parts: crate::lisp::regex_emacs::GapRange::from_parts(first, second),
                 chars: view.zv - view.begv,
@@ -1152,12 +1085,24 @@ impl BufferSnapshot<'_> {
     fn keep_text(&self) {
         self.kept.get_or_init(|| {
             let buffer = self.buffer.borrow();
-            debug_assert!(
-                buffer.text_is_viewed_by(&self.text),
+            #[cfg(debug_assertions)]
+            assert!(
+                buffer.text_is_viewed_by(&self.seen),
                 "the text changed before its bytes were kept"
             );
-            buffer.share_text_bytes()
+            buffer.scan_text()
         });
+    }
+
+    /// The view of the text the snapshot reads: the one kept with its
+    /// bytes, or, while none is, the buffer's own, which nothing has
+    /// changed since the snapshot was taken (`take's contract).
+    fn view(&self) -> crate::buffer::ScanView<'_> {
+        match self.kept.get() {
+            Some(kept) => kept.view(),
+            // SAFETY: as `take's contract.
+            None => unsafe { self.buffer.text_halves_unguarded() }.text,
+        }
     }
 
     /// The accessible text as the matcher reads it.
@@ -1188,7 +1133,7 @@ impl BufferSnapshot<'_> {
         } else if pos == self.begv {
             0
         } else {
-            self.text
+            self.view()
                 .char_to_byte_near(pos - 1, self.known().into_iter())
                 - self.begv_byte
         }
@@ -1206,7 +1151,9 @@ impl BufferSnapshot<'_> {
         } else if offset == 0 {
             self.begv
         } else {
-            self.text.byte_to_char_near(byte, self.known().into_iter()) + 1
+            self.view()
+                .byte_to_char_near(byte, self.known().into_iter())
+                + 1
         }
     }
 
@@ -1217,7 +1164,11 @@ impl BufferSnapshot<'_> {
     /// (point's, which `take' converted, then each register's).
     fn position_in(&self, buffer: &crate::buffer::Buffer, offset: usize) -> usize {
         let byte = self.begv_byte + offset;
-        if self.ascii || !buffer.text_is_viewed_by(&self.text) {
+        let changed = self
+            .kept
+            .get()
+            .is_some_and(|kept| !buffer.text_is_viewed_by(&kept.view()));
+        if self.ascii || changed {
             return self.position(offset);
         }
         if byte == self.point_byte {
@@ -1233,16 +1184,12 @@ impl BufferSnapshot<'_> {
     /// gap's sizes and PT_BYTE once.
     #[inline]
     fn matcher_parts(&self) -> (Text<'_>, Object<'_>, usize) {
-        let range = self.range;
         // PT_BYTE - BEGV_BYTE.
         let point = self.point_byte - self.begv_byte;
-        let text = Text::from_gap(range.parts, self.multibyte, self.side)
+        let text = Text::from_gap(self.range.parts, self.multibyte, self.side)
             .with_latin1_bytes(!self.multibyte && !self.ascii);
         let object = Object::Buffer {
-            text: range,
-            begv: self.begv,
-            point,
-            ascii: self.ascii,
+            snapshot: self,
             known: Cell::new((point, self.point - self.begv)),
         };
         (text, object, point)
@@ -1370,14 +1317,23 @@ fn set_buffer_search_regs(
 }
 
 /// search.c's `&search_regs' argument to the matcher: the held register
-/// buffer while the match data may change (MODIFY), else none.  Given back
-/// with `give_back_registers' however the search ends.
-fn take_registers(interp: &mut Interpreter, modify: bool) -> Option<Registers> {
-    modify.then(|| std::mem::take(&mut interp.search_registers))
+/// buffer while the match data may change (MODIFY), else none, lent by
+/// its box.  Given back with `give_back_registers' however the search
+/// ends.
+#[inline]
+fn take_registers(interp: &mut Interpreter, modify: bool) -> Option<Box<Registers>> {
+    modify.then(|| held_registers(interp))
 }
 
-fn give_back_registers(interp: &mut Interpreter, registers: Option<Registers>) {
-    if let Some(registers) = registers {
+/// The held register buffer, a fresh one while a search holds it.
+#[inline]
+fn held_registers(interp: &mut Interpreter) -> Box<Registers> {
+    interp.search_registers.take().unwrap_or_default()
+}
+
+#[inline]
+fn give_back_registers(interp: &mut Interpreter, registers: Option<Box<Registers>>) {
+    if registers.is_some() {
         interp.search_registers = registers;
     }
 }
@@ -1425,7 +1381,7 @@ pub(super) fn looking_at_1(
             &text,
             pos,
             text.len(),
-            registers.as_mut(),
+            registers.as_deref_mut(),
             &mut menv,
         );
         (entry, registers, result, menv.error.take())
@@ -1515,7 +1471,7 @@ pub(super) fn string_match_1(
             pos_byte,
             (text.len() - pos_byte) as isize,
             text.len(),
-            registers.as_mut(),
+            registers.as_deref_mut(),
             &mut menv,
         );
         (entry, registers, result)
@@ -1657,8 +1613,10 @@ fn search_buffer(
     let tables = interp
         .case_fold_search_active()
         .then(|| interp.current_case_tables());
-    let trt = tables.map(|tables| canon_for(tables.canon));
-    let inverse_trt = tables.map(|tables| canon_for(tables.eqv));
+    let trt = tables.map(|tables| Canon {
+        table: tables.canon,
+    });
+    let inverse_trt = tables.map(|tables| Canon { table: tables.eqv });
     non_re::search_buffer_non_re(
         interp,
         env,
@@ -1667,8 +1625,8 @@ fn search_buffer(
         lim,
         n,
         re,
-        trt.as_deref(),
-        inverse_trt.as_deref(),
+        trt.as_ref(),
+        inverse_trt.as_ref(),
     )
 }
 
@@ -1702,7 +1660,7 @@ fn search_buffer_re(
         let mut pos_byte = snapshot.offset(pos);
         // search_regs, or search_regs_1 when the match data is to stay: each
         // match needs its group 0 to go on from.
-        let mut registers = std::mem::take(&mut menv.interp.search_registers);
+        let mut registers = held_registers(menv.interp);
         let mut found_any = false;
 
         // The count left, or (every match found) the last match's end, to
@@ -1710,7 +1668,7 @@ fn search_buffer_re(
         let outcome = (|| -> Result<Result<i64, usize>, LispError> {
             menv.maybe_quit()?;
             while n < 0 {
-                let before = (share && found_any).then(|| registers.clone());
+                let before = (share && found_any).then(|| (*registers).clone());
                 let found = rx::re_search(
                     &mut entry.pattern,
                     &text,
@@ -1718,7 +1676,7 @@ fn search_buffer_re(
                     lim_byte as isize - pos_byte as isize,
                     // Don't allow a match past the current point.
                     pos_byte,
-                    Some(&mut registers),
+                    Some(&mut *registers),
                     &mut menv,
                 )
                 .map_err(match_error)?;
@@ -1732,14 +1690,14 @@ fn search_buffer_re(
                 menv.maybe_quit()?;
             }
             while n > 0 {
-                let before = (share && found_any).then(|| registers.clone());
+                let before = (share && found_any).then(|| (*registers).clone());
                 let found = rx::re_search(
                     &mut entry.pattern,
                     &text,
                     pos_byte,
                     lim_byte as isize - pos_byte as isize,
                     lim_byte,
-                    Some(&mut registers),
+                    Some(&mut *registers),
                     &mut menv,
                 )
                 .map_err(match_error)?;
@@ -1761,7 +1719,7 @@ fn search_buffer_re(
     if preserve_match_data && found_any {
         set_buffer_search_regs(interp, &registers, &snapshot);
     }
-    interp.search_registers = registers;
+    interp.search_registers = Some(registers);
     if let Some(error) = pending {
         return Err(error);
     }

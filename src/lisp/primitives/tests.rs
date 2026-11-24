@@ -1646,6 +1646,78 @@ fn the_matcher_calls_syntax_propertize_as_gnu() {
 }
 
 #[test]
+fn case_folding_reads_the_canon_table_and_the_registers_keep_search_regs_as_gnu() {
+    // char_table_translate through the case_canon_table itself: case
+    // folding of non-ASCII letters in re-search-forward, search-forward,
+    // looking-at and string-match, and of an ASCII pair changed by
+    // set-case-syntax-pair in a buffer's own case table.  The match
+    // registers lent to each match: the match data after looking-at,
+    // string-match and a counted re-search-forward, around
+    // save-match-data, under inhibit-changing-match-data, and after the
+    // matcher's own signal mid-match (its failure stack overflowing in a
+    // string and in a buffer), which leaves them as they were.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil))
+          (with-temp-buffer
+            (insert "abc Été X-ray y-ray XYZ\n")
+            (let ((case-fold-search t))
+              ;; Non-ASCII and ASCII case folding through the canon table.
+              (goto-char 1)
+              (push (list 'fold (re-search-forward "éTÉ" nil t) (match-data t)) r)
+              (goto-char 1)
+              (push (list 'fold-plain (search-forward "ÉTé" nil t) (match-data t)) r)
+              (goto-char 6)
+              (push (list 'fold-looking (looking-at "ÉTÉ x") (match-data t)) r)
+              (push (list 'fold-string (string-match "étÉ" "xÉTé") (match-data t)) r)
+              ;; An ASCII pair changed in a copy of the case table.
+              (let ((table (copy-case-table (standard-case-table))))
+                (set-case-syntax-pair ?X ?y table)
+                (set-case-table table)
+                (goto-char 1)
+                (push (list 'pair (re-search-forward "x-ray" nil t) (match-data t)
+                            (progn (goto-char 1) (re-search-forward "Y-RAY" nil t)) (match-data t)
+                            (progn (goto-char 1) (search-forward "yYz" nil t))
+                            (string-match "xyz" "XYZ") (string-match "x" "y")
+                            (progn (goto-char 13) (looking-at "x-")))
+                      r)
+                (set-case-table (standard-case-table))))
+            ;; Match data after each kind of match, save-match-data and
+            ;; inhibit-changing-match-data.
+            (let ((case-fold-search nil))
+              (goto-char 1)
+              (looking-at "\\(a\\)\\(b\\)")
+              (push (list 'after-looking (match-data t)) r)
+              (save-match-data
+                (string-match "\\(z\\)" "xyz")
+                (push (list 'inner (match-data t)) r))
+              (push (list 'restored (match-data t)) r)
+              (let ((inhibit-changing-match-data t))
+                (push (list 'inhibited (looking-at "abc") (re-search-forward "ray" nil t)
+                            (string-match "y" "xyz") (match-data t))
+                      r))
+              (goto-char 1)
+              (re-search-forward "\\(r\\)a\\(y\\)" nil t 2)
+              (push (list 'count-2 (match-data t) (point)) r)
+              ;; A signal from the matcher mid-match leaves the match data.
+              (push (list 'overflow
+                          (condition-case e (string-match "\\(?:a\\|b\\)*c" (make-string 200000 ?a)) (error e))
+                          (match-data t)
+                          (condition-case e
+                              (save-excursion (goto-char (point-max)) (insert (make-string 200000 ?a))
+                                              (goto-char 25) (looking-at "\\(?:a\\|b\\)*c"))
+                            (error e))
+                          (match-data t)
+                          (progn (delete-region 25 (point-max)) (buffer-size)))
+                    r)
+              (goto-char 1)
+              (push (list 'after-overflow (looking-at "ab\\(c\\)") (match-data t)) r)))
+          (nreverse r))"#,
+        r##"((fold 8 (5 8 #<killed buffer>)) (fold-plain 8 (5 8 #<killed buffer>)) (fold-looking nil (5 8 #<killed buffer>)) (fold-string 1 (1 4)) (pair 14 (9 14 #<killed buffer>) 14 (9 14 #<killed buffer>) 24 0 0 nil) (after-looking (1 3 1 2 2 3 #<killed buffer>)) (inner (2 3 2 3)) (restored (1 3 1 2 2 3 #<killed buffer>)) (inhibited t 14 1 (1 3 1 2 2 3 #<killed buffer>)) (count-2 (17 20 17 18 19 20 #<killed buffer>) 20) (overflow (error "Stack overflow in regexp matcher") (17 20 17 18 19 20) (error "Stack overflow in regexp matcher") (17 20 17 18 19 20) 24) (after-overflow t (1 4 3 4 #<killed buffer>)))"##,
+        "case tables and match registers",
+    );
+}
+
+#[test]
 fn buffer_matches_read_the_text_s_halves_wherever_the_gap_stands_as_gnu() {
     // looking_at_1, search_buffer_re and search_buffer_non_re read the
     // accessible text as BEGV_ADDR to GPT_ADDR and GAP_END_ADDR to

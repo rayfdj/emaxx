@@ -1324,7 +1324,7 @@ impl BufferRef {
     /// # Safety
     /// Neither a change of the text nor any Lisp nor a collection happens
     /// while the view is in use, unless a share of the bytes
-    /// (`Buffer::share_text_bytes') taken before the first of them keeps
+    /// (`Buffer::scan_text') taken before the first of them keeps
     /// them; a mutable guard of the state alive now panics.
     #[inline(always)]
     pub(crate) unsafe fn text_halves_unguarded<'a>(&self) -> crate::buffer::MatchView<'a> {

@@ -172,8 +172,8 @@ impl GapText {
     ///
     /// # Safety
     /// The text does not change, and is not dropped, while the view is
-    /// used, unless a share of its bytes (`share_bytes') taken before the
-    /// first change keeps them.
+    /// used, unless a share of its bytes (a clone of the text) taken
+    /// before the first change keeps them.
     #[inline]
     pub(crate) unsafe fn view_unbounded<'a>(&self) -> GapText<&'a [u8]> {
         GapText {
@@ -186,13 +186,6 @@ impl GapText {
             z_byte: self.z_byte,
             gap_size: self.gap_size,
         }
-    }
-
-    /// A share of the bytes: a change of the text while it is held copies
-    /// them first, so that a view taken before keeps reading them.
-    #[inline]
-    pub(crate) fn share_bytes(&self) -> Rc<Vec<u8>> {
-        Rc::clone(&self.beg)
     }
 
     /// Whether VIEW reads this text's bytes as they now are.

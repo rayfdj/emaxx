@@ -565,10 +565,6 @@ pub type ScanText = GapText;
 /// the gap, and the gap's and the end's positions.
 pub(crate) type ScanView<'a> = GapText<&'a [u8]>;
 
-/// A share of a buffer text's bytes (`Buffer::share_text_bytes'): while
-/// it is held, a change of the text copies them first.
-pub(crate) type TextPin = std::rc::Rc<Vec<u8>>;
-
 /// `Buffer::match_view': what a regexp match reads of the buffer besides
 /// its text, the region's ends and point (1-based) with their offsets in
 /// the stored bytes (0-based), and what the matcher needs to know of the
@@ -2437,13 +2433,6 @@ impl Buffer {
             side,
             ascii: text.text.is_ascii(),
         }
-    }
-
-    /// A share of the text's bytes, which keeps a view of them
-    /// (`text_halves_unguarded') taken since the text last changed from
-    /// any change after it.
-    pub(crate) fn share_text_bytes(&self) -> TextPin {
-        self.text.get().borrow().text.share_bytes()
     }
 
     /// Whether VIEW reads the text's bytes as they now are.
