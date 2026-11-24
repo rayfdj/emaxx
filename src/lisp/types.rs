@@ -1219,6 +1219,63 @@ impl BufferRef {
         self.live.get()
     }
 
+    // buffer.h's readers of a buffer's fields, BUF_PT (b) and the rest,
+    // under the names the fields have there.
+
+    /// BUF_PT: the buffer's point.
+    #[inline]
+    pub(crate) fn pt(&self) -> usize {
+        self.borrow().point()
+    }
+
+    /// BUF_BEGV: the start of the accessible text.
+    #[inline]
+    pub(crate) fn begv(&self) -> usize {
+        self.borrow().point_min()
+    }
+
+    /// BUF_ZV: the end of the accessible text.
+    #[inline]
+    pub(crate) fn zv(&self) -> usize {
+        self.borrow().point_max()
+    }
+
+    /// BUF_Z: the end of the whole text, BEG (1) plus its characters.
+    #[inline]
+    pub(crate) fn z(&self) -> usize {
+        self.borrow().size_total() + 1
+    }
+
+    /// BVAR (b, enable_multibyte_characters), non-nil.
+    #[inline]
+    pub(crate) fn multibyte(&self) -> bool {
+        self.borrow().is_multibyte()
+    }
+
+    /// BUF_MODIFF.
+    #[inline]
+    pub(crate) fn modiff(&self) -> crate::buffer::ModCount {
+        self.borrow().modified_tick()
+    }
+
+    /// BUF_CHARS_MODIFF.
+    #[inline]
+    pub(crate) fn chars_modiff(&self) -> crate::buffer::ModCount {
+        self.borrow().chars_modified_tick()
+    }
+
+    /// BVAR (b, name): the Lisp string, nil once the buffer is killed.
+    #[inline]
+    pub(crate) fn name(&self) -> Value {
+        self.borrow().name()
+    }
+
+    /// The character at POS of the accessible text, if POS is in it.
+    #[inline]
+    pub(crate) fn char_at(&self, pos: usize) -> Option<char> {
+        self.borrow().char_at(pos)
+    }
+
     pub fn borrow(&self) -> std::cell::Ref<'_, crate::buffer::Buffer> {
         self.state.borrow()
     }

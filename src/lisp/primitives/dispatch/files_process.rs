@@ -3059,7 +3059,7 @@ define_dispatch!(
                     &[args[1], args[2]],
                     env,
                 )?;
-                let multibyte = interp.buffer.borrow().is_multibyte();
+                let multibyte = interp.current_buffer().multibyte();
                 let encoded = crate::lisp::primitives::processes::encode_process_input(
                     interp, process_id, &text, multibyte, env,
                 )?;
@@ -3070,7 +3070,7 @@ define_dispatch!(
                 need_arg_range(name, args, 2, 3)?;
                 // decompress.c: validate_region, then the unibyte check.
                 let (start, end) = validate_region(interp, &args[0], &args[1])?;
-                if interp.buffer.borrow().is_multibyte() {
+                if interp.current_buffer().multibyte() {
                     return Err(LispError::Signal(
                         "This function can be called only in unibyte buffers".into(),
                     ));
@@ -3148,7 +3148,7 @@ define_dispatch!(
                         ));
                     }
 
-                    let saved_point = interp.buffer.borrow().point();
+                    let saved_point = interp.current_buffer().pt();
                     // del_range_2's make_buffer_string_both.
                     crate::lisp::primitives::textprop::update_deleted_text_properties(
                         interp, start, end, false, env,
@@ -3165,7 +3165,7 @@ define_dispatch!(
                         interp.resume_auto_hscroll();
                     }
                     {
-                        let point = saved_point.min(interp.buffer.borrow().point_max());
+                        let point = saved_point.min(interp.current_buffer().zv());
                         interp.buffer.borrow_mut().goto_char(point);
                     }
                     let change = AfterChange::new(start, old_length, output.len())
@@ -3183,11 +3183,11 @@ define_dispatch!(
                 // point-max, then validate_region.
                 let start = match args.first().filter(|value| !value.is_nil()) {
                     Some(start) => *start,
-                    None => Value::Integer(interp.buffer.borrow().point_min() as i64),
+                    None => Value::Integer(interp.current_buffer().begv() as i64),
                 };
                 let end = match args.get(1).filter(|value| !value.is_nil()) {
                     Some(end) => *end,
-                    None => Value::Integer(interp.buffer.borrow().point_max() as i64),
+                    None => Value::Integer(interp.current_buffer().zv() as i64),
                 };
                 let (start, end) = validate_region(interp, &start, &end)?;
                 if let Some(base_url) = args.get(2)
@@ -3219,7 +3219,7 @@ define_dispatch!(
                 let empty_input = if let Some(string) = string_like(&start) {
                     string.text.is_empty()
                 } else if start.is_nil() {
-                    interp.buffer.borrow().size_total() == 0
+                    interp.current_buffer().z() == 1
                 } else {
                     let (from, to) = validate_region(interp, &start, &end)?;
                     start = Value::Integer(from as i64);
@@ -3242,7 +3242,7 @@ define_dispatch!(
                         .unwrap_or(Value::Nil);
                     let coding = if !coding.is_nil() {
                         coding
-                    } else if !interp.buffer.borrow().is_multibyte() {
+                    } else if !interp.current_buffer().multibyte() {
                         Value::symbol("raw-text")
                     } else {
                         let lookup = std::iter::once(Value::symbol(name))
@@ -3555,16 +3555,16 @@ define_dispatch!(
                     .copy_marker_value(&args.first().copied().unwrap_or(Value::Nil), insertion_type)
             }
             "point-marker" => {
-                let position = interp.buffer.borrow().point() as i64;
+                let position = interp.current_buffer().pt() as i64;
                 interp.copy_marker_value(&Value::Integer(position), false)
             }
             "mark-marker" => Ok(interp.buffer_mark_marker_value()),
             "point-min-marker" => {
-                let position = interp.buffer.borrow().point_min() as i64;
+                let position = interp.current_buffer().begv() as i64;
                 interp.copy_marker_value(&Value::Integer(position), false)
             }
             "point-max-marker" => {
-                let position = interp.buffer.borrow().point_max() as i64;
+                let position = interp.current_buffer().zv() as i64;
                 interp.copy_marker_value(&Value::Integer(position), false)
             }
             "marker-buffer" => {

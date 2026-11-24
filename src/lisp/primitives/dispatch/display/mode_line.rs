@@ -1389,7 +1389,7 @@ impl ModeLine<'_> {
                     None,
                 ));
             }
-            'b' => interp.buffer.borrow().name(),
+            'b' => interp.current_buffer().name(),
             'c' | 'C' => {
                 let column = primitive(interp, env, "current-column", &[])?
                     .as_integer()
@@ -1746,7 +1746,7 @@ fn decode_mode_spec_coding(
     buf: &mut String,
     eol_flag: bool,
 ) {
-    let multibyte = interp.buffer.borrow().is_multibyte();
+    let multibyte = interp.current_buffer().multibyte();
     let spec = coding
         .symbol_cell()
         .and_then(|symbol| interp.coding_spec_index_symbol(&symbol))

@@ -743,8 +743,8 @@ define_dispatch!(
                 }
                 if let Some(position) = args.first().filter(|value| !value.is_nil()) {
                     let position_value = position_from_value(interp, position)?;
-                    if position_value < interp.buffer.borrow().point_min()
-                        || position_value > interp.buffer.borrow().point_max()
+                    if position_value < interp.current_buffer().begv()
+                        || position_value > interp.current_buffer().zv()
                     {
                         return Err(LispError::SignalValue(Value::list([
                             Value::symbol("args-out-of-range"),

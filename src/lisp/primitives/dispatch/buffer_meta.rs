@@ -495,7 +495,7 @@ define_dispatch!(
                 // buffer.c:Frename_buffer.
                 let mut new_name = args[0];
                 let requested_name = new_name;
-                let old_name = interp.buffer.borrow().name();
+                let old_name = interp.current_buffer().name();
                 let Some(chars) = crate::lisp::primitives::string_char_count(&new_name) else {
                     return Err(LispError::WrongTypeArgument("stringp".into(), new_name));
                 };
@@ -582,7 +582,7 @@ define_dispatch!(
                     )?;
                 }
                 // Refetch since that last call may have done GC.
-                Ok(interp.buffer.borrow().name())
+                Ok(interp.current_buffer().name())
             }
             "other-buffer" => {
                 need_arg_range(name, args, 0, 3)?;
@@ -1350,7 +1350,7 @@ define_dispatch!(
                 let codes = (start..end)
                     .map(|pos| public_buffer_char_code_at(interp, pos).unwrap_or(0) as u32)
                     .collect::<Vec<_>>();
-                let multibyte = interp.buffer.borrow().is_multibyte();
+                let multibyte = interp.current_buffer().multibyte();
                 let table = args.get(2).copied().unwrap_or(Value::Nil);
                 Ok(Value::list(find_charsets_in_text(
                     interp, &codes, multibyte, &table,

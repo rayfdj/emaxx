@@ -3085,7 +3085,7 @@ pub(crate) fn internal_default_process_filter(
     let old_point = interp.buffer.borrow().point();
     let insert_at = interp
         .marker_position(mark_id)
-        .unwrap_or_else(|| interp.current_buffer().point_max());
+        .unwrap_or_else(|| interp.current_buffer().zv());
     interp.buffer.borrow_mut().goto_char(insert_at);
     // The text's multibyteness made the buffer's (string-as-unibyte or
     // string-to-multibyte), then insert_from_string_before_markers, its
@@ -3187,7 +3187,7 @@ pub(crate) fn internal_default_process_sentinel(
     let old_point = interp.buffer.borrow().point();
     let insert_at = interp
         .marker_position(mark_id)
-        .unwrap_or_else(|| interp.current_buffer().point_max());
+        .unwrap_or_else(|| interp.current_buffer().zv());
     interp.buffer.borrow_mut().goto_char(insert_at);
     // process.c's four insertions, each through the change protocol.
     let inserted = insert_with_read_only_cleared(interp, buffer_id, env, |interp, env| {

@@ -38,7 +38,7 @@ fn restore_buffer_modified_p(
     } else {
         interp.buffer.borrow_mut().set_modified();
         if crate::lisp::types::eq_symbol_named(flag, "autosaved") {
-            let modiff = interp.buffer.borrow().modified_tick();
+            let modiff = interp.current_buffer().modiff();
             if let Some(mut buffer) = interp.get_buffer_by_id_mut(base) {
                 buffer.set_autosave_modiff(modiff);
             }
@@ -136,7 +136,7 @@ fn internal_self_insert(
     {
         hairy = 1;
     }
-    let multibyte = interp.buffer.borrow().is_multibyte();
+    let multibyte = interp.current_buffer().multibyte();
     let mut chars_to_delete: i64 = 0;
     let mut spaces_to_insert: i64 = 0;
     let (pt, zv) = {
@@ -165,7 +165,7 @@ fn internal_self_insert(
                         env,
                     )?
                     .as_integer()?;
-                    let now = interp.buffer.borrow().point();
+                    let now = interp.current_buffer().pt();
                     chars_to_delete = now as i64 - pt as i64;
                     if actual_clm > target_clm {
                         // Too many columns would go: keep a tab before
@@ -186,11 +186,11 @@ fn internal_self_insert(
     let syntax_class = |interp: &Interpreter, code: u32| {
         syntax::syntax_entry_for_code(interp, interp.current_syntax_table_id(), code).class
     };
-    let point = interp.buffer.borrow().point();
+    let point = interp.current_buffer().pt();
     if truthy(interp, cached_symbol!("abbrev-mode"))
         && syntax_class(interp, c) != syntax::SyntaxClass::Word
         && !truthy(interp, cached_symbol!("buffer-read-only"))
-        && point > interp.buffer.borrow().point_min()
+        && point > interp.current_buffer().begv()
         && syntax_class(interp, {
             // Fprevious_char, a unibyte buffer's byte as UNIBYTE_TO_CHAR.
             let previous = public_buffer_char_code_at(interp, point - 1).unwrap_or(0) as u32;
@@ -201,7 +201,7 @@ fn internal_self_insert(
             }
         }) == syntax::SyntaxClass::Word
     {
-        let modiff = interp.buffer.borrow().modified_tick();
+        let modiff = interp.current_buffer().modiff();
         let sym = interp.call_function_value(
             Value::Symbol("expand-abbrev".into()),
             Some("expand-abbrev"),
@@ -225,7 +225,7 @@ fn internal_self_insert(
                 return Ok(1);
             }
         }
-        if interp.buffer.borrow().modified_tick() != modiff {
+        if interp.current_buffer().modiff() != modiff {
             hairy = 2;
         }
     }
@@ -241,11 +241,11 @@ fn internal_self_insert(
             u32::from(b' '),
             spaces_to_insert.max(0) as usize,
         ));
-        let from = interp.buffer.borrow().point();
+        let from = interp.current_buffer().pt();
         let to = (from as i64).saturating_add(chars_to_delete) as usize;
-        let to = to.min(interp.buffer.borrow().point_max());
+        let to = to.min(interp.current_buffer().zv());
         replace_range_with_hooks(interp, from, to, &codes, env)?;
-        let point = interp.buffer.borrow().point();
+        let point = interp.current_buffer().pt();
         interp.buffer.borrow_mut().goto_char(point + n as usize);
     } else if n > 0 {
         let mut text = String::new();
@@ -269,7 +269,7 @@ fn internal_self_insert(
         // After a newline, fill the line it ends, with the newline in
         // place already.
         if c == u32::from(b'\n') {
-            let point = interp.buffer.borrow().point();
+            let point = interp.current_buffer().pt();
             interp.buffer.borrow_mut().goto_char(point - 1);
         }
         let result = interp.call_function_value(
@@ -279,8 +279,8 @@ fn internal_self_insert(
             env,
         )?;
         if c == u32::from(b'\n') {
-            let point = interp.buffer.borrow().point();
-            if point < interp.buffer.borrow().point_max() {
+            let point = interp.current_buffer().pt();
+            if point < interp.current_buffer().zv() {
                 interp.buffer.borrow_mut().goto_char(point + 1);
             }
         }
@@ -333,7 +333,7 @@ pub(super) fn narrow_current_buffer(
     if e < s {
         std::mem::swap(&mut s, &mut e);
     }
-    let z = interp.buffer.borrow().size_total() as i64 + 1;
+    let z = interp.current_buffer().z() as i64;
     if !(1 <= s && s <= e && e <= z) {
         return Err(LispError::SignalValue(Value::list([
             Value::symbol("args-out-of-range"),
@@ -545,7 +545,7 @@ define_dispatch!(
                         Value::Integer(255),
                     ])));
                 }
-                let character = if byte >= 128 && interp.buffer.borrow().is_multibyte() {
+                let character = if byte >= 128 && interp.current_buffer().multibyte() {
                     byte + RAW_BYTE8_BASE as i64
                 } else {
                     byte
@@ -626,11 +626,7 @@ define_dispatch!(
                     .map(|prompt| prompt.chars().count())
                     .unwrap_or(0);
                 Ok(Value::Integer(
-                    interp
-                        .buffer
-                        .borrow()
-                        .point_min()
-                        .saturating_add(prompt_length) as i64,
+                    interp.current_buffer().begv().saturating_add(prompt_length) as i64,
                 ))
             }
             "combine-after-change-execute" => {
@@ -746,13 +742,13 @@ define_dispatch!(
                 Ok(string_like_value_with_extended_chars(
                     interp.buffer.borrow().buffer_string(),
                     interp.buffer.borrow().string_intervals(
-                        interp.buffer.borrow().point_min(),
-                        interp.buffer.borrow().point_max(),
+                        interp.current_buffer().begv(),
+                        interp.current_buffer().zv(),
                     ),
-                    interp.buffer.borrow().is_multibyte(),
+                    interp.current_buffer().multibyte(),
                     interp.buffer.borrow().substring_extended_chars(
-                        interp.buffer.borrow().point_min(),
-                        interp.buffer.borrow().point_max(),
+                        interp.current_buffer().begv(),
+                        interp.current_buffer().zv(),
                     ),
                 ))
             }
@@ -769,12 +765,11 @@ define_dispatch!(
                     0
                 };
                 let start = interp
-                    .buffer
-                    .borrow()
-                    .point_min()
+                    .current_buffer()
+                    .begv()
                     .saturating_add(prompt_length)
-                    .min(interp.buffer.borrow().point_max());
-                let end = interp.buffer.borrow().point_max();
+                    .min(interp.current_buffer().zv());
+                let end = interp.current_buffer().zv();
                 // minibuf.c: make_buffer_string with properties.
                 if name == "minibuffer-contents" {
                     crate::lisp::primitives::textprop::update_buffer_properties(
@@ -799,7 +794,7 @@ define_dispatch!(
                 Ok(string_like_value_with_extended_chars(
                     text,
                     props,
-                    interp.buffer.borrow().is_multibyte(),
+                    interp.current_buffer().multibyte(),
                     interp.buffer.borrow().substring_extended_chars(start, end),
                 ))
             }
@@ -886,7 +881,7 @@ define_dispatch!(
             }
             "position-bytes" => {
                 let pos = if args.is_empty() {
-                    interp.buffer.borrow().point()
+                    interp.current_buffer().pt()
                 } else {
                     position_from_value(interp, &args[0])?
                 };
@@ -936,7 +931,7 @@ define_dispatch!(
                         &[],
                     ));
                 }
-                if enabled == interp.buffer.borrow().is_multibyte() {
+                if enabled == interp.current_buffer().multibyte() {
                     return Ok(args[0]);
                 }
                 // The changes below are not recorded; an entry for the
@@ -1105,23 +1100,23 @@ define_dispatch!(
                     let position = match args.first().filter(|value| !value.is_nil()) {
                         Some(value) => {
                             let position = position_from_value(interp, value)?;
-                            if position < interp.buffer.borrow().point_min()
-                                || position >= interp.buffer.borrow().point_max()
+                            if position < interp.current_buffer().begv()
+                                || position >= interp.current_buffer().zv()
                             {
                                 return Err(LispError::SignalValue(Value::list([
                                     Value::Symbol("args-out-of-range".into()),
                                     *value,
-                                    Value::Integer(interp.buffer.borrow().point_min() as i64),
-                                    Value::Integer(interp.buffer.borrow().point_max() as i64),
+                                    Value::Integer(interp.current_buffer().begv() as i64),
+                                    Value::Integer(interp.current_buffer().zv() as i64),
                                 ])));
                             }
                             position
                         }
-                        None => interp.buffer.borrow().point(),
+                        None => interp.current_buffer().pt(),
                     };
                     character_byte_value(
-                        interp.buffer.borrow().char_at(position),
-                        interp.buffer.borrow().is_multibyte(),
+                        interp.current_buffer().char_at(position),
+                        interp.current_buffer().multibyte(),
                     )
                 }
             }
@@ -1155,10 +1150,10 @@ define_dispatch!(
                     )?;
                     return Ok(Value::Nil);
                 }
-                let point = interp.buffer.borrow().point();
+                let point = interp.current_buffer().pt();
                 if n >= 0 {
                     let to = point + n as usize;
-                    if to > interp.buffer.borrow().point_max() {
+                    if to > interp.current_buffer().zv() {
                         Err(crate::buffer::BufferError::EndOfBuffer.into())
                     } else {
                         delete_region_with_hooks(interp, point, to, env)?;
@@ -1166,7 +1161,7 @@ define_dispatch!(
                     }
                 } else {
                     let count = (-n) as usize;
-                    if point < interp.buffer.borrow().point_min() + count {
+                    if point < interp.current_buffer().begv() + count {
                         Err(crate::buffer::BufferError::BeginningOfBuffer.into())
                     } else {
                         delete_region_with_hooks(interp, point - count, point, env)?;
@@ -1180,8 +1175,8 @@ define_dispatch!(
                 // leaves accessible; then the saved size is reset, so
                 // auto-saving does not take the shrink for lost text.
                 widen_current_buffer(interp);
-                let min = interp.buffer.borrow().point_min();
-                let max = interp.buffer.borrow().point_max();
+                let min = interp.current_buffer().begv();
+                let max = interp.current_buffer().zv();
                 if min < max {
                     delete_region_with_hooks(interp, min, max, env)?;
                 }
@@ -1267,7 +1262,7 @@ define_dispatch!(
                 };
                 // casefiddle.c's casify_word.
                 let count = super::super::syntax_scan::check_fixnum(&args[0])?;
-                let point = interp.buffer.borrow().point();
+                let point = interp.current_buffer().pt();
                 let farend = super::super::syntax_scan::scan_words(interp, env, point, count)?
                     .unwrap_or_else(|| {
                         let buffer = interp.buffer.borrow();
@@ -1285,7 +1280,7 @@ define_dispatch!(
             "current-indentation" => {
                 // indent.c:Fcurrent_indentation: position_indentation from
                 // the line's start.
-                let point = interp.buffer.borrow().point();
+                let point = interp.current_buffer().pt();
                 let bol = line_beginning_at(interp, point);
                 Ok(Value::Integer(position_indentation(interp, bol) as i64))
             }
@@ -1307,9 +1302,9 @@ define_dispatch!(
                     _ => return Err(LispError::WrongTypeArgument("wholenump".into(), args[0])),
                 };
                 let force = args.get(1).copied().unwrap_or(Value::Nil);
-                let point = interp.buffer.borrow().point();
+                let point = interp.current_buffer().pt();
                 let start = line_beginning_at(interp, point);
-                let zv = interp.buffer.borrow().point_max();
+                let zv = interp.current_buffer().zv();
                 let scan = scan_for_column(interp, env, start, zv, Some(goal))?;
                 let mut col = scan.col;
                 interp.buffer.borrow_mut().goto_char(scan.pos);
@@ -1317,7 +1312,7 @@ define_dispatch!(
                 // through it again.
                 if !force.is_nil()
                     && col > goal
-                    && interp.buffer.borrow().char_at(scan.prev_pos) == Some('\t')
+                    && interp.current_buffer().char_at(scan.prev_pos) == Some('\t')
                     && scan.prev_col < goal
                     && scan.prev_pos < scan.pos
                 {
@@ -1327,9 +1322,9 @@ define_dispatch!(
                     let spaces = " ".repeat(goal - scan.prev_col);
                     insert_text_with_hooks(interp, &spaces, None, &[], true, false, env)?;
                     // Now delete the tab, and indent to COL.
-                    let point = interp.buffer.borrow().point();
+                    let point = interp.current_buffer().pt();
                     delete_region_with_hooks(interp, point, point + 1, env)?;
-                    let goal_pt = interp.buffer.borrow().point();
+                    let goal_pt = interp.current_buffer().pt();
                     indent_to(interp, col as i64, 0, env)?;
                     interp.buffer.borrow_mut().goto_char(goal_pt);
                     col = goal;
@@ -1345,7 +1340,7 @@ define_dispatch!(
             "line-number-at-pos" => {
                 need_arg_range(name, args, 0, 2)?;
                 let pos = if args.is_empty() || args[0].is_nil() {
-                    interp.buffer.borrow().point()
+                    interp.current_buffer().pt()
                 } else {
                     match args[0].kind() {
                         Kind::Integer(pos) => {
@@ -1354,9 +1349,7 @@ define_dispatch!(
                                     Value::Symbol("args-out-of-range".into()),
                                     Value::Integer(pos),
                                     Value::Integer(1),
-                                    Value::Integer(
-                                        (interp.buffer.borrow().size_total() + 1) as i64,
-                                    ),
+                                    Value::Integer(interp.current_buffer().z() as i64),
                                 ])));
                             }
                             pos as usize
@@ -1370,7 +1363,7 @@ define_dispatch!(
                         }
                     }
                 };
-                let absolute_max = interp.buffer.borrow().size_total() + 1;
+                let absolute_max = interp.current_buffer().z();
                 // Only a fixnum POSITION is checked against BEG and Z; a
                 // marker's (another buffer's) position is taken as it is.
                 let is_marker = matches!(
@@ -1389,15 +1382,12 @@ define_dispatch!(
                 let start = if absolute {
                     1
                 } else {
-                    interp.buffer.borrow().point_min()
+                    interp.current_buffer().begv()
                 };
                 let pos = if absolute {
                     pos
                 } else {
-                    pos.clamp(
-                        interp.buffer.borrow().point_min(),
-                        interp.buffer.borrow().point_max(),
-                    )
+                    pos.clamp(interp.current_buffer().begv(), interp.current_buffer().zv())
                 };
                 // The second check, `args_out_of_range_3 (BYTE_TO_CHAR
                 // (pos_byte), BEG, Z)', past Z (an absolute marker position).
@@ -1802,7 +1792,7 @@ pub(crate) fn visual_char_widths(
             pos += 1;
             continue;
         }
-        match interp.buffer.borrow().char_at(pos) {
+        match interp.current_buffer().char_at(pos) {
             Some('\t') => widths.push((usize::MAX, true)),
             Some(' ') => widths.push((1, true)),
             Some(_) => widths.push((1, false)),
@@ -1855,7 +1845,7 @@ pub(crate) fn window_line_number_columns(
         .unwrap_or(point_min)
         .clamp(point_min, point_max);
     let point = if w == interp.selected_window_ref() {
-        interp.buffer.borrow().point()
+        interp.current_buffer().pt()
     } else {
         super::call(interp, "window-point", &[window], env)
             .ok()
@@ -1868,7 +1858,7 @@ pub(crate) fn window_line_number_columns(
     let begv_line = interp
         .buffer
         .borrow()
-        .line_number_at_pos(interp.buffer.borrow().point_min());
+        .line_number_at_pos(interp.current_buffer().begv());
     crate::lisp::primitives::window_line_number_layout(
         interp, buffer_id, top_line, point_line, begv_line, text_rows,
     )
@@ -1969,7 +1959,7 @@ pub(crate) fn window_text_pixel_size(
         let buffer = interp.buffer.borrow();
         (buffer.point_min(), buffer.point_max())
     };
-    let char_at = |interp: &Interpreter, pos: usize| interp.buffer.borrow().char_at(pos);
+    let char_at = |interp: &Interpreter, pos: usize| interp.current_buffer().char_at(pos);
     let clip = |value: i64, low: usize, high: usize| value.clamp(low as i64, high as i64) as usize;
     let mut vertical_offset = 0i64;
     let mut start = match from.kind() {
@@ -2382,16 +2372,16 @@ pub(crate) fn visual_segment_starts(
 }
 
 pub(crate) fn visual_line_bounds(interp: &Interpreter, pos: usize) -> (usize, usize) {
-    let point_min = interp.buffer.borrow().point_min();
-    let point_max = interp.buffer.borrow().point_max();
+    let point_min = interp.current_buffer().begv();
+    let point_max = interp.current_buffer().zv();
     let raw_bol = |mut from: usize| {
-        while from > point_min && interp.buffer.borrow().char_at(from - 1) != Some('\n') {
+        while from > point_min && interp.current_buffer().char_at(from - 1) != Some('\n') {
             from -= 1;
         }
         from
     };
     let raw_eol = |mut from: usize| {
-        while from < point_max && interp.buffer.borrow().char_at(from) != Some('\n') {
+        while from < point_max && interp.current_buffer().char_at(from) != Some('\n') {
             from += 1;
         }
         from
@@ -2489,7 +2479,7 @@ fn display_motion_width(
         .text_property_at(position, "display")
         .filter(|value| !value.is_nil())
     {
-        let begins_run = position == interp.buffer.borrow().point_min()
+        let begins_run = position == interp.current_buffer().begv()
             || interp
                 .buffer
                 .borrow()
@@ -2706,7 +2696,7 @@ pub(super) fn display_motion(
 
     let mut position = from;
     loop {
-        let next_character = interp.buffer.borrow().char_at(position);
+        let next_character = interp.current_buffer().char_at(position);
 
         // A position at the right edge belongs to the beginning of the
         // continuation line whenever more text follows on the logical line.
@@ -2714,8 +2704,7 @@ pub(super) fn display_motion(
             if truncates {
                 while position < to
                     && interp
-                        .buffer
-                        .borrow()
+                        .current_buffer()
                         .char_at(position)
                         .is_some_and(|character| character != '\n')
                 {
@@ -2732,10 +2721,10 @@ pub(super) fn display_motion(
         if vpos > target_vpos || (vpos == target_vpos && hpos >= target_hpos) {
             break;
         }
-        if position >= to || position >= interp.buffer.borrow().point_max() {
+        if position >= to || position >= interp.current_buffer().zv() {
             break;
         }
-        let Some(character) = interp.buffer.borrow().char_at(position) else {
+        let Some(character) = interp.current_buffer().char_at(position) else {
             break;
         };
         if character == '\n' {
@@ -2775,8 +2764,7 @@ pub(super) fn display_motion(
             if truncates {
                 while position < to
                     && interp
-                        .buffer
-                        .borrow()
+                        .current_buffer()
                         .char_at(position)
                         .is_some_and(|character| character != '\n')
                 {
@@ -2844,15 +2832,13 @@ fn line_number_display_width_value(
             return Ok(none());
         }
 
-        let start = window_start.clamp(
-            interp.buffer.borrow().point_min(),
-            interp.buffer.borrow().point_max(),
-        );
+        let start =
+            window_start.clamp(interp.current_buffer().begv(), interp.current_buffer().zv());
         let start_line = interp.buffer.borrow().line_number_at_pos(start);
         let last_line = interp
             .buffer
             .borrow()
-            .line_number_at_pos(interp.buffer.borrow().point_max());
+            .line_number_at_pos(interp.current_buffer().zv());
         let visible_end_line = start_line
             .saturating_add(body_height.saturating_sub(1))
             .min(last_line);
@@ -2863,7 +2849,7 @@ fn line_number_display_width_value(
             let point_line = interp
                 .buffer
                 .borrow()
-                .line_number_at_pos(interp.buffer.borrow().point());
+                .line_number_at_pos(interp.current_buffer().pt());
             point_line
                 .abs_diff(start_line)
                 .max(point_line.abs_diff(visible_end_line))
@@ -2961,7 +2947,7 @@ pub(crate) fn visual_vertical_motion_from(
     };
     let object = interp.buffer_value(current).unwrap_or(Value::Nil);
     interp.wset_buffer(w, object);
-    let point = interp.buffer.borrow().point();
+    let point = interp.current_buffer().pt();
     set_window_marker(interp, w, WindowMarker::Pointm, current, point);
     let result = vertical_motion_in_window(interp, env, w, n, goal_col, start_x);
     // restore_window_buffer, however the motion ended: its
@@ -3011,7 +2997,7 @@ fn vertical_motion_in_window(
             // at most to_x (-1 without a goal).
             let stays = n == 0 && start_x.is_some_and(|start| start <= to_x.unwrap_or(-1));
             let (landing, nlines) = if stays {
-                let point = interp.buffer.borrow().point();
+                let point = interp.current_buffer().pt();
                 (
                     crate::lisp::primitives::move_it::Landing {
                         pos: point,
@@ -3044,7 +3030,7 @@ fn vertical_motion_in_window(
                     point_row_hscroll: None,
                     ..window_text_geometry(interp, env, window)
                 };
-                let point = interp.buffer.borrow().point();
+                let point = interp.current_buffer().pt();
                 let mut row = landing.row;
                 // An iterator left at point with CUR-COL's x moves the
                 // goal's distance from it.
@@ -3143,7 +3129,7 @@ fn vertical_motion_in_window(
     // Noninteractively, indent.c vmotion from point; a cons LINES's goal
     // column has no part in it.
     let _ = (goal_col, start_x);
-    let point = interp.buffer.borrow().point();
+    let point = interp.current_buffer().pt();
     let pos = crate::lisp::primitives::indent_motion::vmotion(
         interp,
         env,
@@ -3339,7 +3325,7 @@ fn line_command_count(n: Option<&Value>) -> Result<i64, LispError> {
 
 /// editfns.c:bol: the start of the line N - 1 lines from point's.
 fn bol(interp: &mut Interpreter, n: i64) -> usize {
-    let saved = interp.buffer.borrow().point();
+    let saved = interp.current_buffer().pt();
     let count = (n - 1) as isize;
     let shortage = if count != 0 {
         interp.buffer.borrow_mut().forward_line(count)
@@ -3350,17 +3336,17 @@ fn bol(interp: &mut Interpreter, n: i64) -> usize {
     // requested next-line position even though moving to the beginning of
     // its containing line would jump backward.
     let at_unterminated_eob = count > 0
-        && interp.buffer.borrow().point() == interp.buffer.borrow().point_max()
+        && interp.current_buffer().pt() == interp.current_buffer().zv()
         && interp.buffer.borrow().char_before() != Some('\n');
     // If forward_line otherwise overshot, point is already at
     // point-max/point-min; preserve that shortage position.
     if !at_unterminated_eob
         && (shortage == 0
-            || (count > 0 && interp.buffer.borrow().point() < interp.buffer.borrow().point_max()))
+            || (count > 0 && interp.current_buffer().pt() < interp.current_buffer().zv()))
     {
         interp.buffer.borrow_mut().beginning_of_line();
     }
-    let result = interp.buffer.borrow().point();
+    let result = interp.current_buffer().pt();
     interp.buffer.borrow_mut().goto_char(saved);
     result
 }
@@ -3369,7 +3355,7 @@ fn bol(interp: &mut Interpreter, n: i64) -> usize {
 /// escaping its edge after line motion, only within the line.
 fn line_beginning_position(interp: &mut Interpreter, n: i64) -> Result<i64, LispError> {
     let charpos = bol(interp, n) as i64;
-    let point = interp.buffer.borrow().point() as i64;
+    let point = interp.current_buffer().pt() as i64;
     constrain_to_field(
         interp,
         &Value::Integer(charpos),
@@ -3382,7 +3368,7 @@ fn line_beginning_position(interp: &mut Interpreter, n: i64) -> Result<i64, Lisp
 
 /// editfns.c:eol: the end of the line N - 1 lines from point's.
 fn eol(interp: &mut Interpreter, n: i64) -> usize {
-    let saved = interp.buffer.borrow().point();
+    let saved = interp.current_buffer().pt();
     let count = (n - 1) as isize;
     let shortage = if count != 0 {
         interp.buffer.borrow_mut().forward_line(count)
@@ -3393,10 +3379,10 @@ fn eol(interp: &mut Interpreter, n: i64) -> usize {
     // of newlines yields BEGV itself, not the end of the first accessible
     // line.
     let result = if count < 0 && shortage != 0 {
-        interp.buffer.borrow().point_min()
+        interp.current_buffer().begv()
     } else {
         interp.buffer.borrow_mut().end_of_line();
-        interp.buffer.borrow().point()
+        interp.current_buffer().pt()
     };
     interp.buffer.borrow_mut().goto_char(saved);
     result
@@ -3406,7 +3392,7 @@ fn eol(interp: &mut Interpreter, n: i64) -> usize {
 /// within the line.
 fn line_end_position(interp: &mut Interpreter, n: i64) -> Result<i64, LispError> {
     let charpos = eol(interp, n) as i64;
-    let point = interp.buffer.borrow().point() as i64;
+    let point = interp.current_buffer().pt() as i64;
     constrain_to_field(
         interp,
         &Value::Integer(charpos),
@@ -3455,7 +3441,7 @@ pub(super) fn direct_char_after(
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let pos = match args.first().map(|v| v.kind()) {
-        None | Some(Kind::Nil) => Some(interp.buffer.borrow().point()),
+        None | Some(Kind::Nil) => Some(interp.current_buffer().pt()),
         Some(Kind::Integer(position)) if position >= 0 => usize::try_from(position).ok(),
         // fix_position takes a bignum as the farthest fixnum, outside
         // any buffer.
@@ -3486,7 +3472,7 @@ pub(super) fn direct_char_before(
     _env: &mut crate::lisp::types::Env,
 ) -> Result<Value, LispError> {
     let pos = match args.first().map(|v| v.kind()) {
-        None | Some(Kind::Nil) => Some(interp.buffer.borrow().point()),
+        None | Some(Kind::Nil) => Some(interp.current_buffer().pt()),
         Some(Kind::Integer(position)) if position >= 0 => usize::try_from(position).ok(),
         // fix_position takes a bignum as the farthest fixnum, outside
         // any buffer.
@@ -3507,7 +3493,7 @@ pub(super) fn direct_char_before(
     let Some(pos) = pos else {
         return Ok(Value::Nil);
     };
-    if pos <= interp.buffer.borrow().point_min() {
+    if pos <= interp.current_buffer().begv() {
         Ok(Value::Nil)
     } else {
         match public_buffer_char_code_at(interp, pos - 1) {
@@ -3789,14 +3775,14 @@ fn buffer_substring_named(
                 Ok(string_like_value_with_extended_chars(
                     s,
                     interp.buffer.borrow().string_intervals(start, end),
-                    interp.buffer.borrow().is_multibyte(),
+                    interp.current_buffer().multibyte(),
                     interp.buffer.borrow().substring_extended_chars(start, end),
                 ))
             } else {
                 Ok(string_like_value_with_extended_chars(
                     s,
                     None,
-                    interp.buffer.borrow().is_multibyte(),
+                    interp.current_buffer().multibyte(),
                     interp.buffer.borrow().substring_extended_chars(start, end),
                 ))
             }
@@ -3835,17 +3821,17 @@ pub(super) fn direct_buffer_substring_no_properties(
 
 /// editfns.c:Fpoint.
 pub(crate) fn point(interp: &Interpreter) -> Value {
-    Value::Integer(interp.buffer.borrow().point() as i64)
+    Value::Integer(interp.current_buffer().pt() as i64)
 }
 
 /// editfns.c:Fpoint_min.
 pub(crate) fn point_min(interp: &Interpreter) -> Value {
-    Value::Integer(interp.buffer.borrow().point_min() as i64)
+    Value::Integer(interp.current_buffer().begv() as i64)
 }
 
 /// editfns.c:Fpoint_max.
 pub(crate) fn point_max(interp: &Interpreter) -> Value {
-    Value::Integer(interp.buffer.borrow().point_max() as i64)
+    Value::Integer(interp.current_buffer().zv() as i64)
 }
 
 /// editfns.c:Fbolp.

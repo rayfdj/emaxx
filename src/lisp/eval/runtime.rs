@@ -120,8 +120,10 @@ impl Interpreter {
         self.current_buffer_id
     }
 
-    pub fn current_buffer(&self) -> std::cell::Ref<'_, crate::buffer::Buffer> {
-        self.buffer.borrow()
+    /// buffer.h's current_buffer: the object.
+    #[inline]
+    pub(crate) fn current_buffer(&self) -> crate::lisp::types::BufferRef {
+        self.buffer
     }
 
     pub fn set_current_load_file(&mut self, path: Option<String>) -> Option<String> {
