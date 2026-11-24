@@ -987,13 +987,14 @@ fn enter_closure_frame(
 /// NULL)') and undoes the bindings with unbind_to when it returns; after
 /// the formals it specbinds internal-interpreter-environment to the
 /// function's nil lexenv when the caller's environment is another
-/// (`bind_nil_environment').  When the binding does nothing else
-/// (`plain_dynamic_bindings'), the callee's frame is entered here as a
-/// lexical function's is (`enter_closure_frame'), its bindings on the
-/// specpdl above the frame's watermark, where Breturn (`unbind_plain_to')
-/// or the unwinding of a signal undoes them; the backtrace record is
-/// below them, as record_in_backtrace leaves it.  Otherwise None, with nothing changed
-/// but the stack's TOP, for the full Call arm to take.
+/// (`enter_dynamic_frame_binding_environment').  When the binding does
+/// nothing else (`plain_dynamic_bindings'), the callee's frame is entered
+/// here as a lexical function's is (`enter_closure_frame'), its bindings
+/// on the specpdl above the frame's watermark, where Breturn
+/// (`unbind_plain_to') or the unwinding of a signal undoes them; the
+/// backtrace record is below them, as record_in_backtrace leaves it.
+/// Otherwise None, with nothing changed but the stack's TOP, for the full
+/// Call arm to take.
 #[allow(clippy::too_many_arguments)]
 #[inline(never)]
 fn enter_dynamic_frame(
@@ -1006,6 +1007,64 @@ fn enter_dynamic_frame(
     arguments: Value,
     verified_return: bool,
 ) -> Option<(usize, usize)> {
+    let call = || DynamicCall {
+        args_start,
+        return_pc,
+        func,
+        function,
+        callee,
+        arguments,
+        verified_return,
+    };
+    // funcall_lambda's `!EQ (lexenv, Vinternal_interpreter_environment)',
+    // asked at the entry: the formals' plain bindings run no Lisp, so the
+    // answer stands when the environment's binding is made after them.
+    if crate::lisp::types::current_environment(vm.env).is_some() {
+        return enter_dynamic_frame_binding_environment(vm, call());
+    }
+    enter_dynamic_frame_with(vm, call(), false)
+}
+
+/// The operands of `enter_dynamic_frame', as it hands them on.
+#[derive(Clone, Copy)]
+struct DynamicCall<'a> {
+    args_start: usize,
+    return_pc: usize,
+    func: Value,
+    function: Value,
+    callee: &'a super::verify::EntryProgram,
+    arguments: Value,
+    verified_return: bool,
+}
+
+/// `enter_dynamic_frame' under an environment that is not nil, which
+/// funcall_lambda specbinds to the function's nil lexenv once the
+/// formals are bound.
+#[inline(never)]
+fn enter_dynamic_frame_binding_environment(
+    vm: &mut VmFrames<'_>,
+    call: DynamicCall<'_>,
+) -> Option<(usize, usize)> {
+    enter_dynamic_frame_with(vm, call, true)
+}
+
+/// `enter_dynamic_frame's frame entry, the environment's binding made
+/// after the formals' when BIND_ENVIRONMENT.
+#[inline(always)]
+fn enter_dynamic_frame_with(
+    vm: &mut VmFrames<'_>,
+    call: DynamicCall<'_>,
+    bind_environment: bool,
+) -> Option<(usize, usize)> {
+    let DynamicCall {
+        args_start,
+        return_pc,
+        func,
+        function,
+        callee,
+        arguments,
+        verified_return,
+    } = call;
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     // SAFETY: as `enter_closure_frame's: the caller's argument slots stay
     // as they are below the callee's frame until it returns or unwinds.
@@ -1048,7 +1107,9 @@ fn enter_dynamic_frame(
         let (symbol, value) = unsafe { binding.assume_init() };
         interp.specbind_plain_store(&symbol, value);
     }
-    interp.bind_nil_environment(vm.env);
+    if bind_environment {
+        interp.push_nil_environment(vm.env);
+    }
     Some((interp.bc_stack.top, 0))
 }
 
@@ -1191,14 +1252,28 @@ fn return_to_bytecode_frame(
 /// argument bindings and of the environment's above them, for
 /// `return_to_bytecode_frame': each entry above COUNT undone in place
 /// while undoing it runs nothing (`Interpreter::unbind_quiet_innermost',
-/// and `Interpreter::unbind_environment_innermost', which takes the nil
-/// frame off ENV); true with all undone, false at the first that runs
-/// something, the ones above it undone, for the full return path to undo
-/// the rest.
+/// and from the first it does not undo `unbind_environment_to', which
+/// takes the nil frame off ENV); true with all undone, false at the first
+/// that runs something, the ones above it undone, for the full return
+/// path to undo the rest.
 #[inline(never)]
 fn unbind_plain_to(interp: &mut Interpreter, env: &mut Env, count: usize) -> bool {
     while interp.specpdl_index() > count {
-        if !interp.unbind_quiet_innermost() && !interp.unbind_environment_innermost(env) {
+        if !interp.unbind_quiet_innermost() {
+            return unbind_environment_to(interp, env, count);
+        }
+    }
+    true
+}
+
+/// `unbind_plain_to' on from an entry `unbind_quiet_innermost' does not
+/// undo, which it undoes in place when it is the environment's binding:
+/// out of line, so that the binding loop above holds no more than its
+/// own state.
+#[inline(never)]
+fn unbind_environment_to(interp: &mut Interpreter, env: &mut Env, count: usize) -> bool {
+    while interp.specpdl_index() > count {
+        if !interp.unbind_environment_innermost(env) && !interp.unbind_quiet_innermost() {
             return false;
         }
     }
@@ -1298,6 +1373,19 @@ fn leave_frame_unwinding(
     frame: &BcFrame,
     record: usize,
 ) -> Result<(), LispError> {
+    let unbound = unbind_frame_entries(interp, env, frame);
+    interp.truncate_backtrace_frames(record);
+    interp.end_funcall();
+    unbound
+}
+
+/// The unbind_to of FRAME's entries above its watermark: each undone in
+/// turn, the last signal from an unwind form the one that comes out.
+fn unbind_frame_entries(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    frame: &BcFrame,
+) -> Result<(), LispError> {
     let mut last_error = None;
     while interp.specpdl_index() > frame.unwinds_len {
         let Some(entry) = interp.pop_specpdl_entry() else {
@@ -1307,8 +1395,6 @@ fn leave_frame_unwinding(
             last_error = Some(error);
         }
     }
-    interp.truncate_backtrace_frames(record);
-    interp.end_funcall();
     last_error.map_or(Ok(()), Err)
 }
 
@@ -4801,21 +4887,30 @@ fn run_loop(
             let value = $value;
             match interp.bc_frames.pop_above(frames_base) {
                 Some(frame) => {
-                    // `if (backtrace_debug_on_exit (specpdl_ptr - 1)) val =
-                    // call_debugger (list2 (Qexit, val))', the callee's
-                    // frame still in place.
-                    let value = if interp.frame_debug_on_exit(interp.innermost_backtrace_record()) {
-                        match interp.call_exit_debugger(value, env) {
-                            Ok(value) => value,
-                            Err(error) => {
-                                interp.bc_frames.push(frame);
-                                return Err(error);
+                    // The callee's entries above the frame's watermark (a
+                    // dynamic-binding function's formals and its binding
+                    // of the environment) are undone first, as
+                    // funcall_lambda's unbind_to returns before Ffuncall's
+                    // `if (backtrace_debug_on_exit (count)) val =
+                    // call_debugger (list2 (Qexit, val))', which runs with
+                    // the callee's record still in place; a signal from
+                    // the undoing leaves the debugger unentered.
+                    let unbound = unbind_frame_entries(interp, env, &frame);
+                    let value = match unbound {
+                        Ok(())
+                            if interp.frame_debug_on_exit(interp.innermost_backtrace_record()) =>
+                        {
+                            match interp.call_exit_debugger(value, env) {
+                                Ok(value) => value,
+                                Err(error) => {
+                                    interp.bc_frames.push(frame);
+                                    return Err(error);
+                                }
                             }
                         }
-                    } else {
-                        value
+                        _ => value,
                     };
-                    let left = leave_frame(interp, env, &frame);
+                    let left = leave_frame(interp, env, &frame).and(unbound);
                     pc = interp.bc_stack.leave_frame();
                     interp.bc_stack.truncate(frame.base);
                     program = frame.program;

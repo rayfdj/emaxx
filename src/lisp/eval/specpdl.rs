@@ -270,9 +270,10 @@ impl Interpreter {
         }
     }
 
-    /// `bind_nil_environment' over an environment that is not nil.
+    /// `bind_nil_environment' over an environment that is not nil, for a
+    /// caller that asked funcall_lambda's test itself.
     #[inline(never)]
-    fn push_nil_environment(&mut self, env: &mut Env) {
+    pub(crate) fn push_nil_environment(&mut self, env: &mut Env) {
         self.record_unwind(UnwindAction::InterpreterEnvironment(env.len()));
         env.push(EnvFrame::dynamic());
     }
@@ -348,6 +349,12 @@ impl Interpreter {
         if self.c_stack_overflow_exit {
             if let SpecpdlEntry::Unwind(record) = entry {
                 self.truncate_backtrace_frames(record.backtrace_depth as usize);
+                // The nil frame a dynamic-binding function's call put on
+                // the environment goes with its entry, which alone would
+                // take it off.
+                if let UnwindAction::InterpreterEnvironment(depth) = record.action {
+                    env.truncate(depth);
+                }
             }
             return Ok(());
         }

@@ -1563,6 +1563,72 @@ fn dynamic_binding_byte_code_binds_its_formals_then_the_environment() {
 }
 
 #[test]
+fn a_dynamic_byte_code_callees_bindings_are_undone_before_its_exit_debugger() {
+    // eval.c:funcall_lambda's unbind_to of a dynamic-binding function's
+    // formals and of its binding of internal-interpreter-environment
+    // returns before Ffuncall's (or Bcall's) `if (backtrace_debug_on_exit
+    // (count)) val = call_debugger (list2 (Qexit, val))': a callee marked
+    // by backtrace-debug enters the debugger with its formal unbound and
+    // the caller's lexical environment unsaved (defvar-1 of a name the
+    // interpreted caller binds lexically defines it), the debugger's value
+    // replacing the call's, whether lexical byte code, mapcar or dynamic
+    // byte code calls it; a signal from the unbinding (a watcher at the
+    // formal's unlet) comes out of the call with the debugger unentered.
+    let corpus = Corpus::new();
+    for (name, program) in [
+        (
+            "exit-lex.el",
+            r#";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defmacro d17-try (form) `(condition-case e ,form (error (car e))))
+(defvar d17f 'global)
+(defvar d17-log nil)
+(defvar d17-names nil)
+(defun d17-dbg (&rest args)
+  (push (list (car args) d17f (d17-try (progn (defvar-1 (pop d17-names) 5 nil) 'ok))) d17-log)
+  (if (eq (car args) 'exit) (list 'replaced (cadr args)) nil))
+(byte-compile 'd17-dbg)
+(defalias 'd17-dmark (let ((lexical-binding nil)) (byte-compile '(lambda (d17f) (backtrace-debug 1 t #'backtrace-debug) (list 'ret d17f)))))
+(defalias 'd17-lmark (byte-compile '(lambda (x) (list (d17-dmark x) d17f))))
+(princ (format "1 %S %S\n" (let ((debugger #'d17-dbg) (d17q1 1)) (setq d17-names '(d17q1) d17-log nil) (d17-lmark 'v)) d17-log))
+(princ (format "2 %S %S\n" (let ((debugger #'d17-dbg) (d17q2 1)) (setq d17-names '(d17q2) d17-log nil) (mapcar #'d17-dmark '(w))) d17-log))
+(princ (format "3 %S %S\n" (let ((debugger #'d17-dbg) (d17q3 1)) (setq d17-names '(d17q3) d17-log nil) (mapcar #'d17-lmark '(u))) d17-log))
+;; A watcher of the marked callee's formal signals at its unlet: the
+;; signal comes out of the call and the exit debugger is not entered.
+(defvar d17wf nil)
+(defvar d17-wmode nil)
+(add-variable-watcher 'd17wf (lambda (_s _n op _w) (when (and (eq op 'unlet) d17-wmode) (error "unlet boom"))))
+(defalias 'd17-dwmark (let ((lexical-binding nil)) (byte-compile '(lambda (d17wf) (backtrace-debug 1 t #'backtrace-debug) d17wf))))
+(defalias 'd17-lwmark (byte-compile '(lambda (x) (condition-case e (d17-dwmark x) (error (list 'caught (cadr e)))))))
+(princ (format "4 %S %S\n" (let ((debugger #'d17-dbg) (d17q4 1)) (setq d17-names '(d17q4) d17-log nil d17-wmode t) (prog1 (d17-lwmark 'z) (setq d17-wmode nil))) d17-log))
+(princ (format "5 %S %S\n" (mapcar #'special-variable-p '(d17q1 d17q2 d17q3 d17q4)) (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n)))
+"#,
+        ),
+        (
+            "exit-dyn.el",
+            r#";;; -*- lexical-binding: nil -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defvar d17f 'global)
+(defvar d17-log nil)
+(defalias 'd17-dmark (byte-compile '(lambda (d17f) (backtrace-debug 1 t #'backtrace-debug) (list 'ret d17f))))
+(defalias 'd17-dcall (byte-compile '(lambda (x) (list (d17-dmark x) d17f))))
+(setq debugger (byte-compile '(lambda (&rest args) (push (list (car args) d17f) d17-log) (if (eq (car args) 'exit) (list 'replaced (cadr args)) nil))))
+(princ (format "1 %S %S\n" (d17-dcall 'v) d17-log))
+(setq d17-log nil)
+(princ (format "2 %S %S\n" (mapcar #'d17-dmark '(w)) d17-log))
+(setq d17-log nil)
+(princ (format "3 %S %S\n" (let ((d17f 'outer)) (d17-dcall 'x)) d17-log))
+"#,
+        ),
+    ] {
+        let probe = corpus.write(name, program);
+        assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
+    }
+}
+
+#[test]
 fn the_memory_profiler_files_a_byte_code_callback_under_mapc() {
     // profiler.c's malloc_probe from a byte-code callback that mapc calls:
     // the sample's backtrace holds the callback with mapc as its caller.
