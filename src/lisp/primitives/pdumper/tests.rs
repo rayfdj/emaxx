@@ -953,6 +953,9 @@ fn an_image_naming_a_removed_root_slot_is_refused() {
     // refused by its fingerprint first; one that names the code anyway is
     // refused too, not read into another slot.
     assert_eq!(RootSlot::from_u32(50), None);
+    // Code 48 was the ERT test registry, a test now being its symbol's
+    // `ert--test' property.
+    assert_eq!(RootSlot::from_u32(48), None);
     let mut interp = Interpreter::new();
     let bytes = dump(&mut interp, vec![(RootSlot::QuitFlag, Value::T)]);
     let header = validate_header(&bytes).expect("a valid header");
@@ -2299,6 +2302,8 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             (define-key p "\M-q" 'ignore)
             (define-key m "\C-c" 'car)
             (setq zz-image-child m zz-image-parent p))
+          (put 'zz-test 'ert--test
+               (record 'ert-test 'zz-test nil '(should t) nil :passed '(fast) "zz.el"))
           t)"#;
     // As in the ordinary reader, publish the names in the interpreter's
     // obarray before evaluation. That real image root owns the symbols
@@ -2313,13 +2318,17 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
         SymbolName::intern_str("zz-detached"),
         Value::list([Value::Integer(1)]),
     );
-    interp.ert_tests.push(crate::lisp::eval::ErtTestDefinition {
-        name: "zz-test".into(),
-        body: Value::list([Value::symbol("should"), Value::T]),
-        source_file: Some("zz.el".into()),
-        tags: vec!["fast".into()],
-        expected_result: ":passed".into(),
-    });
+    // An ERT test is its symbol's `ert--test' property, which the
+    // obarray carries; there is no registry group.
+    let source_tests = interp.discovered_tests();
+    assert_eq!(
+        source_tests,
+        vec![crate::compat::DiscoveredTest {
+            name: "zz-test".into(),
+            tags: vec!["fast".into()],
+            expected_result: ":passed".into(),
+        }]
+    );
     interp
         .composition_states
         .push(crate::lisp::eval::CompositionState {
@@ -2399,6 +2408,7 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             },
         )
         .expect("install the dumped symbol cells");
+    assert_eq!(target.discovered_tests(), source_tests);
     // Actual Lisp roots carry both maps; the restored child shares the
     // parent's cons cells. Collection must preserve both while reachable.
     let form = crate::lisp::reader::Reader::new(

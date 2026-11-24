@@ -1242,7 +1242,9 @@ pub struct MessageCapture {
 #[derive(Clone, Debug)]
 pub struct ErtTestDefinition {
     pub name: String,
+    #[cfg(test)]
     pub body: Value,
+    #[cfg(test)]
     pub source_file: Option<String>,
     pub tags: Vec<String>,
     pub expected_result: String,
@@ -5790,10 +5792,6 @@ impl Interpreter {
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
-        for (symbol, value) in &self.deferred_defsubst_unbindings {
-            mark(&Value::Symbol(*symbol));
-            mark(value);
-        }
         if let Some(value) = &self.last_thread_error {
             mark(value);
         }
@@ -5867,9 +5865,6 @@ impl Interpreter {
         for (header, gstring) in &self.gstrings.entries {
             mark(header);
             mark(gstring);
-        }
-        for test in &self.ert_tests {
-            mark(&test.body);
         }
         for entry in &self.specpdl {
             entry.mark_values(&mut mark);
@@ -6315,10 +6310,6 @@ impl Interpreter {
                 c.copy(&clone.alternative_font_family_alist.clone());
             clone.alternative_font_registry_alist =
                 c.copy(&clone.alternative_font_registry_alist.clone());
-            for (symbol, value) in &mut clone.deferred_defsubst_unbindings {
-                *symbol = c.copy_symbol(*symbol);
-                *value = c.copy(value);
-            }
             if let Some(error) = &clone.last_thread_error {
                 clone.last_thread_error = Some(c.copy(error));
             }
@@ -6392,9 +6383,6 @@ impl Interpreter {
             for (header, gstring) in &mut clone.gstrings.entries {
                 *header = c.copy(&header.clone());
                 *gstring = c.copy(&gstring.clone());
-            }
-            for test in &mut clone.ert_tests {
-                test.body = c.copy(&test.body.clone());
             }
             // A template is copied between top-level forms: its specpdl
             // holds bindings alone, no native activation being under way.
@@ -7008,8 +6996,6 @@ pub struct InterpreterState {
     pub(crate) ert_test_source_file: Option<String>,
     #[cfg(test)]
     pub(crate) current_ert_test_name: Option<String>,
-    /// Collected ERT test definitions.
-    pub ert_tests: Vec<ErtTestDefinition>,
     /// Results from the most recent ERT run.
     #[cfg(test)]
     pub test_results: Vec<TestOutcome>,
@@ -7157,11 +7143,6 @@ pub struct InterpreterState {
     /// process.c's update_tick: process_tick when status_notify last
     /// began, which its callers compare process_tick with.
     process_update_tick: u64,
-    /// Source-loaded callbacks stand in for GNU's byte-compiled Lisp.  Keep
-    /// defsubst definitions removed by loadhist alive until the active timer
-    /// returns, matching calls that GNU compiled inline into the callback.
-    timer_callback_depth: usize,
-    deferred_defsubst_unbindings: Vec<(SymbolName, Value)>,
     pending_file_notifications: Vec<PendingFileNotification>,
     file_notify_watches: HashMap<i64, FileNotifyWatch>,
     #[cfg(target_os = "macos")]
@@ -7750,7 +7731,6 @@ impl Interpreter {
             ert_test_source_file: None,
             #[cfg(test)]
             current_ert_test_name: None,
-            ert_tests: Vec::new(),
             #[cfg(test)]
             test_results: Vec::new(),
             #[cfg(test)]
@@ -7822,8 +7802,6 @@ impl Interpreter {
             fundamental_mode_name: Value::Nil,
             process_states: Vec::new(),
             process_update_tick: 0,
-            timer_callback_depth: 0,
-            deferred_defsubst_unbindings: Vec::new(),
             pending_file_notifications: Vec::new(),
             file_notify_watches: HashMap::new(),
             #[cfg(target_os = "macos")]

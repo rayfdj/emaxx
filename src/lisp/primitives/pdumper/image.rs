@@ -560,7 +560,8 @@ pub(crate) enum RootSlot {
     AlternativeFontRegistryAlist = 45,
     FringeBitmaps = 46,
     Compositions = 47,
-    ErtTests = 48,
+    // Former ERT test registry root code 48 is unsupported: a test is its
+    // symbol's `ert--test' property, which the obarray carries.
     LabeledRestrictions = 49,
     // Former native timer root code 50 is unsupported: GNU's timers are
     // timer.el's `timer-list'.
@@ -640,7 +641,6 @@ impl RootSlot {
             45 => Self::AlternativeFontRegistryAlist,
             46 => Self::FringeBitmaps,
             47 => Self::Compositions,
-            48 => Self::ErtTests,
             49 => Self::LabeledRestrictions,
             51 => Self::LastThreadError,
             52 => Self::FontSelectionOrder,

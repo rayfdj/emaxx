@@ -257,16 +257,14 @@ impl Interpreter {
             // loadhist uses `(defalias NAME nil)' while unloading; leaving
             // a literal nil binding here would hide any dumped autoload and
             // turn the next call into `(invalid-function nil)'.
-            if !function.is_nil() || !self.defer_unloaded_defsubst(&name) {
-                // Ffset: `NILP (symbol) && !NILP (definition)' signals.
-                if args[0].is_nil() && !function.is_nil() {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::symbol("setting-constant"),
-                        args[0],
-                    ])));
-                }
-                self.fset_function_symbol(&name, args[0], function, env)?;
+            // Ffset: `NILP (symbol) && !NILP (definition)' signals.
+            if args[0].is_nil() && !function.is_nil() {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("setting-constant"),
+                    args[0],
+                ])));
             }
+            self.fset_function_symbol(&name, args[0], function, env)?;
         }
         if !docstring.is_nil() {
             self.put_symbol_property_on(&name, "function-documentation", docstring);

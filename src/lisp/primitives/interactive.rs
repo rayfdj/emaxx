@@ -2022,14 +2022,12 @@ fn timer_check(
             .unwrap_or(Value::Nil);
         let inhibit_quit =
             interp.bind_special_key(cached_symbol!("inhibit-quit"), Value::T, env)?;
-        interp.begin_timer_callback();
         let outcome = interp.call_function_value(
             Value::Symbol("timer-event-handler".into()),
             Some("timer-event-handler"),
             std::slice::from_ref(&timer),
             env,
         );
-        interp.end_timer_callback();
         if outcome.is_ok() {
             interp.set_c_variable("deactivate-mark", old_deactivate_mark);
         }

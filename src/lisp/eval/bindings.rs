@@ -1307,50 +1307,6 @@ impl Interpreter {
         Ok(definition)
     }
 
-    pub(crate) fn begin_timer_callback(&mut self) {
-        self.timer_callback_depth += 1;
-    }
-
-    pub(crate) fn defer_unloaded_defsubst(&mut self, symbol: &SymbolName) -> bool {
-        if self.timer_callback_depth == 0
-            || !self
-                .symbol_value("loadhist-unload-filename")
-                .is_some_and(|value| value.is_truthy())
-            || !cached_symbol!("byte-optimizer")
-                .with(|property| self.get_symbol_property_of(symbol, property))
-                .is_some_and(|optimizer| {
-                    crate::lisp::types::eq_symbol_named(optimizer, "byte-compile-inline-expand")
-                })
-        {
-            return false;
-        }
-        let Some(definition) = self.globals.function(symbol) else {
-            return false;
-        };
-        if !self
-            .deferred_defsubst_unbindings
-            .iter()
-            .any(|(queued, _)| queued == symbol)
-        {
-            self.deferred_defsubst_unbindings
-                .push((*symbol, definition));
-        }
-        true
-    }
-
-    pub(crate) fn end_timer_callback(&mut self) {
-        debug_assert!(self.timer_callback_depth > 0);
-        self.timer_callback_depth -= 1;
-        if self.timer_callback_depth != 0 {
-            return;
-        }
-        for (symbol, definition) in std::mem::take(&mut self.deferred_defsubst_unbindings) {
-            if self.globals.function(&symbol) == Some(definition) {
-                self.set_function_binding_symbol(&symbol, None);
-            }
-        }
-    }
-
     /// data.c:Ffset's non-circularity loop: from DEFINITION through each
     /// `SYMBOLP' other than nil (`BASE_EQ', so a positioned nil goes on
     /// to nil's cell), cyclic-function-indirection of ARGUMENT, the

@@ -445,7 +445,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "condition variable objects are refused by the writer",
     ),
     ("combined_after_change", "the running change group"),
-    ("timer_callback_depth", "the running timer"),
     ("file_notify_kqueue", "an OS descriptor of the process"),
     ("file_notify_inotify", "an OS descriptor of the process"),
     (
@@ -462,12 +461,7 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
 /// The transient groups that must be empty at dump time: they belong to
 /// an evaluation in progress, which Fdump_emacs_portable is not inside
 /// of beyond its own frame.
-pub(crate) const TRANSIENT_ROOTS: &[&str] =
-    &["pending_thread_events", "deferred_defsubst_unbindings"];
-
-fn opt_string(value: Option<&str>) -> Value {
-    value.map_or(Value::Nil, Value::string)
-}
+pub(crate) const TRANSIENT_ROOTS: &[&str] = &["pending_thread_events"];
 
 fn opt_symbol(value: Option<&str>) -> Value {
     value.map_or(Value::Nil, Value::symbol)
@@ -781,20 +775,6 @@ impl Interpreter {
                 ])
             })),
         ));
-        // ert.el keeps a test in its symbol's `ert--test' property; the
-        // registry mirrors it.
-        groups.push((
-            RootSlot::ErtTests,
-            Value::list(self.ert_tests.iter().map(|test| {
-                Value::vector([
-                    Value::symbol(&test.name),
-                    test.body,
-                    opt_string(test.source_file.as_deref()),
-                    Value::list(test.tags.iter().map(|tag| Value::symbol(tag))),
-                    Value::symbol(&test.expected_result),
-                ])
-            })),
-        ));
         // editfns.c: labeled_restrictions, an alist of (buffer (label beg end)...).
         groups.push((
             RootSlot::LabeledRestrictions,
@@ -859,13 +839,7 @@ impl Interpreter {
 
     /// The transient groups that must be empty when the image is written.
     pub(crate) fn dump_transient_roots_check(&self) -> Result<(), String> {
-        let counts = [
-            ("pending_thread_events", self.pending_thread_events.len()),
-            (
-                "deferred_defsubst_unbindings",
-                self.deferred_defsubst_unbindings.len(),
-            ),
-        ];
+        let counts = [("pending_thread_events", self.pending_thread_events.len())];
         debug_assert_eq!(counts.len(), TRANSIENT_ROOTS.len());
         for (name, count) in counts {
             if count != 0 {
@@ -1271,23 +1245,6 @@ mod install {
                     self.composition_states = compositions;
                     self.composition_index = Default::default();
                 }
-                RootSlot::ErtTests => {
-                    let mut tests = Vec::new();
-                    for entry in expect_list(value, "ert tests")? {
-                        let fields = expect_vector(&entry, "ert test")?;
-                        if fields.len() != 5 {
-                            return Err("ert test: five fields expected".into());
-                        }
-                        tests.push(ErtTestDefinition {
-                            name: expect_symbol(&fields[0], "test name")?,
-                            body: fields[1],
-                            source_file: opt_of(&fields[2], |v| expect_string(v, "source file"))?,
-                            tags: symbol_names(&fields[3], "test tags")?,
-                            expected_result: expect_symbol(&fields[4], "expected result")?,
-                        });
-                    }
-                    self.ert_tests = tests;
-                }
                 RootSlot::LabeledRestrictions => {
                     let mut restrictions = Vec::new();
                     for entry in expect_list(value, "labeled restrictions")? {
@@ -1369,13 +1326,6 @@ mod install {
         expect_list(value, what)?
             .iter()
             .map(|entry| expect_symbol_name(entry, what))
-            .collect()
-    }
-
-    fn symbol_names(value: &Value, what: &str) -> Result<Vec<String>, String> {
-        expect_list(value, what)?
-            .iter()
-            .map(|entry| expect_symbol(entry, what))
             .collect()
     }
 }

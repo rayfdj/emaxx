@@ -27113,12 +27113,11 @@ fn garbage_collect_reports_nine_kinds_as_gnu() {
 #[test]
 fn an_unbound_ert_test_leaves_its_body_to_the_collector() {
     // ert-make-test-unbound removes the test's `ert--test' property
-    // (cl-remprop): in GNU nothing then holds the test's body, and a
-    // weak-key table that held it is empty after a collection.  Here the
-    // body stays, held by the evaluator's copy of the test registry
-    // (`ert_tests'), which the mirrors plan's R5 removes.  The test
-    // object itself is not witnessed: whether a stale word on the stack
-    // keeps it differs from run to run.
+    // (cl-remprop): nothing then holds the test's body, and a weak-key
+    // table that held it is empty after a collection, as in GNU (the
+    // evaluator kept a copy of the registry, which held it, until the
+    // mirrors plan's R5).  The test object itself is not witnessed:
+    // whether a stale word on the stack keeps it differs from run to run.
     let program = r#"(progn
           (require 'ert)
           (defvar t6-w (make-hash-table :test 'eq :weakness 'key))
@@ -27135,7 +27134,76 @@ fn an_unbound_ert_test_leaves_its_body_to_the_collector() {
             (list before (ert-test-boundp 't6-probe-test) (get 't6-probe-test 'ert--test)
                   (hash-table-count t6-w))))"#;
     assert_upstream_primitive_contract(&format!("(prin1 {program})"), "((t 1) nil nil 0)");
-    assert_interpreter_prints(program, "((t 1) nil nil 1)", "unbound ERT test");
+    assert_interpreter_prints(program, "((t 1) nil nil 0)", "unbound ERT test");
+}
+
+#[test]
+fn put_of_an_ert_test_property_is_an_ordinary_plist_store() {
+    // fns.c:Fput is plist_put on the bare symbol, whatever the property
+    // and value: under `ert--test' a record of another type is stored,
+    // and an uninterned symbol's test is its own.  (Until the mirrors
+    // plan's R5 such a put went to the evaluator's test registry, which
+    // refused any record but an `ert-test' and stored by name.)
+    let program = r#"(progn
+          (require 'ert)
+          (list (condition-case err (put 'zz-r5-a 'ert--test (record 'foo 1)) (error err))
+                (get 'zz-r5-a 'ert--test)
+                (let ((s (make-symbol "zz-r5-b")))
+                  (put s 'ert--test (make-ert-test :name s :body (lambda () t)))
+                  (list (ert-test-boundp s) (intern-soft "zz-r5-b")))))"#;
+    let expected = "(#s(foo 1) #s(foo 1) (t nil))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    assert_interpreter_prints(program, expected, "put of ert--test");
+}
+
+#[test]
+fn the_report_lists_a_redefined_test_once_and_an_unbound_one_not_at_all() {
+    // The embedder's report reads ert.el's tests when it is made, as
+    // `(ert-select-tests t t)' lists them: by name, a redefined test with
+    // its last definition's tags and expected result, a test made unbound
+    // absent.
+    let program = r#"(progn
+          (require 'ert)
+          (ert-deftest zz-r5-redef-b () :tags '(one) t)
+          (ert-deftest zz-r5-redef-a () t)
+          (let ((noninteractive nil))
+            (ert-deftest zz-r5-redef-b () :tags '(two) :expected-result :failed t))
+          (ert-deftest zz-r5-redef-c () t)
+          (ert-make-test-unbound 'zz-r5-redef-c)
+          (mapcar (lambda (test)
+                    (list (ert-test-name test) (ert-test-tags test)
+                          (ert-test-expected-result-type test)))
+                  (ert-select-tests "^zz-r5-redef-" t)))"#;
+    let expected = "((zz-r5-redef-a nil :passed) (zz-r5-redef-b (two) :failed))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Env::new();
+    let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
+        .expect("the program parses")
+        .expect("a form");
+    let listed = interp.eval(&form, &mut env).expect("the program runs");
+    let printed = call(&mut interp, "prin1-to-string", &[listed], &mut env).expect("print");
+    assert_eq!(string_like(&printed).expect("printed").text, expected);
+    let discovered = interp
+        .discovered_tests()
+        .into_iter()
+        .filter(|test| test.name.starts_with("zz-r5-redef-"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        discovered,
+        vec![
+            crate::compat::DiscoveredTest {
+                name: "zz-r5-redef-a".into(),
+                tags: Vec::new(),
+                expected_result: ":passed".into(),
+            },
+            crate::compat::DiscoveredTest {
+                name: "zz-r5-redef-b".into(),
+                tags: vec!["two".into()],
+                expected_result: ":failed".into(),
+            },
+        ]
+    );
 }
 
 #[test]
