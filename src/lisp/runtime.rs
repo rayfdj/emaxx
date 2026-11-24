@@ -808,7 +808,7 @@ mod tests {
             .downcast_ref::<&str>()
             .copied()
             .or_else(|| refused.downcast_ref::<String>().map(String::as_str))
-            .unwrap_or_default();
+            .expect("the assertion's message");
         assert!(message.contains("outlived"), "{message}");
     }
 }
