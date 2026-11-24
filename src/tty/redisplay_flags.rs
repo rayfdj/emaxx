@@ -8,8 +8,8 @@ use crate::lisp::cached_symbol;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::eval::runtime::REDISPLAY_SOME;
 use crate::lisp::primitives::{
-    WINDOW_POINT_SLOT, WindowRef, set_window_flag, set_window_last_point,
-    window_column_number_displayed, window_flag, window_last_point, window_marker_position,
+    WindowMarker, WindowRef, set_window_last_point, window_column_number_displayed,
+    window_last_point, window_marker_position,
 };
 use crate::lisp::types::{Env, Kind, Value};
 
@@ -20,19 +20,19 @@ pub(super) fn redisplay_some_p(interp: &Interpreter) -> bool {
         && matches!(interp.update_mode_lines, 0 | REDISPLAY_SOME)
 }
 
-/// The buffer WINDOW_ID shows.
-pub(super) fn window_buffer(interp: &Interpreter, window_id: u64) -> Option<u64> {
-    crate::lisp::primitives::window_buffer_id(interp, &interp.window_value(window_id))
+/// The live buffer WINDOW shows.
+pub(super) fn window_buffer(interp: &Interpreter, window: WindowRef) -> Option<u64> {
+    window.live_buffer_id(interp)
 }
 
 /// window_point: the buffer's point for the selected window, else the
 /// window's point marker.
-pub(super) fn window_point(interp: &Interpreter, window_id: u64) -> Option<usize> {
-    if window_id == interp.selected_window_id() {
-        let buffer = window_buffer(interp, window_id)?;
+pub(super) fn window_point(interp: &Interpreter, window: WindowRef) -> Option<usize> {
+    if window == interp.selected_window_ref() {
+        let buffer = window_buffer(interp, window)?;
         Some(interp.buffer_point_by_id(buffer))
     } else {
-        window_marker_position(interp, window_id, WINDOW_POINT_SLOT)
+        window_marker_position(window, WindowMarker::Pointm)
     }
 }
 
@@ -49,26 +49,22 @@ fn buffer_counts(interp: &Interpreter, buffer_id: u64) -> Option<(i64, bool, i64
 
 /// window_outdated: the window's buffer or its overlays changed since
 /// the window's last complete redisplay.
-pub(super) fn window_outdated(interp: &Interpreter, window_id: u64) -> bool {
+pub(super) fn window_outdated(interp: &Interpreter, window: WindowRef) -> bool {
     let Some((modiff, _, overlay_modiff)) =
-        window_buffer(interp, window_id).and_then(|buffer| buffer_counts(interp, buffer))
+        window_buffer(interp, window).and_then(|buffer| buffer_counts(interp, buffer))
     else {
         return true;
     };
-    let (last_modified, last_overlay_modified) =
-        interp.window_ref(window_id).map_or((0, 0), |window| {
-            (window.last_modified(), window.last_overlay_modified())
-        });
-    last_modified < modiff || last_overlay_modified < overlay_modiff
+    window.last_modified() < modiff || window.last_overlay_modified() < overlay_modiff
 }
 
 /// window_buffer_changed: whether the buffer was modified, as it was
 /// not when the mode line showed it last, or the reverse.
-pub(super) fn window_buffer_changed(interp: &Interpreter, window_id: u64) -> bool {
-    let modified = window_buffer(interp, window_id)
+pub(super) fn window_buffer_changed(interp: &Interpreter, window: WindowRef) -> bool {
+    let modified = window_buffer(interp, window)
         .and_then(|buffer| buffer_counts(interp, buffer))
         .is_some_and(|(_, modified, _)| modified);
-    modified != window_flag(interp, window_id, WindowRef::last_had_star)
+    modified != window.last_had_star()
 }
 
 /// mode_line_update_needed: the window's mode line shows a column (`%c'
@@ -76,14 +72,14 @@ pub(super) fn window_buffer_changed(interp: &Interpreter, window_id: u64) -> boo
 pub(super) fn mode_line_update_needed(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
 ) -> bool {
-    let Some(displayed) = window_column_number_displayed(interp, window_id) else {
+    let Some(displayed) = window_column_number_displayed(window) else {
         return false;
     };
     let point = interp.buffer.borrow().point();
-    let last_point = window_last_point(interp, window_id);
-    if last_point == Some(point as i64) && !window_outdated(interp, window_id) {
+    let last_point = window_last_point(window);
+    if last_point == Some(point as i64) && !window_outdated(interp, window) {
         return false;
     }
     crate::lisp::primitives::current_column(interp, env)
@@ -93,20 +89,17 @@ pub(super) fn mode_line_update_needed(
 /// needs_no_redisplay: under REDISPLAY_SOME, a window nothing asked to
 /// redisplay (nor its frame, by a face change or its redisplay flag)
 /// whose point did not move.
-pub(super) fn needs_no_redisplay(interp: &Interpreter, window_id: u64) -> bool {
-    if !redisplay_some_p(interp)
-        || window_flag(interp, window_id, WindowRef::redisplay)
-        || window_flag(interp, window_id, WindowRef::update_mode_line)
-    {
+pub(super) fn needs_no_redisplay(interp: &Interpreter, window: WindowRef) -> bool {
+    if !redisplay_some_p(interp) || window.redisplay() || window.update_mode_line() {
         return false;
     }
-    if interp.window_frame_id(window_id).is_some_and(|frame| {
+    if window.frame().is_some_and(|frame| {
         let frame = frame.borrow();
         frame.face_change || frame.redisplay
     }) {
         return false;
     }
-    let Some(buffer_id) = window_buffer(interp, window_id) else {
+    let Some(buffer_id) = window_buffer(interp, window) else {
         return false;
     };
     if interp
@@ -115,53 +108,45 @@ pub(super) fn needs_no_redisplay(interp: &Interpreter, window_id: u64) -> bool {
     {
         return false;
     }
-    window_point(interp, window_id).map(|point| point as i64)
-        == window_last_point(interp, window_id)
+    window_point(interp, window).map(|point| point as i64) == window_last_point(window)
 }
 
 /// propagate_buffer_redisplay: each window whose buffer's text must be
 /// redisplayed is marked itself, so that the buffers' flags can go.
-pub(super) fn propagate_buffer_redisplay(interp: &mut Interpreter, windows: &[u64]) {
-    for &window_id in windows {
-        if window_buffer(interp, window_id)
+pub(super) fn propagate_buffer_redisplay(interp: &mut Interpreter, windows: &[WindowRef]) {
+    for &window in windows {
+        if window_buffer(interp, window)
             .and_then(|buffer| interp.get_buffer_by_id(buffer).map(|b| b.text_redisplay()))
             .unwrap_or(false)
         {
-            set_window_flag(interp, window_id, WindowRef::set_redisplay, true);
+            window.set_redisplay(true);
         }
     }
 }
 
 /// mark_window_display_accurate_1 (W, true): what the window's complete
 /// redisplay leaves for the next one to compare against.
-pub(super) fn mark_window_display_accurate(interp: &mut Interpreter, window_id: u64) {
-    let Some(buffer_id) = window_buffer(interp, window_id) else {
+pub(super) fn mark_window_display_accurate(interp: &mut Interpreter, window: WindowRef) {
+    let Some(buffer_id) = window_buffer(interp, window) else {
         return;
     };
     let Some((modiff, modified, overlay_modiff)) = buffer_counts(interp, buffer_id) else {
         return;
     };
-    if let Some(window) = interp.window_ref(window_id) {
-        window.set_last_modified(modiff);
-        window.set_last_overlay_modified(overlay_modiff);
-    }
-    set_window_flag(interp, window_id, WindowRef::set_last_had_star, modified);
-    set_window_flag(
-        interp,
-        window_id,
-        crate::lisp::primitives::WindowRef::set_window_end_valid,
-        true,
-    );
+    window.set_last_modified(modiff);
+    window.set_last_overlay_modified(overlay_modiff);
+    window.set_last_had_star(modified);
+    window.set_window_end_valid(true);
     if let Some(mut buffer) = interp.get_buffer_by_id_mut(buffer_id) {
         buffer.set_clip_changed(false);
         buffer.set_prevent_redisplay_optimizations_p(false);
         buffer.set_text_redisplay(false);
         buffer.take_unchanged_counts();
     }
-    let point = window_point(interp, window_id).map(|point| point as i64);
-    set_window_last_point(interp, window_id, point);
-    set_window_flag(interp, window_id, WindowRef::set_update_mode_line, false);
-    set_window_flag(interp, window_id, WindowRef::set_redisplay, false);
+    let point = window_point(interp, window).map(|point| point as i64);
+    set_window_last_point(window, point);
+    window.set_update_mode_line(false);
+    window.set_redisplay(false);
 }
 
 /// overlay_arrow_string_or_property: VAR's `overlay-arrow-string'

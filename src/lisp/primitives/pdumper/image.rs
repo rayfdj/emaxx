@@ -315,7 +315,7 @@ pub(crate) enum DumpType {
     Frame = 26,
     /// A terminal, nilled likewise.
     Terminal = 27,
-    /// A window, nilled likewise: the number of slots it holds.
+    /// A window, nilled likewise.
     Window = 12,
 }
 

@@ -728,20 +728,16 @@ define_dispatch!(
                     .filter(|value| !value.is_nil())
                     .cloned()
                     .unwrap_or_else(|| interp.selected_window_value());
-                let Some(window_id) = window_record_id_from_value(interp, &window) else {
+                let Some(w) = WindowRef::from_value(&window) else {
                     return Err(wrong_type_argument("windowp", window));
                 };
                 // decode_any_window, then the position: POS, point in the
                 // selected window, or marker_position (w->pointm), which
                 // signals for a deleted window's unchained marker.
                 if args.first().is_none_or(Value::is_nil)
-                    && window_id != interp.selected_window_id()
-                    && crate::lisp::primitives::window::window_marker(
-                        interp,
-                        window_id,
-                        crate::lisp::primitives::WINDOW_POINT_SLOT,
-                    )
-                    .is_some_and(|marker| marker.position().is_none())
+                    && w != interp.selected_window_ref()
+                    && crate::lisp::primitives::window::window_marker(w, WindowMarker::Pointm)
+                        .is_some_and(|marker| marker.position().is_none())
                 {
                     return Err(LispError::Signal("Marker does not point anywhere".into()));
                 }
@@ -915,11 +911,14 @@ define_dispatch!(
             }
             "make-symbol" => {
                 need_args(name, args, 1)?;
-                let base = string_text(&args[0])?;
-                let id = MAKE_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-                Ok(Value::Symbol(
-                    crate::lisp::types::SymbolName::make_uninterned(args[0], &base, id),
-                ))
+                // alloc.c:Fmake_symbol: CHECK_STRING, then a symbol named
+                // by the string itself.
+                if !matches!(args[0].kind(), Kind::StringObject(_)) {
+                    return Err(LispError::WrongTypeArgument("stringp".into(), args[0]));
+                }
+                Ok(Value::Symbol(crate::lisp::types::SymbolName::make_symbol(
+                    args[0],
+                )))
             }
             "autoload" => {
                 if args.len() < 2 || args.len() > 5 {

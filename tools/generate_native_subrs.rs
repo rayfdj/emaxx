@@ -260,7 +260,10 @@ fn emit(table: &Table) -> String {
         );
         let target = direct_native_target(&primitive.name).map_or_else(
             || format!("native_subr_{index:04}"),
-            |target| format!("super::runtime::{target}"),
+            |(target, arity)| {
+                assert_entry_arity(primitive, arity);
+                format!("super::runtime::{target}")
+            },
         );
         generated.push_str(&format!(
             "    NativeSubr::new(c{:?}, {}, {max_args}, {target} as *const std::ffi::c_void, {index}),\n",
@@ -275,6 +278,18 @@ fn emit(table: &Table) -> String {
     );
     for (index, primitive) in registration.iter().enumerate() {
         if direct_native_target(&primitive.name).is_some() {
+            continue;
+        }
+        if let Some((target, arity)) = indexed_native_target(&primitive.name) {
+            assert_entry_arity(primitive, arity);
+            assert!(
+                primitive.max_args >= 0,
+                "an entry that passes its index takes a fixed number of arguments"
+            );
+            let (parameters, arguments) = fixed_parameters(primitive.max_args);
+            generated.push_str(&format!(
+                "extern \"C\" fn native_subr_{index:04}({parameters}) -> super::runtime::NativeWord {{\n    super::runtime::{target}({index}, {arguments})\n}}\n\n"
+            ));
             continue;
         }
         if primitive.name == "cons" {
@@ -310,14 +325,7 @@ fn emit(table: &Table) -> String {
                 "extern \"C\" fn native_subr_{index:04}(args: super::runtime::NativeWord) -> super::runtime::NativeWord {{\n    super::runtime::invoke_subr({index}, &[args])\n}}\n\n"
             )),
             count => {
-                let parameters = (0..count)
-                    .map(|argument| format!("arg_{argument}: super::runtime::NativeWord"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
-                let arguments = (0..count)
-                    .map(|argument| format!("arg_{argument}"))
-                    .collect::<Vec<_>>()
-                    .join(", ");
+                let (parameters, arguments) = fixed_parameters(count);
                 generated.push_str(&format!(
                     "extern \"C\" fn native_subr_{index:04}({parameters}) -> super::runtime::NativeWord {{\n    super::runtime::invoke_subr({index}, &[{arguments}])\n}}\n\n"
                 ));
@@ -327,62 +335,122 @@ fn emit(table: &Table) -> String {
     generated
 }
 
+/// The parameter list of a generated entry of COUNT arguments, and the
+/// same arguments as it passes them on.
+fn fixed_parameters(count: i32) -> (String, String) {
+    let parameters = (0..count)
+        .map(|argument| format!("arg_{argument}: super::runtime::NativeWord"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    let arguments = (0..count)
+        .map(|argument| format!("arg_{argument}"))
+        .collect::<Vec<_>>()
+        .join(", ");
+    (parameters, arguments)
+}
+
+/// That PRIMITIVE, selected for a runtime entry of ARITY parameters, -2
+/// for MANY's count and vector, takes as many: the table casts the entry
+/// to a pointer, so the compiler compares nothing, and an entry given
+/// the wrong arguments reads registers native code did not set.
+fn assert_entry_arity(primitive: &Primitive, arity: i32) {
+    assert_eq!(
+        primitive.max_args, arity,
+        "{} is selected for an entry of arity {arity}",
+        primitive.name
+    );
+}
+
 // Store the chosen Rust implementation in the subr itself, as DEFUN stores
 // its C entry. Runtime funcall and ABI table construction need no name match.
-fn direct_native_target(name: &str) -> Option<&'static str> {
+// Each name comes with the arity of its entry, -2 for MANY's two
+// parameters (`assert_entry_arity').
+fn direct_native_target(name: &str) -> Option<(&'static str, i32)> {
     Some(match name {
-        "null" => "direct_native_null",
-        "consp" => "direct_native_consp",
-        "atom" => "direct_native_atom",
-        "bare-symbol-p" => "direct_native_bare_symbol_p",
-        "symbolp" => "direct_native_symbolp",
-        "fboundp" => "direct_native_fboundp",
-        "symbol-function" => "direct_native_symbol_function",
-        "car" => "direct_native_car",
-        "car-safe" => "direct_native_car_safe",
-        "cdr" => "direct_native_cdr",
-        "cdr-safe" => "direct_native_cdr_safe",
-        "listp" => "direct_native_listp",
-        "nlistp" => "direct_native_nlistp",
-        "identity" => "direct_native_identity",
-        "stringp" => "direct_native_stringp",
-        "symbol-with-pos-p" => "direct_native_symbol_with_pos_p",
-        "vectorp" => "direct_native_vectorp",
-        "bufferp" => "direct_native_bufferp",
-        "markerp" => "direct_native_markerp",
-        "subrp" => "direct_native_subrp",
-        "closurep" => "direct_native_closurep",
-        "byte-code-function-p" => "direct_native_byte_code_function_p",
-        "interpreted-function-p" => "direct_native_interpreted_function_p",
-        "floatp" => "direct_native_floatp",
-        "integerp" => "direct_native_integerp",
-        "numberp" => "direct_native_numberp",
-        "natnump" => "direct_native_natnump",
-        "integer-or-marker-p" => "direct_native_integer_or_marker_p",
-        "number-or-marker-p" => "direct_native_number_or_marker_p",
-        "char-or-string-p" => "direct_native_char_or_string_p",
-        "arrayp" => "direct_native_arrayp",
-        "eq" => "direct_native_eq",
-        "eql" => "direct_native_eql",
-        "type-of" => "direct_native_type_of",
-        "symbol-value" => "direct_native_symbol_value",
-        "get" => "direct_native_get",
-        "funcall" => "direct_native_funcall",
-        "list" => "direct_native_list",
-        "memq" => "direct_native_memq",
-        "assq" => "direct_native_assq",
-        "nreverse" => "direct_native_nreverse",
-        "nconc" => "direct_native_nconc",
-        "aref" => "direct_native_aref",
-        "char-table-extra-slot" => "direct_native_char_table_extra_slot",
-        "functionp" => "direct_native_functionp",
-        "aset" => "direct_native_aset",
-        "autoload-do-load" => "direct_native_autoload_do_load",
-        "gethash" => "direct_native_gethash",
-        "puthash" => "direct_native_puthash",
-        "length" => "direct_native_length",
-        "plist-member" => "direct_native_plist_member",
-        "make-closure" => "direct_native_make_closure",
+        "null" => ("direct_native_null", 1),
+        "consp" => ("direct_native_consp", 1),
+        "atom" => ("direct_native_atom", 1),
+        "bare-symbol-p" => ("direct_native_bare_symbol_p", 1),
+        "symbolp" => ("direct_native_symbolp", 1),
+        "fboundp" => ("direct_native_fboundp", 1),
+        "symbol-function" => ("direct_native_symbol_function", 1),
+        "car" => ("direct_native_car", 1),
+        "car-safe" => ("direct_native_car_safe", 1),
+        "cdr" => ("direct_native_cdr", 1),
+        "cdr-safe" => ("direct_native_cdr_safe", 1),
+        "listp" => ("direct_native_listp", 1),
+        "nlistp" => ("direct_native_nlistp", 1),
+        "identity" => ("direct_native_identity", 1),
+        "stringp" => ("direct_native_stringp", 1),
+        "symbol-with-pos-p" => ("direct_native_symbol_with_pos_p", 1),
+        "vectorp" => ("direct_native_vectorp", 1),
+        "bufferp" => ("direct_native_bufferp", 1),
+        "markerp" => ("direct_native_markerp", 1),
+        "recordp" => ("direct_native_recordp", 1),
+        "subrp" => ("direct_native_subrp", 1),
+        "closurep" => ("direct_native_closurep", 1),
+        "byte-code-function-p" => ("direct_native_byte_code_function_p", 1),
+        "interpreted-function-p" => ("direct_native_interpreted_function_p", 1),
+        "floatp" => ("direct_native_floatp", 1),
+        "integerp" => ("direct_native_integerp", 1),
+        "numberp" => ("direct_native_numberp", 1),
+        "natnump" => ("direct_native_natnump", 1),
+        "integer-or-marker-p" => ("direct_native_integer_or_marker_p", 1),
+        "number-or-marker-p" => ("direct_native_number_or_marker_p", 1),
+        "char-or-string-p" => ("direct_native_char_or_string_p", 1),
+        "arrayp" => ("direct_native_arrayp", 1),
+        "remove-pos-from-symbol" => ("direct_native_remove_pos_from_symbol", 1),
+        "keywordp" => ("direct_native_keywordp", 1),
+        "point" => ("direct_native_point", 0),
+        "point-min" => ("direct_native_point_min", 0),
+        "point-max" => ("direct_native_point_max", 0),
+        "following-char" => ("direct_native_following_char", 0),
+        "preceding-char" => ("direct_native_preceding_char", 0),
+        "bolp" => ("direct_native_bolp", 0),
+        "eolp" => ("direct_native_eolp", 0),
+        "bobp" => ("direct_native_bobp", 0),
+        "eobp" => ("direct_native_eobp", 0),
+        "current-buffer" => ("direct_native_current_buffer", 0),
+        "selected-window" => ("direct_native_selected_window", 0),
+        "selected-frame" => ("direct_native_selected_frame", 0),
+        "eq" => ("direct_native_eq", 2),
+        "eql" => ("direct_native_eql", 2),
+        "type-of" => ("direct_native_type_of", 1),
+        "symbol-value" => ("direct_native_symbol_value", 1),
+        "get" => ("direct_native_get", 2),
+        "funcall" => ("direct_native_funcall", -2),
+        "list" => ("direct_native_list", -2),
+        "memq" => ("direct_native_memq", 2),
+        "assq" => ("direct_native_assq", 2),
+        "nreverse" => ("direct_native_nreverse", 1),
+        "nconc" => ("direct_native_nconc", -2),
+        "aref" => ("direct_native_aref", 2),
+        "char-table-extra-slot" => ("direct_native_char_table_extra_slot", 2),
+        "functionp" => ("direct_native_functionp", 1),
+        "aset" => ("direct_native_aset", 3),
+        "autoload-do-load" => ("direct_native_autoload_do_load", 3),
+        "gethash" => ("direct_native_gethash", 3),
+        "puthash" => ("direct_native_puthash", 3),
+        "length" => ("direct_native_length", 1),
+        "plist-member" => ("direct_native_plist_member", 3),
+        "make-closure" => ("direct_native_make_closure", -2),
+        _ => return None,
+    })
+}
+
+// A subr whose runtime function answers from its argument words where the
+// subr does not signal, and makes the subr's own call of any other
+// arguments.  That call needs the subr, so the entry is generated: it
+// passes its index in the table with its arguments to the runtime
+// function, which is inlined into it, so that the index is a constant of
+// the entry and nothing is searched for at run time.  Each name comes with
+// its entry's arity, as above.
+fn indexed_native_target(name: &str) -> Option<(&'static str, i32)> {
+    Some(match name {
+        "bare-symbol" => ("direct_native_bare_symbol", 1),
+        "symbol-with-pos-pos" => ("direct_native_symbol_with_pos_pos", 1),
+        "nth" => ("direct_native_nth", 2),
+        "purecopy" => ("direct_native_purecopy", 1),
         _ => return None,
     })
 }

@@ -79,7 +79,8 @@ impl Row<'_> {
 
 struct ModeLine<'a> {
     target: Target,
-    window_id: u64,
+    /// The window whose mode line this is (it->w).
+    window: WindowRef,
     /// MODE_LINE_NOPROP's mode_line_noprop_buf.
     noprop: String,
     /// MODE_LINE_STRING's mode_line_string_list, in order.
@@ -340,10 +341,10 @@ fn bvar(interp: &Interpreter, name: crate::lisp::types::symbols::SymbolKey) -> V
 }
 
 impl<'a> ModeLine<'a> {
-    fn new(target: Target, window_id: u64) -> Self {
+    fn new(target: Target, window: WindowRef) -> Self {
         Self {
             target,
-            window_id,
+            window,
             noprop: String::new(),
             strings: RootedVec::new(),
             string_face: Value::Nil,
@@ -1395,8 +1396,7 @@ impl ModeLine<'_> {
                     .unwrap_or(0);
                 // `w->column_number_displayed = col'.
                 crate::lisp::primitives::set_window_column_number_displayed(
-                    interp,
-                    self.window_id,
+                    self.window,
                     Some(column),
                 );
                 let shown = if c == 'C' { column + 1 } else { column };
@@ -1500,46 +1500,36 @@ impl ModeLine<'_> {
             text.push_str("??");
             text
         };
-        let window_id = self.window_id;
-        let window = interp.window_value(window_id);
-        let window_buffer = window_buffer_id(interp, &window);
+        let window = self.window;
+        let window_buffer = window.live_buffer_id(interp);
         let current = interp.current_buffer_id();
         let own_buffer = window_buffer == Some(current);
-        let (begv, zv, pt, modiff) = {
+        let (begv, zv, pt) = {
             let buffer = interp.buffer.borrow();
-            (
-                buffer.point_min(),
-                buffer.point_max(),
-                buffer.point(),
-                buffer.modified_tick() as u64,
-            )
+            (buffer.point_min(), buffer.point_max(), buffer.point())
         };
-        let mut startpos = if window_id == interp.selected_window_id() {
+        let mut startpos = if window == interp.selected_window_ref() {
             current_window_start(interp)
         } else {
-            window_marker_position(interp, window_id, WINDOW_START_SLOT).unwrap_or(1)
+            window_marker_position(window, WindowMarker::Start).unwrap_or(1)
         };
-        let height = window_geometry(interp, window_id).1.max(1);
+        let height = window_geometry(interp, window).1.max(1);
         if !own_buffer || !(begv <= startpos && startpos <= zv) {
             startpos = begv;
         }
-        let mut base = BaseLine::read(interp, window_id);
-        // set_window_buffer resets the cache; one an edit or narrowing
-        // may have staled since it was made (BASE_LINE_NUMBER_VALID_P)
-        // keeps its position but no line number.
-        if base.buffer != window_buffer {
-            base = BaseLine {
-                buffer: window_buffer,
-                ..BaseLine::default()
-            };
-        }
-        if own_buffer && base.stamp != (modiff, begv, zv) {
+        let mut base = BaseLine::read(window);
+        // Fformat_mode_line's and redisplay_window's `if
+        // (!BASE_LINE_NUMBER_VALID_P (w)) w->base_line_number = 0': a
+        // base line an edit before it or a narrowing may have staled
+        // keeps its position but no line number.  (set_window_buffer and
+        // adjust_window_count flushed one of another buffer.)
+        if own_buffer && !base_line_number_valid_p(interp, window) {
             base.number = 0;
-            base.stamp = (modiff, begv, zv);
+            window.set_base_line_number(0);
         }
-        let store = |interp: &mut Interpreter, base: &BaseLine| {
+        let store = |base: &BaseLine| {
             if own_buffer {
-                base.write(interp, window_id);
+                base.write(window);
             }
         };
         if base.pos == -1 {
@@ -1552,7 +1542,7 @@ impl ModeLine<'_> {
             // If the buffer is very big, don't waste time.
             base.pos = 0;
             base.number = 0;
-            store(interp, &base);
+            store(&base);
             return no_value();
         }
         let selective = {
@@ -1598,7 +1588,7 @@ impl ModeLine<'_> {
                 base.pos = -1;
                 base.number = 0;
                 drop(buffer);
-                store(interp, &base);
+                store(&base);
                 return no_value();
             }
             base.number = topline - nlines as i64;
@@ -1606,7 +1596,7 @@ impl ModeLine<'_> {
         }
         let nlines = count_lines_forward(&buffer, startpos, pt, selective);
         drop(buffer);
-        store(interp, &base);
+        store(&base);
         line = topline + nlines;
         // Record that the line number was displayed.
         LINE_NUMBER_DISPLAYED.set(true);
@@ -1624,13 +1614,13 @@ impl ModeLine<'_> {
                 (buffer.size_total() + 1) as i64,
             )
         };
-        let window_id = self.window_id;
-        let toppos = if window_id == interp.selected_window_id() {
+        let window = self.window;
+        let toppos = if window == interp.selected_window_ref() {
             current_window_start(interp) as i64
         } else {
-            window_marker_position(interp, window_id, WINDOW_START_SLOT).unwrap_or(1) as i64
+            window_marker_position(window, WindowMarker::Start).unwrap_or(1) as i64
         };
-        let window_end_pos = window_end_pos(interp, window_id, z);
+        let window_end_pos = window_end_pos(interp, window, z);
         let botpos = z - window_end_pos;
         match c {
             'o' => {
@@ -1812,103 +1802,85 @@ thread_local! {
 }
 
 /// display_mode_lines' start: the column and line number displayed are
-/// set again while WINDOW_ID's formats are processed.
-pub(crate) fn begin_display_mode_lines(interp: &mut Interpreter, window_id: u64) {
+/// set again while WINDOW's formats are processed.
+pub(crate) fn begin_display_mode_lines(window: WindowRef) {
     LINE_NUMBER_DISPLAYED.set(false);
-    crate::lisp::primitives::set_window_column_number_displayed(interp, window_id, None);
+    crate::lisp::primitives::set_window_column_number_displayed(window, None);
 }
 
 /// redisplay_window after display_mode_lines: a window whose mode line
 /// showed no line number forgets its base line, unless it gave up on
 /// line numbers (base_line_pos -1).
-pub(crate) fn end_display_mode_lines(interp: &mut Interpreter, window_id: u64) {
+pub(crate) fn end_display_mode_lines(window: WindowRef) {
     if LINE_NUMBER_DISPLAYED.get() {
         return;
     }
-    let mut base = BaseLine::read(interp, window_id);
+    let mut base = BaseLine::read(window);
     if base.pos != -1 && (base.pos != 0 || base.number != 0) {
         base.pos = 0;
         base.number = 0;
-        base.write(interp, window_id);
+        base.write(window);
     }
 }
 
 /// w->base_line_pos: above 0 while the window's mode line shows a line
 /// number.
-pub(crate) fn window_base_line_pos(interp: &Interpreter, window_id: u64) -> i64 {
-    BaseLine::read(interp, window_id).pos
+pub(crate) fn window_base_line_pos(window: WindowRef) -> i64 {
+    BaseLine::read(window).pos
 }
 
-/// window.h's base_line_number and base_line_pos, with the buffer and
-/// the (modiff, begv, zv) they were computed under.
-#[derive(Default)]
+/// xdisp.c BASE_LINE_NUMBER_VALID_P for WINDOW, which shows the current
+/// buffer: "The freshness of the w->base_line_number cache is only
+/// ensured at every redisplay cycle, so the cache can be used only if
+/// there's been no relevant changes to the buffer since the last
+/// redisplay": no narrowing changed, and nothing before the base line.
+fn base_line_number_valid_p(interp: &Interpreter, window: WindowRef) -> bool {
+    let buffer = interp.buffer.borrow();
+    !buffer.clip_changed() && buffer.unchanged_extent().0 >= window.base_line_pos()
+}
+
+/// window.h's base_line_number and base_line_pos as `%l' works on them,
+/// read from the window and stored back.
 struct BaseLine {
     number: i64,
     pos: i64,
-    buffer: Option<u64>,
-    stamp: (u64, usize, usize),
 }
 
 impl BaseLine {
-    fn read(interp: &Interpreter, window_id: u64) -> Self {
-        let slot = window_slot_value(interp, window_id, WINDOW_BASE_LINE_SLOT);
-        let items = slot.to_vec().unwrap_or_default();
-        let int = |index: usize| {
-            items
-                .get(index)
-                .and_then(|v| v.integer_value())
-                .unwrap_or(0)
-        };
-        if items.len() != 6 {
-            return Self::default();
-        }
+    fn read(window: WindowRef) -> Self {
         Self {
-            number: int(0),
-            pos: int(1),
-            buffer: Some(int(2) as u64),
-            stamp: (int(3) as u64, int(4) as usize, int(5) as usize),
+            number: window.base_line_number(),
+            pos: window.base_line_pos(),
         }
     }
 
-    fn write(&self, interp: &mut Interpreter, window_id: u64) {
-        let value = Value::list([
-            Value::Integer(self.number),
-            Value::Integer(self.pos),
-            Value::Integer(self.buffer.unwrap_or(0) as i64),
-            Value::Integer(self.stamp.0 as i64),
-            Value::Integer(self.stamp.1 as i64),
-            Value::Integer(self.stamp.2 as i64),
-        ]);
-        let _ = set_window_slot_value(interp, window_id, WINDOW_BASE_LINE_SLOT, value);
+    fn write(&self, window: WindowRef) {
+        window.set_base_line_number(self.number);
+        window.set_base_line_pos(self.pos);
     }
 }
 
 /// w->window_end_pos: Z minus the end of the window's last redisplay;
 /// the live metrics answer while the window's lines are being drawn, 0
 /// (the end of the buffer) before any.
-fn window_end_pos(interp: &Interpreter, window_id: u64, z: i64) -> i64 {
-    if let Some(pos) = interp
-        .window_ref(window_id)
-        .and_then(WindowRef::window_end_pos)
-    {
+fn window_end_pos(interp: &Interpreter, window: WindowRef, z: i64) -> i64 {
+    if let Some(pos) = window.window_end_pos() {
         return pos;
     }
     match interactive_window_metrics() {
-        Some(metrics) if window_id == interp.selected_window_id() => z - metrics.window_end as i64,
+        Some(metrics) if window == interp.selected_window_ref() => z - metrics.window_end as i64,
         _ => 0,
     }
 }
 
-/// Record the end of WINDOW_ID's displayed text for its mode line's
+/// Record the end of WINDOW's displayed text for its mode line's
 /// %-constructs, as redisplay sets w->window_end_pos.
-pub(super) fn record_window_end(interp: &mut Interpreter, window_id: u64, end: usize) {
+pub(super) fn record_window_end(interp: &mut Interpreter, window: WindowRef, end: usize) {
     let z = {
         let buffer = interp.buffer.borrow();
         buffer.size_total() + 1
     };
-    if let Some(window) = interp.window_ref(window_id) {
-        window.set_window_end_pos(Some(z as i64 - end as i64));
-    }
+    window.set_window_end_pos(Some(z as i64 - end as i64));
 }
 
 // ── Entry points ───────────────────────────────────────────────────────
@@ -1930,15 +1902,14 @@ pub(super) fn format_mode_line(
     } else {
         arg(2)
     };
-    let window_id = window_record_id_from_value(interp, &window)
+    let w = WindowRef::from_value(&window)
         .ok_or_else(|| LispError::WrongTypeArgument("windowp".into(), window))?;
     let buffer = if arg(3).is_nil() {
-        match window_buffer_id(interp, &window) {
+        match w.live_buffer_id(interp) {
             Some(id) => interp.buffer_value(id).unwrap_or(Value::Nil),
             None => {
                 // An internal window's contents, its first child.
-                let contents = window_first_child(interp, window_id)
-                    .map_or(Value::Nil, |child| interp.window_value(child));
+                let contents = w.first_child().map_or(Value::Nil, WindowRef::value);
                 return Err(LispError::WrongTypeArgument("bufferp".into(), contents));
             }
         }
@@ -1968,26 +1939,24 @@ pub(super) fn format_mode_line(
     }
     // init_iterator on WINDOW frees its frame's realized faces after a face
     // change.
-    interp.init_iterator_faces_window(window_id);
+    interp.init_iterator_faces_window(w);
     // format_mode_line_unwind_data (XFRAME (WINDOW_FRAME (w)), old_buffer,
     // selected_window, true), recorded before the window is selected: the
     // selected window, the buffer, the window frame's selected window, its
     // tty's top frame, and that window's buffer's point in a marker.
     // (XBUFFER of a deleted frame-selected window's nil contents has no
     // answer; no point is kept for it.)
-    let window_buffer = |interp: &Interpreter, id: u64| interp.window_record_buffer_id(id);
-    let old_window = interp.selected_window_value();
-    let old_window_id = interp.selected_window_id();
+    let window_buffer = |window: Option<WindowRef>| window.and_then(WindowRef::contents_buffer_id);
+    let old_selected = interp.selected_window_ref();
+    let old_window = old_selected.value();
     let old_buffer = interp.current_buffer_id();
-    let target_frame = interp
-        .window_frame_id(window_id)
-        .expect("window stores its owning frame");
-    let target_frame_window = target_frame.borrow().selected_window_id();
+    let target_frame = w.frame().expect("window stores its owning frame");
+    let target_frame_window = target_frame.borrow().selected_window;
     let old_top_frame = target_frame
         .borrow()
         .terminal
         .and_then(|terminal| terminal.borrow().top_frame);
-    let target_point = window_buffer(interp, target_frame_window).map(|buffer| {
+    let target_point = window_buffer(target_frame_window).map(|buffer| {
         let Kind::Marker(marker) = interp.make_marker().kind() else {
             unreachable!("make_marker returns a marker")
         };
@@ -2004,7 +1973,7 @@ pub(super) fn format_mode_line(
                 } else {
                     Target::String
                 },
-                window_id,
+                w,
             );
             ml.string_face = face;
             ml.string_face_prop = if face.is_nil() {
@@ -2021,13 +1990,12 @@ pub(super) fn format_mode_line(
     // the formatting changed it; then the old window; then the point of
     // the frame window's buffer from its marker.
     let mut restored = Ok(());
-    if window_buffer(interp, old_window_id).is_some() {
-        let target_live = window_buffer(interp, target_frame_window).is_some();
-        if target_live {
-            let frame = interp.window_frame_id(target_frame_window);
-            if frame != interp.window_frame_id(old_window_id) {
-                let target = interp.window_value(target_frame_window);
-                restored = select_window_value(interp, &target, true).map(drop);
+    if window_buffer(Some(old_selected)).is_some() {
+        let target_live = window_buffer(target_frame_window).is_some();
+        if target_live && let Some(target) = target_frame_window {
+            let frame = target.frame();
+            if frame != old_selected.frame() {
+                restored = select_window_value(interp, &target.value(), true).map(drop);
             }
             if let Some(old_top_frame) = old_top_frame
                 && Some(old_top_frame) != frame
@@ -2090,7 +2058,7 @@ impl ModeLine<'_> {
 pub(super) fn display_mode_line(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     format: Value,
     width: usize,
     compact: bool,
@@ -2104,7 +2072,7 @@ pub(super) fn display_mode_line(
         interp,
         cached_symbol!("buffer-invisibility-spec"),
     ));
-    let mut ml = ModeLine::new(Target::Display, window_id);
+    let mut ml = ModeLine::new(Target::Display, window);
     ml.row = Some(Row {
         cells,
         text: String::new(),
@@ -2126,7 +2094,7 @@ pub(super) fn display_mode_line(
             ml.display_mode_element(interp, env, 0, 0, 0, format, Value::Nil, false)?;
             return Ok(());
         }
-        let mut string_ml = ModeLine::new(Target::String, window_id);
+        let mut string_ml = ModeLine::new(Target::String, window);
         string_ml.display_mode_element(interp, env, 0, 0, 0, format, Value::Nil, false)?;
         let mode_string = string_ml.result(interp, env)?;
         let chars = string_chars(&mode_string);
@@ -2143,7 +2111,7 @@ pub(super) fn display_mode_line(
             )
         };
         if crate::lisp::types::eq_symbol_named(compact_value, "long")
-            && window_total_columns(interp, window_id).max(0) as usize >= chars.len()
+            && window_total_columns(interp, window).max(0) as usize >= chars.len()
         {
             ml.display_string(interp, env, None, Some(mode_string), None, 0, 0, 0)?;
             return Ok(());

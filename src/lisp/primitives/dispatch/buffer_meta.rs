@@ -1,6 +1,14 @@
 use super::*;
 use crate::lisp::types::Kind;
 
+/// buffer.c:Fcurrent_buffer, a function of the interpreter, read through
+/// a shared reference, that the dispatch arm and native code's entry
+/// (native_comp/runtime.rs) both call: a copy of the current buffer's
+/// handle, with nothing signalled, run or made.
+pub(crate) fn current_buffer(interp: &Interpreter) -> Value {
+    Value::Buffer(interp.buffer)
+}
+
 /// One `compare-buffer-substrings' operand: its buffer and ordered bounds,
 /// nil bounds meaning the buffer's accessible region. editfns.c signals
 /// `args-out-of-range' with the original bounds for a range outside it.
@@ -228,7 +236,7 @@ define_dispatch!(
                     args.get(4).copied().unwrap_or(Value::Nil),
                 )?))
             }
-            "current-buffer" => Ok(Value::Buffer(interp.buffer)),
+            "current-buffer" => Ok(current_buffer(interp)),
             "get-buffer" => {
                 need_args(name, args, 1)?;
                 Ok(interp
@@ -633,9 +641,11 @@ define_dispatch!(
                 // point and old point at the start of its buffer's
                 // accessible portion and its start at the buffer's
                 // last_window_start (Fset_marker, so within the buffer).
-                for window in interp.record_ids_by_type("window") {
-                    let Some(buffer) = interp
-                        .window_record_buffer_id(window)
+                // The windows are those Fnext_window (w, Qt, Qt) visits
+                // from the selected window round to it.
+                for window in crate::lisp::primitives::all_frames_window_cycle(interp) {
+                    let Some(buffer) = window
+                        .contents_buffer_id()
                         .filter(|id| *id == current_id || *id == other_id)
                     else {
                         continue;
@@ -649,15 +659,15 @@ define_dispatch!(
                     }) else {
                         continue;
                     };
-                    for slot in [WINDOW_POINT_SLOT, WINDOW_OLD_POINT_SLOT] {
+                    for which in [WindowMarker::Pointm, WindowMarker::OldPointm] {
                         crate::lisp::primitives::set_window_marker(
-                            interp, window, slot, buffer, begv,
+                            interp, window, which, buffer, begv,
                         );
                     }
                     crate::lisp::primitives::set_window_marker(
                         interp,
                         window,
-                        WINDOW_START_SLOT,
+                        WindowMarker::Start,
                         buffer,
                         start.clamp(1, size + 1),
                     );

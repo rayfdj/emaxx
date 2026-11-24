@@ -6,7 +6,7 @@
 //! and move_it_by_lines' search backward, which reseats at a line start.
 //! Fvertical_motion and Frecenter walk these on a live display.
 
-use super::{InvisibilitySpec, invisible_run_at, resolve_buffer_invisibility};
+use super::{InvisibilitySpec, WindowRef, invisible_run_at, resolve_buffer_invisibility};
 use crate::buffer::Buffer;
 use crate::lisp::eval::Interpreter;
 use crate::lisp::types::{Env, Kind, Value};
@@ -15,13 +15,13 @@ use crate::tty::{IteratorFetches, IteratorWalk};
 /// Record move_it_to's walk from FROM to TO (MOVE_TO_POS) in WINDOW.
 fn fetch_walk_to(
     interp: &Interpreter,
-    window_id: u64,
+    window: WindowRef,
     fetches: &mut IteratorFetches,
     from: usize,
     to: usize,
 ) {
     if let Some(geometry) = fetches.geometry() {
-        IteratorWalk::at(interp, window_id, geometry, from).walk_to(fetches, from, to);
+        IteratorWalk::at(interp, window, geometry, from).walk_to(fetches, from, to);
     }
 }
 
@@ -236,14 +236,14 @@ pub(crate) fn reseat_current(interp: &Interpreter, pos: usize) -> Reseated {
 pub(crate) fn pos_reached(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     from: usize,
     target: usize,
     fetches: &mut IteratorFetches,
 ) -> usize {
-    let reached = pos_reached_by(interp, env, window_id, from, target);
+    let reached = pos_reached_by(interp, env, window, from, target);
     if reached > from {
-        fetch_walk_to(interp, window_id, fetches, from, reached);
+        fetch_walk_to(interp, window, fetches, from, reached);
     }
     reached
 }
@@ -251,7 +251,7 @@ pub(crate) fn pos_reached(
 fn pos_reached_by(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     from: usize,
     target: usize,
 ) -> usize {
@@ -272,7 +272,7 @@ fn pos_reached_by(
         // newline, or a string's newline that ended its string, before
         // handle_stop loads a string or skips invisible text there; not
         // on a row that begins inside a string, the string's object.
-        let layout = interactive_screen_line(interp, env, window_id, bol);
+        let layout = interactive_screen_line(interp, env, window, bol);
         if let Some(start) = layout
             .row_starts
             .iter()
@@ -310,17 +310,17 @@ fn pos_reached_by(
 fn screen_line_start_row(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     from: usize,
     fetches: &mut IteratorFetches,
 ) -> (usize, usize) {
     use super::dispatch::{
         interactive_screen_line, row_index_of, screen_row_starts, visual_line_bounds,
     };
-    crate::tty::fetch_screen_line_start(interp, window_id, fetches, from);
+    crate::tty::fetch_screen_line_start(interp, window, fetches, from);
     let (bol, eol) = visual_line_bounds(interp, from);
-    let starts = screen_row_starts(interp, env, window_id, bol, eol);
-    if let Some(index) = zv_strings_row(interp, env, window_id, bol, from)
+    let starts = screen_row_starts(interp, env, window, bol, eol);
+    if let Some(index) = zv_strings_row(interp, env, window, bol, from)
         && let Some(&start) = starts.get(index)
     {
         return (start, index);
@@ -340,7 +340,7 @@ fn screen_line_start_row(
     // display iterator, a second row beginning where the string does.
     let inside_display = index > 0
         && if super::dispatch::interactive_motion(interp) {
-            interactive_screen_line(interp, env, window_id, bol)
+            interactive_screen_line(interp, env, window, bol)
                 .row_first_string(index)
                 .is_some_and(|(display, character)| display && character > 0)
         } else {
@@ -349,7 +349,7 @@ fn screen_line_start_row(
     if !inside_display {
         return (start, index);
     }
-    let pos = pos_reached(interp, env, window_id, start, start + 1, fetches);
+    let pos = pos_reached(interp, env, window, start, start + 1, fetches);
     let row = starts
         .iter()
         .rposition(|&row_start| row_start <= pos)
@@ -422,7 +422,7 @@ pub(crate) fn back_to_previous_visible_line_start(interp: &Interpreter, pos: usi
 fn zv_strings_row(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     bol: usize,
     pos: usize,
 ) -> Option<usize> {
@@ -432,7 +432,7 @@ fn zv_strings_row(
     {
         return None;
     }
-    let layout = super::dispatch::interactive_screen_line(interp, env, window_id, bol);
+    let layout = super::dispatch::interactive_screen_line(interp, env, window, bol);
     let first = layout.row_starts.iter().position(|&start| start == pos)?;
     (first > 0 && layout.row_first_string(first).is_some()).then(|| first - 1)
 }
@@ -447,7 +447,7 @@ fn zv_strings_row(
 pub(crate) fn rows_between(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     from: usize,
     to: usize,
     fetches: &mut IteratorFetches,
@@ -459,15 +459,15 @@ pub(crate) fn rows_between(
     if to <= from {
         return 0;
     }
-    let to = pos_reached(interp, env, window_id, from, to, fetches);
+    let to = pos_reached(interp, env, window, from, to, fetches);
     let zv = interp.buffer.borrow().point_max();
-    let zv_row = zv_strings_row(interp, env, window_id, visual_line_bounds(interp, to).0, to);
+    let zv_row = zv_strings_row(interp, env, window, visual_line_bounds(interp, to).0, to);
     let (mut bol, mut eol) = visual_line_bounds(interp, from);
-    let mut starts = screen_row_starts(interp, env, window_id, bol, eol);
+    let mut starts = screen_row_starts(interp, env, window, bol, eol);
     // The iterator reseated at FROM: inside text a `display' string
     // replaces it delivers the string from its start.
     let mut index = interactive_motion(interp)
-        .then(|| interactive_screen_line(interp, env, window_id, bol).reseated_string_row(from))
+        .then(|| interactive_screen_line(interp, env, window, bol).reseated_string_row(from))
         .flatten()
         .unwrap_or_else(|| row_index_of(&starts, from));
     let mut rows = 0;
@@ -476,7 +476,7 @@ pub(crate) fn rows_between(
             index += 1;
         } else if eol < zv {
             (bol, eol) = visual_line_bounds(interp, eol + 1);
-            starts = screen_row_starts(interp, env, window_id, bol, eol);
+            starts = screen_row_starts(interp, env, window, bol, eol);
             index = 0;
         } else {
             break;
@@ -522,7 +522,7 @@ struct RowsDown {
 fn forward_rows(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     from: usize,
     from_row: Option<usize>,
     count: i64,
@@ -535,11 +535,7 @@ fn forward_rows(
     if let Some(geometry) = fetches.geometry()
         && count > 0
     {
-        IteratorWalk::at(interp, window_id, geometry, from).walk_rows(
-            fetches,
-            from,
-            count as usize,
-        );
+        IteratorWalk::at(interp, window, geometry, from).walk_rows(fetches, from, count as usize);
     }
     let zv = interp.buffer.borrow().point_max();
     // screen_row_starts, keeping a terminal's layout of the line, whose
@@ -547,7 +543,7 @@ fn forward_rows(
     let interactive = interactive_motion(interp);
     let lay_out = |interp: &mut Interpreter, env: &mut Env, bol: usize, eol: usize| {
         if interactive {
-            let layout = interactive_screen_line(interp, env, window_id, bol);
+            let layout = interactive_screen_line(interp, env, window, bol);
             (layout.row_starts.clone(), Some(layout))
         } else {
             (visual_segment_starts(interp, env, bol, eol), None)
@@ -602,8 +598,8 @@ fn forward_rows(
 /// (it->last_visible_x - it->first_visible_x) / FRAME_COLUMN_WIDTH, the
 /// columns of WINDOW's text area less the one init_iterator leaves for
 /// the continuation or truncation glyph.
-pub(crate) fn iterator_row_chars(interp: &Interpreter, window_id: u64) -> usize {
-    super::window_text_area_columns(interp, window_id).saturating_sub(1)
+pub(crate) fn iterator_row_chars(interp: &Interpreter, window: WindowRef) -> usize {
+    super::window_text_area_columns(interp, window).saturating_sub(1)
 }
 
 /// move_it_by_lines from an iterator at FROM on vpos 0: where it lands
@@ -615,12 +611,12 @@ pub(crate) fn iterator_row_chars(interp: &Interpreter, window_id: u64) -> usize 
 pub(crate) fn move_it_by_lines(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     from: usize,
     dvpos: i64,
     fetches: &mut IteratorFetches,
 ) -> (usize, i64) {
-    let landing = move_it_by_lines_from(interp, env, window_id, from, None, dvpos, fetches);
+    let landing = move_it_by_lines_from(interp, env, window, from, None, dvpos, fetches);
     (landing.pos, landing.moved)
 }
 
@@ -630,7 +626,7 @@ pub(crate) fn move_it_by_lines(
 fn move_it_by_lines_back(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     from: usize,
     dvpos: i64,
     fetches: &mut IteratorFetches,
@@ -642,9 +638,9 @@ fn move_it_by_lines_back(
     };
     let begv = interp.buffer.borrow().point_min();
     let orig_charpos = from;
-    let (start_charpos, start_row) = screen_line_start_row(interp, env, window_id, from, fetches);
-    let truncate = crate::tty::window_truncates(interp, window_id, interp.current_buffer_id());
-    let nchars_per_row = iterator_row_chars(interp, window_id) as i64;
+    let (start_charpos, start_row) = screen_line_start_row(interp, env, window, from, fetches);
+    let truncate = crate::tty::window_truncates(interp, window, interp.current_buffer_id());
+    let nchars_per_row = iterator_row_chars(interp, window) as i64;
     let pos_limit = if truncate || nchars_per_row == 0 {
         begv
     } else {
@@ -664,13 +660,13 @@ fn move_it_by_lines_back(
     fetches.push(it, it + 1);
     let it = reseat_current(interp, it).pos;
     // Above may have moved too far if continuation lines are involved.
-    let it2_vpos = rows_between(interp, env, window_id, it, start_charpos, fetches);
+    let it2_vpos = rows_between(interp, env, window, it, start_charpos, fetches);
     let vpos = -it2_vpos;
     if it2_vpos > -dvpos {
         let delta = it2_vpos + dvpos;
         // IT itself, which stops again at the line start.
         fetches.begin_walk();
-        let down = forward_rows(interp, env, window_id, it, None, delta, fetches);
+        let down = forward_rows(interp, env, window, it, None, delta, fetches);
         let (forward, moved) = (down.start, down.moved);
         // Back again if it did not move at all.
         if forward == orig_charpos {
@@ -703,7 +699,7 @@ fn move_it_by_lines_back(
         // the text, comes back as far as -DVPOS allows.
         let reloaded = start_row > 0
             && super::dispatch::interactive_motion(interp)
-            && super::dispatch::interactive_screen_line(interp, env, window_id, it)
+            && super::dispatch::interactive_screen_line(interp, env, window, it)
                 .row_first_string(start_row)
                 .is_some_and(|(display, character)| !display && character > 0);
         if !reloaded {
@@ -716,15 +712,7 @@ fn move_it_by_lines_back(
         let it2_vpos = start_row as i64;
         if it2_vpos > -dvpos {
             fetches.begin_walk();
-            let down = forward_rows(
-                interp,
-                env,
-                window_id,
-                it,
-                Some(0),
-                it2_vpos + dvpos,
-                fetches,
-            );
+            let down = forward_rows(interp, env, window, it, Some(0), it2_vpos + dvpos, fetches);
             if down.start == orig_charpos {
                 Landing {
                     pos: it,
@@ -764,14 +752,14 @@ pub(crate) struct Landing {
 pub(crate) fn move_it_by_lines_from(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     from: usize,
     from_row: Option<usize>,
     dvpos: i64,
     fetches: &mut IteratorFetches,
 ) -> Landing {
     if dvpos == 0 {
-        let (pos, row) = screen_line_start_row(interp, env, window_id, from, fetches);
+        let (pos, row) = screen_line_start_row(interp, env, window, from, fetches);
         return Landing {
             pos,
             moved: 0,
@@ -779,9 +767,9 @@ pub(crate) fn move_it_by_lines_from(
         };
     }
     if dvpos < 0 {
-        return move_it_by_lines_back(interp, env, window_id, from, dvpos, fetches);
+        return move_it_by_lines_back(interp, env, window, from, dvpos, fetches);
     }
-    let down = forward_rows(interp, env, window_id, from, from_row, dvpos, fetches);
+    let down = forward_rows(interp, env, window, from, from_row, dvpos, fetches);
     let (pos, moved) = (down.start, down.moved);
     if moved < dvpos {
         // move_it_to runs out at ZV.
@@ -810,7 +798,7 @@ pub(crate) fn move_it_by_lines_from(
             };
         }
         let reached = if down.display_string || reseat_current(interp, pos).string.is_some() {
-            pos_reached(interp, env, window_id, pos, pos + 1, fetches)
+            pos_reached(interp, env, window, pos, pos + 1, fetches)
         } else {
             pos
         };
@@ -852,7 +840,7 @@ pub(crate) fn move_it_by_lines_from(
 pub(crate) fn vertical_motion(
     interp: &mut Interpreter,
     env: &mut Env,
-    window_id: u64,
+    window: WindowRef,
     lines: i64,
     fetches: &mut IteratorFetches,
 ) -> (Landing, i64) {
@@ -867,7 +855,7 @@ pub(crate) fn vertical_motion(
     };
     let char_at = |interp: &Interpreter, pos: usize| interp.buffer.borrow().char_at(pos);
     // start_display: init_iterator reseats at PT.
-    crate::tty::fetch_start_display(interp, window_id, fetches, pt);
+    crate::tty::fetch_start_display(interp, window, fetches, pt);
     let started = reseat_current(interp, pt);
     let it_start = started.pos;
     let disp_string_at_start_p = started.string.is_some_and(|string| string.text_area);
@@ -897,14 +885,14 @@ pub(crate) fn vertical_motion(
         } else {
             pt - 1
         };
-        it = pos_reached(interp, env, window_id, it, target, fetches);
+        it = pos_reached(interp, env, window, it, target, fetches);
     }
     let mut nlines = lines;
     let mut vpos_init = 0i64;
     let mut overshoot_handled = false;
     if it > it_start {
         // IT overshot: back up to PT's screen line.
-        let it_vpos = rows_between(interp, env, window_id, line_start, it, fetches);
+        let it_vpos = rows_between(interp, env, window, line_start, it, fetches);
         if it_overshoot_count < 0 && char_at(interp, it) == Some('\n') {
             it_overshoot_count = 1;
         } else if it_overshoot_count == 1 && it_vpos == 0 {
@@ -913,7 +901,7 @@ pub(crate) fn vertical_motion(
             it_overshoot_count = it_vpos;
         }
         if it_overshoot_count > 0 {
-            it = move_it_by_lines(interp, env, window_id, it, -it_overshoot_count, fetches).0;
+            it = move_it_by_lines(interp, env, window, it, -it_overshoot_count, fetches).0;
         }
         overshoot_handled = true;
     } else if pt > begv && it == pt - 1 && char_at(interp, pt - 1) == Some('\n') && nlines <= 0 {
@@ -926,7 +914,7 @@ pub(crate) fn vertical_motion(
     if nlines <= 0 {
         let mut landing = unrowed(it, vpos_init);
         if (nlines < 0 && it > begv) || nlines == 0 {
-            let moved = move_it_by_lines_from(interp, env, window_id, it, None, nlines, fetches);
+            let moved = move_it_by_lines_from(interp, env, window, it, None, nlines, fetches);
             landing = Landing {
                 moved: vpos_init + moved.moved,
                 ..moved
@@ -935,7 +923,7 @@ pub(crate) fn vertical_motion(
         return (landing, nlines);
     }
     if overshoot_handled {
-        let landing = move_it_by_lines_from(interp, env, window_id, it, None, nlines, fetches);
+        let landing = move_it_by_lines_from(interp, env, window, it, None, nlines, fetches);
         return (
             Landing {
                 moved: vpos_init + landing.moved,
@@ -949,7 +937,7 @@ pub(crate) fn vertical_motion(
         let mut vpos = 0;
         let mut row = None;
         if it < it_start {
-            let landing = move_it_by_lines_from(interp, env, window_id, it, None, 1, fetches);
+            let landing = move_it_by_lines_from(interp, env, window, it, None, 1, fetches);
             (it, vpos, row) = (landing.pos, landing.moved, landing.row);
         }
         // A line at a time, it.vpos 0 before each, while the iterator
@@ -958,7 +946,7 @@ pub(crate) fn vertical_motion(
         // value is the last move's (a move out of a string can pass
         // more than one row).
         while it == it_start {
-            let landing = move_it_by_lines_from(interp, env, window_id, it, row, 1, fetches);
+            let landing = move_it_by_lines_from(interp, env, window, it, row, 1, fetches);
             vpos = landing.moved;
             let stuck = landing.moved == 0 || (landing.pos == it && landing.row == row);
             (it, row) = (landing.pos, landing.row);
@@ -967,8 +955,7 @@ pub(crate) fn vertical_motion(
             }
         }
         if nlines > 1 {
-            let landing =
-                move_it_by_lines_from(interp, env, window_id, it, row, nlines - 1, fetches);
+            let landing = move_it_by_lines_from(interp, env, window, it, row, nlines - 1, fetches);
             it = landing.pos;
             row = landing.row;
             vpos += landing.moved;
@@ -982,7 +969,7 @@ pub(crate) fn vertical_motion(
             nlines,
         );
     }
-    let mut landing = move_it_by_lines_from(interp, env, window_id, it, None, nlines, fetches);
+    let mut landing = move_it_by_lines_from(interp, env, window, it, None, nlines, fetches);
     if landing.pos == pt && pt == it_start {
         landing.moved = 0;
     }

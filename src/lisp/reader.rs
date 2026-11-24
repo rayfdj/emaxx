@@ -1,6 +1,5 @@
 use super::types::{
     IdentityBuildHasher, Kind, LispError, ReaderClosureKind, ReaderForm, StringObjectRef, Value,
-    make_uninterned_symbol_name,
 };
 mod input;
 use input::Input;
@@ -9,7 +8,6 @@ pub(crate) use input::ReaderStream;
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 use std::collections::{HashMap, HashSet};
-use std::sync::atomic::{AtomicU64, Ordering as AtomicOrdering};
 use unicode_names2::character as unicode_character;
 
 const RAW_BYTE_REGEX_BASE: u32 = 0xE000;
@@ -93,7 +91,6 @@ fn character_name_to_code(
         _ => Err(LispError::ReadError(format!("\\N{{{name}}}"))),
     }
 }
-static READER_UNINTERNED_SYMBOL_COUNTER: AtomicU64 = AtomicU64::new(1);
 
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum AtomSyntax {
@@ -2272,12 +2269,8 @@ impl<'a> Reader<'a> {
                 if symbol_terminator_code(self.peek_code()?) {
                     self.input.unread_lookahead()?;
                     // lread.c's empty #: branch returns a bare fresh symbol.
-                    let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
                     Ok(ReadStep::Object(Value::Symbol(
-                        crate::lisp::types::SymbolName::make_uninterned_with_text(
-                            make_uninterned_symbol_name("", id),
-                            None,
-                        ),
+                        crate::lisp::types::SymbolName::make_symbol(Value::String("".into())),
                     )))
                 } else {
                     self.read_atom_in_syntax(AtomSyntax::Uninterned)
@@ -2456,8 +2449,6 @@ impl<'a> Reader<'a> {
         syntax: AtomSyntax,
     ) -> Result<Value, LispError> {
         let symbol = if syntax == AtomSyntax::Uninterned {
-            let id = READER_UNINTERNED_SYMBOL_COUNTER.fetch_add(1, AtomicOrdering::Relaxed);
-            let marked = make_uninterned_symbol_name(name, id);
             // read0's Fmake_symbol of make_specified_string's name, of the
             // multibyteness readchar reported.
             // `#:' before a terminator makes its symbol of
@@ -2474,8 +2465,8 @@ impl<'a> Reader<'a> {
                         crate::lisp::primitives::make_specified_string(bytes, multibyte).ok()
                     })
             };
-            Value::Symbol(crate::lisp::types::SymbolName::make_uninterned_with_text(
-                marked, lisp_name,
+            Value::Symbol(crate::lisp::types::SymbolName::make_symbol(
+                lisp_name.unwrap_or_else(|| Value::String(name.into())),
             ))
         } else if let Input::Function(input) = &mut self.input {
             input

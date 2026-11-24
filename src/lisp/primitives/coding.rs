@@ -869,8 +869,7 @@ fn given_coding_text(interp: &Interpreter, value: &Value, canonical: String) -> 
     // these callers.  Not GNU, which keeps the symbol.
     match symbol_value.symbol_cell() {
         Some(symbol)
-            if symbol.cell().is_uninterned()
-                || crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) =>
+            if symbol.cell().interned() != crate::lisp::alloc::SymbolInterned::InInitialObarray =>
         {
             canonical
         }

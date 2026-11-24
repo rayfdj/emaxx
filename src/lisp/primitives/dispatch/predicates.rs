@@ -109,16 +109,8 @@ define_dispatch!(
             "symbolp" => direct_symbolp(interp, args, env),
             "keywordp" => {
                 need_args(name, args, 1)?;
-                let positioned_keyword = symbols_with_pos_enabled(interp, env)
-                    .then(|| symbol_with_pos_parts(interp, &args[0]))
-                    .flatten()
-                    .is_some_and(|(symbol, _)| {
-                        matches!(symbol.kind(), Kind::Symbol(name) if name.is_keyword())
-                    });
                 Ok(
-                    if matches!(args[0].kind(), Kind::Symbol(symbol) if symbol.is_keyword())
-                        || positioned_keyword
-                    {
+                    if keywordp(&args[0], || symbols_with_pos_enabled(interp, env)) {
                         Value::T
                     } else {
                         Value::Nil
@@ -685,19 +677,35 @@ define_dispatch!(
             }
             "recordp" => {
                 need_args(name, args, 1)?;
-                Ok(
-                    if matches!(args[0].kind(), Kind::LispRecord(_))
-                        || record_literal_items(&args[0]).is_some()
-                    {
-                        Value::T
-                    } else {
-                        Value::Nil
-                    },
-                )
+                Ok(if recordp(&args[0]) {
+                    Value::T
+                } else {
+                    Value::Nil
+                })
             }
         }
     }
 );
+
+/// data.c:Fkeywordp: SYMBOLP, a name that begins with a colon, and
+/// interned in the initial obarray.  A bare symbol answers from itself.
+/// lisp.h:SYMBOLP takes a symbol with position for a symbol only while
+/// the C variable symbols_with_pos_enabled is set, so POSITIONS_ENABLED,
+/// the caller's read of that variable, is asked of such an object alone;
+/// no other object is a keyword.
+#[inline]
+pub(crate) fn keywordp(value: &Value, positions_enabled: impl FnOnce() -> bool) -> bool {
+    match value.kind() {
+        Kind::Symbol(symbol) => symbol.is_keyword(),
+        Kind::SymbolWithPos(_) => {
+            positions_enabled()
+                && symbol_with_pos_words(value).is_some_and(
+                    |(symbol, _)| matches!(symbol.kind(), Kind::Symbol(name) if name.is_keyword()),
+                )
+        }
+        _ => false,
+    }
+}
 
 // The type predicates of data.c whose answer is a function of the object
 // alone: each is the test its DEFUN makes, with no interpreter, no signal
@@ -727,6 +735,22 @@ pub(crate) fn bufferp(value: &Value) -> bool {
 #[inline]
 pub(crate) fn markerp(value: &Value) -> bool {
     matches!(value.kind(), Kind::Marker(_))
+}
+
+/// data.c:Frecordp: RECORDP.  The reader's record form, what a `#s(...)'
+/// read with no interpreter to build the record holds (lread.c's
+/// record_from_list before it is made), is a record too.  The form is
+/// read in place: `record_literal_items' answers Some of exactly these
+/// objects, but collects their slots to do it.
+#[inline]
+pub(crate) fn recordp(value: &Value) -> bool {
+    match value.kind() {
+        Kind::LispRecord(_) => true,
+        Kind::ReaderForm(form) => {
+            matches!(form.as_ref(), crate::lisp::types::ReaderForm::Record { .. })
+        }
+        _ => false,
+    }
 }
 
 /// data.c:Fsubrp: t exactly for subr objects.  A native builtin is a

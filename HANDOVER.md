@@ -125,17 +125,35 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   redisplay counters and the redisplay bits are the window's own
   integers and bits, 21 numbered Lisp slots being left; the counts are
   unchanged, and one `split-window-internal' counts 117 vector cells
-  (GNU 149), the count following the object's interim size.  The
-  stages that give the object window.h's offsets and size and take the
-  ids away follow; the item closes when a window is GNU's `struct
-  window' and the counts are GNU's.
+  (GNU 149), the count following the object's interim size.  Round
+  375 is the fifth: the interpreter, configurations, redisplay and every
+  Rust signature hold the window itself, no id (an accessor 323.3, a
+  native call of one 117.7).  Round 378 is the last: no window has a
+  number, and a window is window.h's struct, 544 bytes, its census and
+  its cells consed GNU's (68 and 67).  D3 is done; what an accessor
+  still costs over GNU's (317.4 against 244.2) is the primitive's
+  dispatch.  A3.5 is not closed.
 - **In progress: D4** (native code calling a primitive).  Round 374:
   the plan (docs/plans/d4-native-subrs.md) and its first two stages;
   sixteen type predicates of data.c are their own link-table entries,
   `bufferp' from native code 78.1 instructions an iteration of the
-  probe's loop against GNU's 73.0 (126.1 before).  The general entry,
-  which every other subr still takes, pays about 50 more than GNU's
-  call; the plan's later stages take it down by shape.
+  probe's loop against GNU's 73.0 (126.1 before).  Round 377: stages
+  S3 and S4, nineteen more subrs with their own entries (`bare-symbol'
+  64.1 against 60, `nth' of a variable index 84.1 against 101,
+  `point' 75.2 against 57).  The general entry, which every other
+  subr still takes, pays about 50 more than GNU's call; the plan's later
+  stages take it down by shape.
+- **Done: D9** (round 376).  A one-argument recursion of dynamic-binding
+  byte code costs 634.0 instructions a level against GNU's 636.2 (693.0
+  before); the lexical one 360.1 against 314.9, and the suite's
+  byte-code-calls loop 447.1 against 467.8 (B4's bound is a timing and
+  is measured with the suite).
+- **Done: D14** (round 379).  `make-symbol' costs 1,280 instructions
+  a call of the probe's loop against GNU's 1,965 (2,262 before); an
+  intern and unintern 4,422 against 2,552.  The rest of the symbols
+  plan (docs/plans/d14-symbols.md: one name for the host text, identity
+  carried as text and the comparisons with literals made symbols and
+  keys, the host text deleted) belongs to A3.6 and is not done.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -19672,6 +19690,384 @@ setup_process_coding_systems's check now refuses). A 13-form
   src/anti_cheat.rs as changed infrastructure (the sixteen contract
   entries appended to the inventory, nothing else), and 1,675 changed
   lines with two tests and twenty assertions added, none removed.
+- **Round 375: Rust code names a window by the window (M2, D3 and A3.5,
+  the fifth stage; neither is closed).**  GNU's C names a window by its
+  pointer or its Lisp object everywhere.  Emaxx's Rust code named one
+  by a number: the interpreter held the ids of the selected window,
+  the window selected before the minibuffer and the previously
+  selected one, the minibuffer's runtime the id of its window, a
+  configuration's snapshot those of its selected and root windows and a
+  configuration record the selected window as a fixnum; 163 parameters
+  and fields were `u64' ids, and each use found the object again in the
+  weak registry, a freed id answering none.  **Holders keep the
+  object**: `Interpreter::selected_window' (marked with the static
+  roots), `old_selected_window', `minibuffer_selected_window' and the
+  minibuffer's `active_window' (marked directly where they were marked
+  through the registry), the snapshot's two windows and the active
+  minibuffer's (locals on the Rust stack, scanned, the snapshot traced
+  as well), a configuration record's slot 1 (the window itself, traced
+  with the record, as `selected_window' of GNU's save_window_data is),
+  and the lists redisplay and the terminal keep (`WindowList', the
+  layout, `TtyState's views and last layout, rooted vectors).  **The
+  currency is the window**: the 163 ids in signatures and helper types
+  are 0, `selected_window_id' is gone (105 uses), a primitive decodes
+  its argument once (decode_live_window, decode_valid_window and
+  decode_any_window's shapes) and passes the handle, and the registry's
+  lookups by id went from 197 to 21, all in tests.  What still knows
+  an id is the registry itself, the object's id and owner, the sweep's
+  note of a freed window, the dumper's key and the loader: the next
+  stage.  **What may differ, each looked at**: a holder keeps its
+  window alive where the old code could find the id freed, and sees a
+  deleted window as it would have before any collection
+  (`active-minibuffer-window' answered the selected window for a freed
+  id and answers the window it holds); the terminal's views keep a
+  deleted window alive until the next redisplay, which only a weak
+  table or the collector's counts could show; a list walked while a
+  hook deletes its windows meets a deleted window where it met a
+  missing id; the paths for "no window at all" (a frame without a
+  root) changed shape where only a frame before the first one exists
+  could take them.  A window deleted and collected within one command
+  now stays reachable until the next redisplay drops it from the
+  terminal's views, as GNU's does (a finalizer on one of its parameters
+  and a weak table keyed by it answer GNU's before and after a first
+  `garbage-collect', where the previous build had already freed it).
+  Three paths of the old code that could panic on a freed id are gone
+  with the ids: the minibuffer's unwind found its calling window by an
+  unrooted id, the window selected before a minibuffer was restored by
+  one, and `window_at_frame_coordinates' could look up id 0, no
+  window.  **Counts**: six window accessors from byte code
+  323.3 instructions each (324.9 before; GNU 244.2), a native call of
+  one 117.7 (122.4; GNU 48.0); these accessors took no registry lookup
+  before either, so what separates them from GNU's is not the registry
+  (the lifted primitive's dispatch and the general native entry are).
+  For the probes of the earlier stages the output is GNU's or the
+  previous build's as before, and a new one of the holders (the
+  selected and minibuffer windows and configurations through deletions
+  and collections) reads alike in GNU, the previous build and this one.
+  Five tests are new (the lists and tables that hold windows survive
+  collections and deletions); 23 assertions state the same facts
+  through the window where they named an id.
+  The independent review (the one question: does the round cheat or
+  break something) read the whole diff, every removed lookup branch and
+  the marking code, listed every structure field holding a window (the
+  holders above and stack structures only), compared some thirty
+  converted functions old against new (the decoders, the tree and
+  configuration functions, the show and unshow paths, the mode line,
+  the motion and the frame-size code: no swapped window, no reordered
+  side effect, no changed error, no new unwrap where none was handled),
+  ran fifteen deletion and collection scenarios and a fuzz of every
+  window, frame, scroll, motion and minibuffer primitive with nine odd
+  arguments each (GNU, the build before and this one byte-identical,
+  the fuzz between the two builds), drove two terminal sessions of 59
+  screens through splits, deletion, resizing, completion, a recursive
+  minibuffer, `C-x 4' and `C-x 5' commands and configurations (every
+  screen alike before and after), and ran the dump and load pair.  It
+  found no cheat and nothing broken, and noted that the comment of the
+  redisplay walks' layout table rested its safety on no Lisp running
+  between the walks, which the code does not show; the comment now
+  gives the reason that holds (each key is a window redisplay's layout
+  keeps for the whole redisplay, and a key is compared by address,
+  never followed).
+  Validation of the six commits (gate profile, one test thread a
+  process): the grouped gate 3,548 passed, 0 failed, 2 ignored (five
+  library tests more); cli 30, cli_parity 174, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 1, package_lifecycle 5, runtime_ownership
+  3; clippy `-D warnings' and rustfmt clean.  The seventh commit changes
+  one comment, after the review: rustfmt and clippy `-D warnings' are
+  clean on it.  The round audit reports no hard finding; it lists 23
+  assertions changed (each states its fact through the window, where it
+  named an id), two results dropped where the old lines dropped them
+  (reformatted), and 5,236 changed lines with five tests and 72
+  assertions added.
+- **Round 376: a byte-code call's frame record keeps what GNU's frame
+  cannot give (M2, D9 done; B4 not yet measured).**  A function in byte
+  code that calls another in byte code pushes, besides the 4-word
+  frame header on the byte-code stack (bytecode.c's `bc_frame'), a
+  record of the caller's state on the thread's list of suspended frames
+  (`BcFrame').  Two of its nine words held what GNU derives, and a
+  dynamic-binding function's return ran twice.  Measured before the
+  round (instructions a level of the probe's recursion, GNU in
+  parentheses): `lex-rec' 371.1 (314.9), `dyn-rec' 693.0 (636.2),
+  `byte-calls' 460.1 (467.8); a lexical call and return 295 against
+  GNU's 180, of which the return 113 against 36.  **The callee's
+  backtrace record is the innermost one**, as Breturn's `specpdl_ptr -
+  1' is: the record no longer keeps its index, which the fast return,
+  the full return (with debug-on-exit's debugger called first), the
+  error path and the unwinding leave all read as the backtrace's length
+  less one, taken before any unwind form runs; in the gate's build,
+  where assertions are on, the record still keeps the index and each
+  leave asserts the two agree, so every library test checks the claim.
+  **A signaling op's records are counted per activation only**: a byte
+  op that signals records itself in the backtrace (record_in_backtrace)
+  and the activation counts it until a handler in the frame catches the
+  signal or the signal leaves the frame, both of which pop those
+  records first; the count is therefore 0 at every call and return,
+  which the record saved and restored, and which debug assertions now
+  state instead.  **A dynamic-binding function's return undoes its
+  argument bindings in one pass**: funcall_lambda's unbind_to of them
+  ran as one call to `unbind_plain' a binding followed by the whole
+  return a second time; one out-of-line loop now undoes the bindings
+  that run nothing (a plain value's restore, a saved current buffer's)
+  and the return goes on, the full path taking over, as before, at the
+  first binding that would run something (a formal given a watcher or
+  a buffer-local value during the call).  **After**: `dyn-rec' 634.0
+  (GNU 636.2), `lex-rec' 360.1, `byte-calls' 447.1, the call loop 370
+  (381 before), `mapc-bc' 414.7 (413.7), `get' 165, the interpreter's
+  loops 3,181 and 4,411, the window accessors 319.9 (323.3), the native
+  calls unchanged.  The lexical interpreter loop read 4,403 in the
+  entries of rounds 369 to 371 and reads 4,411 since: a rebuild of
+  round 371's source reads 4,411 too, with the same profile function
+  by function, so the 4,403 was that build's, not the code's.  Two
+  tests are new: dynamic-binding byte code called from byte code
+  (formals watched from the start or from inside the call, a
+  buffer-local value made during the call, a throw and a signal from
+  200 levels down) and the backtrace seen from byte code (after three
+  byte ops' signals caught in the frame, from a `handler-bind' handler
+  with the `aref' record innermost, from an unwind form of a frame a
+  signal leaves, and the debugger's value returned on the exit of a
+  frame `backtrace-debug' marked), each GNU's output; a third is the
+  review's (below).  The rest of the
+  plan (docs/plans/d9-bytecode-frames.md: the header's saved pc as the
+  test for a byte-code caller, GNU's saved top, handlers that record
+  their frame) is for B4 and D17 and is not done.
+  The independent review (the one question: does the round cheat or
+  break something) read every place a frame is left, every backtrace
+  push of the byte-code loop, the native runtime's non-local exits and
+  the thread exchange, and probed native callbacks that throw or
+  signal, `handler-bind' handlers that throw or call byte code, the
+  debugger on a signal and on exit throwing within the frame and past
+  it, `max-lisp-eval-depth', unwind forms that signal, a quit, threads,
+  `backtrace-frame', `backtrace-eval', `backtrace--locals', the profiler
+  and `defvaralias', `kill-buffer' and `set-buffer' inside dynamic
+  callees (GNU, the build before and this one alike).  It found one
+  break, fixed in the round: when undoing a byte-code callee's bindings
+  at its return signalled or threw (a formal given a watcher during the
+  call, which then refused the `unlet'), Breturn put the frame back and
+  the error path left it a second time, which with the record now taken
+  as the innermost dropped the caller's.  The second leave was older
+  than the round: before it, it ran Ffuncall's depth decrement twice,
+  so ten such signals in one session aborted the process (`Ffuncall
+  depth is balanced').  Breturn now finishes leaving the callee (its
+  stack frame, program and handlers) and the signal or throw comes out
+  in the caller, as it comes out of Ffuncall into the Bcall in GNU; a
+  third new test covers the signal, the throw, the quiet return and
+  twelve signals in a row, which the build before aborts on.
+  Validation of the round's commit (gate profile, one test thread a
+  process): the grouped gate 3,551 passed, 0 failed, 2 ignored (three
+  library tests more); cli 30, cli_parity 174, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding; it lists one
+  result dropped, the release build's `let _ = record' of the frame's
+  check, which has nothing to check there, and 333 changed lines with
+  three tests and thirteen assertions added, none removed.
+- **Round 377: native code calls nineteen more subrs itself (M2, D4;
+  not closed).**  The plan's stages S3 and S4
+  (docs/plans/d4-native-subrs.md).  **S3, the word-level subrs**:
+  `remove-pos-from-symbol', `bare-symbol', `symbol-with-pos-pos',
+  `keywordp', `nth' and `recordp' get their own link-table entries,
+  each a function of the argument words that answers where it can
+  (`nth' for a fixnum count the list's spine reaches within a small
+  bound, `keywordp' reading `symbols-with-pos-enabled' through the
+  active call only for a symbol with a position) and takes the general
+  entry for exactly the cases it does not answer, so a signal goes
+  through the handler sync and the error conversion as before.
+  `keywordp' tests the name's first byte before the obarray, as
+  Fkeywordp does, and `recordp' reads the reader's record form in place
+  where it collected the form's slots into a vector.  **S4, the readers
+  of the interpreter's state**: `point', `point-min', `point-max',
+  `bobp', `eobp', `bolp', `eolp', `following-char', `preceding-char',
+  `current-buffer', `selected-window', `selected-frame' and `purecopy'
+  are entries that read the active call's interpreter through a shared
+  reference and answer the reader's value, with no handler sync and no
+  Result, as GNU's freloc table holds functions that read the C
+  globals; a handler native code has popped stays registered until the
+  next general entry reconciles it, which nothing a reader does can
+  observe.  The generator asserts each hand-declared entry's arity
+  against GNU's table, both tables changed only in the nineteen entries
+  (fifteen retargeted and their wrappers removed, four wrappers'
+  bodies), no subr renumbered, and `src/anti_cheat.rs' gains the
+  nineteen exact fast-path contracts.  The entries' tests compare each
+  with its primitive over every sample under both settings of
+  `symbols-with-pos-enabled', with GNU 30.2's answers as literals (20
+  `keywordp' rows, 13 `recordp' rows, `nth' over 11 counts and 8
+  lists, the nine buffer readers at every position of an empty, a
+  multibyte, a narrowed and a unibyte buffer); the test helper that
+  compares condition data takes a fresh predicate list only where
+  GNU's Fbare_symbol makes one, which it had taken of any condition,
+  and every subr the generator selects is compared or listed with the
+  reason it cannot be.  **Counts** (instructions an iteration of the
+  probes' loops, before, after, GNU): `bare-symbol' 110.1, 64.1, 60;
+  `keywordp' 186.1, 96.1, 64; `nth' of a variable index 157.2, 84.1,
+  101; `point' 110.1, 75.2, 57; `recordp' 104.1, 63.1, 58; `purecopy'
+  130.1, 87.1, 57; `current-buffer' 96.1, 60.1, 56; the other probes
+  and the guards as before (the general entry's `bufferp' 78.1,
+  `lex-rec' 360.1, `dyn-rec' 634.0, `mapc-bc' 414.7, the window
+  accessors 319.9).  What is left over
+  GNU's in `keywordp' and `point' is the call to an out-of-line
+  `is_keyword', the buffer's borrow count and the fixnum range test.
+  The independent review (the one question: does the round cheat or
+  break something) ran each of the nineteen names interpreted,
+  byte-compiled and native-compiled over some fifty-five samples of
+  every type (keywords of the initial obarray, of `obarray-make' and
+  uninterned, symbols with positions under both settings, raw-byte and
+  unibyte names, records, reader forms, defstructs and oclosures, `nth'
+  over counts from -1 to both fixnum extremes, bignums and floats
+  against proper, dotted, circular and long lists, the readers at every
+  position of six kinds of buffer, after state changed inside native
+  code, a killed buffer and a Lisp thread, `purecopy' under three
+  values of `purify-flag'), confirmed with gdb that native code reaches
+  the new entries, and compared signals from them (`condition-case'
+  data, `handler-bind', a recording debugger, backtrace frames, a
+  pending quit): GNU, the build before and this one alike in every
+  cell.  It found no cheat and nothing broken.
+  Validation of the ten commits (gate profile, one test thread a
+  process): the grouped gate 3,555 passed, 0 failed, 2 ignored (four
+  library tests more); cli 30, cli_parity 174, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding; it lists
+  src/anti_cheat.rs as changed infrastructure (the nineteen contract
+  entries appended to the inventory, nothing else), one result dropped
+  where a moved line of `purecopy' already dropped it, and 2,263 changed
+  lines with four tests and twenty-eight assertions added, none removed.
+- **Round 378: a window is window.h's struct window, with no number
+  (M2, D3 done; A3.5 not closed).**  The last two stages of the
+  windows plan (docs/plans/d3-windows.md).  **No window has a number**:
+  the object's id and owner, the interpreter's weak registry of windows,
+  the sweep's note of a freed window and its purge are gone; the six
+  places that enumerated the registry in creation order walk the
+  frames' window trees as window.c does (each frame's tree and then its
+  own minibuffer window for the buffers' window counts, their check and
+  the markers rebound after an image's load; delete_all_child_windows'
+  order when a frame is deleted; `next-window' from the selected window
+  for `buffer-swap-text'), no order Lisp can see having changed; the
+  loader installs a dumped window as it installs a frame.  **The
+  window is GNU's struct**: the twenty-one Lisp slots the
+  `WINDOW_*_SLOT' numbers reached, with their count of held slots and
+  their absent state, are window.h's fields by name in GNU's order, each
+  present from make_window on with what make_window leaves in it; the
+  integers are C ints and the bits share one word; the base line is
+  window.h's two fields with GNU's resets and BASE_LINE_NUMBER_VALID_P;
+  the struct is 544 bytes with 25 Lisp words, asserted against GNU's
+  offsets, so the census counts 68 slots a window and making one conses
+  67 vector cells, as GNU's do (66 and 51 before; one
+  `split-window-internal' conses 149, GNU's 149, 117 before).  What
+  Emaxx alone keeps is nine `given' bits of the edges, sizes and window
+  end, in the four bytes GNU leaves unused after `total_lines'.  **Lisp
+  sees two changes, both GNU's**: `purecopy' of a window signals "Don't
+  know how to purify: #<window 1 on BUF>" (it named a record); the
+  parent a split makes on a frame that is not selected is that frame's
+  (it was the selected frame's, so deleting the selected frame emptied
+  the other frame's tree).  **Counts**: the six accessors from byte
+  code 317.4 instructions each (GNU 244.2), a native call of one
+  116.0 (GNU 48.0); what is left over GNU's there is the primitive's
+  dispatch, not the window.
+  The independent review (the one question: does the round cheat or
+  break something) read the six enumerations and their walks, the
+  marking and the loader, every converted reader and writer of the
+  twenty-one fields (gdb on the build confirming the size and the
+  offsets of GNU's struct), sampled some seventy of the rewritten
+  assertions against the status list, ran the window probes of every
+  stage, a multi-frame terminal probe that matched GNU line for line,
+  and a 29-step terminal session whose screens equal GNU's.  It found
+  one break, which the round fixes: Emaxx's `set-minibuffer-window'
+  stored the window as the selected frame's own minibuffer window
+  (older than the round; GNU's sets only the global minibuf_window), and
+  the walk of a deleted frame's windows reaches its minibuffer window
+  through the frame, so a frame given another frame's minibuffer window
+  kept its own alive when deleted and selecting it ended the process.
+  window.c's minibuf_window is now the interpreter's own: init_window
+  sets it to the initial frame's, a frame switch to that frame's
+  (move_minibuffers_onto_frame), deleting a frame that is not selected
+  to the selected frame's, a read's start and end to the selected
+  frame's (choose_minibuf_frame), `set-minibuffer-window' to the window
+  it names; `kill-buffer's two guards, `get-buffer-window's minibuffer
+  test and the refusal of a read inside a read read it, and no frame's
+  own minibuffer window changes.  A terminal test runs the case on GNU
+  and Emaxx (the build before ends the process at its fourth step) with
+  `kill-buffer' sparing the buffer the named window shows until a frame
+  switch; the review read the fix again and found nothing.
+  Validation of the three commits (gate profile, one test thread a
+  process): the grouped gate 3,556 passed, 0 failed, 2 ignored (one
+  library test more); cli 30, cli_parity 175 (the round's terminal test
+  among them), ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 1, package_lifecycle 5, runtime_ownership
+  3; clippy `-D warnings' and rustfmt clean.  The round audit reports no
+  hard finding; it lists 143 assertions changed (each window test that
+  named a slot number, the old size or an id, now stating the same fact
+  of the field, GNU's size or the object, listed old and new in the
+  windows work's status file), two results dropped (`minibuf_window'
+  read as nil before the first frame's windows exist, and an optional
+  argument's default moved with its line), and 4,314 changed lines with
+  two tests and 205 assertions added.
+- **Round 379: `make-symbol' makes no host text, and a symbol's
+  interned state is its field (M2, D14 done; A3.6 not closed).**  The
+  first three stages of the symbols plan (docs/plans/d14-symbols.md).
+  Every Emaxx symbol carries a host text beside its Lisp name: for a
+  symbol of the initial obarray its name, for an uninterned or private
+  one the name with a marker and a serial, which code compares where C
+  compares objects and from which it read whether the symbol was
+  interned.  Making one cost two or three heap allocations and the
+  formatting of the marked text: `make-symbol' 2,257 instructions a call
+  of the probe's loop against GNU's 1,965.  **S0** records GNU 30.2's
+  answers for 99 forms where an uninterned or private symbol shares its
+  name with a symbol C names (nil, t, `&rest', `lambda', `interactive',
+  `:test', `invisible', `error' and others, interpreted and
+  byte-compiled), as the fixture every later stage keeps.  **S1**: the
+  marked text of a symbol `make-symbol' or the reader's `#:' makes is
+  pending until some code asks for it, and a comparison with a literal
+  answers false for a pending text without building it (a pending text
+  has never been seen and the marked text equals no literal).  **S2**:
+  GNU's `interned' (uninterned, interned, interned in the initial
+  obarray) is the symbol's field, read where the marker was (`#:' in
+  printing, `keywordp', the dumper's flags and the loader's record, the
+  standard obarray's test); a private obarray's symbols get the pending
+  text too; Funintern no longer scans the 4,096 slots of the address
+  cache of symbols, it marks the cache and the next collection empties
+  the slots of uninterned symbols before the sweep, and a hit checks the
+  field.  **After**: `make-symbol' 1,280 (GNU 1,965), an intern and
+  unintern 4,422 (24,900 before; GNU 2,552), an intern into a private
+  obarray 3,662 (5,134; GNU 2,421), reading `#:x' 3,412 (4,217; GNU
+  4,250), all with their collections; without collections (the
+  probe at a hundredth of its length) `make-symbol' is 406.5 against
+  GNU's 406.6.  The call and interpreter guards move by three or less
+  (`lex-rec' 357.1, `dyn-rec' 631.0, `mapc-bc' 415.7, the interpreted
+  loop of `ignore' 2,753.2, the window accessors 318.4), the code's
+  layout.  **What Lisp sees
+  change**: a gensym whose name string was changed by `aset' before any
+  code asked for its text is now known by the new name where code reads
+  the host text (`json-serialize' writes it, as GNU does), and `#:'
+  read with an escaped U+001F names the symbol as GNU names it; a code
+  path that builds the text freezes the name it has then (`set', a
+  dynamic binding, `defvar', `make-local-variable', `add-hook',
+  `run-hooks', `default-boundp', `json-serialize'), so until the plan's
+  stage that reads names from the Lisp string such answers depend on
+  what ran first; and `test-completion' of a private obarray's symbol
+  renamed by `aset' answers t for the new name and nil for the old,
+  where it answered the reverse and GNU answers nil for both.
+  The independent review (the one question: does the round cheat or
+  break something) read the pending text's install and free and every
+  converted site of the marker, ran an unintern, collect and intern
+  loop 120 times over symbols C names with Rust-side lookups and a
+  3,000-step stress of gensyms, private obarrays, `obarray-clear' and
+  collections, the plan's fixture with the texts built first and
+  pending, and a dump and load of pending and built, uninterned,
+  private and re-interned symbols: GNU, the build before and this one
+  alike but for the answers above.  It found no cheat and nothing
+  broken; its note that the built-or-pending reader had become a
+  function only the tests call, hidden from the dead-code lint by
+  types.rs's module-wide allowance, is answered by the sixth commit,
+  which compiles it for the tests only.
+  Validation of the six commits (gate profile, one test thread a
+  process): the grouped gate 3,566 passed, 0 failed, 2 ignored (ten
+  library tests more); cli 30, cli_parity 175, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding; it lists one
+  assertion changed (the symbol cell's layout assert of byte 57, which
+  holds the image bit and now the interned bits, renamed with the field)
+  and 1,391 changed lines with ten tests and 56 assertions added.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -22959,7 +23355,126 @@ ert-tests as a whole 26,307 ms against 27,211.
   45198225377) passed: 3,550 library tests, the seven integration
   targets (217) and the binaries' tests (61), none failed.
 
+**On `110e2a9`** (round 375): the frozen run (run 45222250596) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 65.0 s against 55.9 s (1.163), test bodies 262.4 s
+  against 252.0 s (1.041), in all 1.063 (GNU's suite took 308 s).  The
+  widest body gaps are comp-tests (15.4 s against 13.0 s), tramp-tests
+  (18.4 against 16.7), semantic-utest-ia (3.42 against 2.15),
+  process-tests (2.83 against 1.58), mule-tests (2.27 against 1.56) and
+  package-tests (6.41 against 5.77).  The Rust gate (run 45222243186)
+  passed: 3,555 library tests, the seven integration targets (217) and
+  the binaries' tests (61), none failed.
+
+**On `e887f38`** (round 376): the frozen run's first attempt (run
+  45244158444) matched 7,927 of 7,928 outcomes: the one that differed
+  is `eglot-test-rust-completion-exit-function', which failed in GNU
+  with `jsonrpc-error' (the language server's answer not arriving in
+  time) and passed in Emaxx (setup 1.164, test bodies 1.017, in all
+  1.042; GNU's suite 282 s).  The one re-run the rule allows (run
+  45256044587, on the same commit) matched all 7,928 outcomes with no
+  unsuccessful execution: setup 61.5 s against 46.8 s (1.313), test
+  bodies 237.0 s against 223.6 s (1.060), in all 1.104 (GNU's suite
+  270 s).  The widest body gaps are comp-tests (12.7 s against 10.4 s),
+  tramp-tests (15.1 against 13.6), simple-tests (3.32 against 2.33),
+  process-tests (2.29 against 1.47), semantic-utest-ia (2.71 against
+  1.97) and mule-tests (1.94 against 1.35).  The Rust gate (run
+  45244153458) passed: 3,558 library tests, the seven integration
+  targets (217) and the binaries' tests (61), none failed.
+
+**On `17637b0`** (round 377): the frozen run (run 45263437871) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 54.2 s against 46.5 s (1.166), test bodies 233.8 s
+  against 222.6 s (1.051), in all 1.071 (GNU's suite took 269 s).  The
+  widest body gaps are tramp-tests (15.2 s against 13.6 s), comp-tests
+  (11.9 against 10.3), process-tests (2.22 against 1.45),
+  semantic-utest-ia (2.70 against 1.95), mule-tests (1.91 against 1.30)
+  and package-tests (5.84 against 5.49).  The Rust gate (run
+  45263430968) passed: 3,562 library tests, the seven integration
+  targets (217) and the binaries' tests (61), none failed.
+
+**On `9189ac3`** (round 378): the frozen run (run 45276262850) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, on a slow runner (GNU's suite took 348 s).  Setup 81.8 s
+  against 70.0 s (1.168), test bodies 299.1 s against 278.0 s (1.076),
+  in all 1.094.  The widest body gaps are tramp-tests (22.3 s against
+  19.2 s), comp-tests (18.4 against 15.9), mule-tests (2.98 against
+  1.95), process-tests (2.89 against 1.91), semantic-utest-ia (4.04
+  against 3.06) and package-tests (7.02 against 6.24).  The Rust gate
+  (run 45276258575) passed: 3,563 library tests, the seven integration
+  targets (218) and the binaries' tests (61), none failed.
+
+**On `f0a0fdc`** (round 379): the frozen run (run 45288410209) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 55.3 s against 47.2 s (1.171), test bodies 235.4 s
+  against 225.0 s (1.046), in all 1.068 (GNU's suite took 272 s).  The
+  widest body gaps are tramp-tests (15.0 s against 13.5 s), comp-tests
+  (12.3 against 11.0), semantic-utest-ia (2.85 against 2.07),
+  process-tests (2.22 against 1.52), mule-tests (2.00 against 1.35) and
+  package-tests (5.91 against 5.52).  The Rust gate (run 45288405571)
+  passed: 3,573 library tests, the seven integration targets (218) and
+  the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 379, its review and the plans
+  made beside it), outside the round and in no milestone.**  One line
+  each: a buffer killed before `dump-emacs-portable' answers t to
+  `buffer-live-p' after the load, where GNU answers nil (its name nil in
+  both; the buffers plan's first stage tests it); hand-made byte code
+  whose stack underflows (`make-byte-code' with the bytes #o301 #o030
+  #o001 #o207) panics in the unverified loop where GNU's segfaults; the
+  compatibility harness runs Emaxx with EMAXX_TRACE_LOAD_ERRORS=1, which
+  turns off the byte-code loop's plain subr and native call paths, so
+  the frozen run's timings do not exercise them; `defvar-1' and
+  `internal--define-uninitialized-variable' called from byte code that
+  C called under an interpreted `let' of the same name signal in Emaxx
+  and succeed in GNU (the plan of D17 removes the cause).
+- **Found after the scope lock (round 378 and its review), outside the
+  round.**  One line each: the census sizes of a process (42 against
+  GNU's 45), a window configuration (13 against 14), a thread (63
+  against 65) and a mutex (9 against 10) are not GNU's (they belong to
+  B19's counters); `substitute-object-in-subtree' substitutes into a
+  window's fields where GNU signals; deleting a frame does not unshow
+  its windows' buffers or unchain their markers as
+  delete_all_child_windows does; the root window's link to the
+  minibuffer window is made when it is read rather than stored;
+  minibuffer_unwind takes the selected frame's minibuffer window where
+  GNU takes the expiring minibuffer's frame's; during a read,
+  `window-list-1' and `next-window' with a nil minibuffer argument
+  include another frame's inactive minibuffer window, which GNU's do not
+  (each alike before and after the round, in no milestone).
+- **Found after the scope lock (round 377 and its review), outside the
+  round and in no milestone.**  One line each: a symbol of the initial
+  obarray whose name holds byte 0x1E or 0x1F answers nil to `keywordp'
+  in Emaxx and t in GNU (the private-obarray marker of the symbols'
+  host text; the symbols' items D14 and its plan remove the marker),
+  and the round's test of `is_keyword' keeps today's answer; the
+  generator's arity assertion checks each entry's declared count
+  against GNU's table, while a direct target's own Rust signature is
+  tied to that count only by the runtime test that calls it; the
+  entries that read the interpreter's state do not bring the handler
+  lists up to date, so an internal failure of that sync would show at
+  the next general entry instead.
+- **Found after the scope lock (round 376 and its plan), outside the
+  round and in no milestone.**  One line each: debug-on-exit of a
+  dynamic-binding byte-code function called from byte code sees its
+  argument still bound (GNU's funcall_lambda unbinds before the Bcall
+  arm calls the debugger: `((exit global))' in GNU, `((exit bound))'
+  in Emaxx); the exit debugger runs with `lisp-eval-depth' one higher
+  than GNU's; a frame that returns with a handler still pushed (a
+  hand-made `make-byte-code') drops the handler without popping its
+  handler-bind registry entry.
+- **Found after the scope lock (round 375 and its review), outside the
+  round.**  One line each: with `minibuffer-setup-hook' deleting
+  `(minibuffer-selected-window)' and collecting, the keys typed to M-x
+  go into the buffer, where GNU reads them in the minibuffer (alike
+  before and after the round; in no milestone);
+  `delete-other-windows-vertically' given the minibuffer window loops
+  without end in GNU and Emaxx alike (window.el's own loop), and when
+  memory runs out GNU's lisp_align_malloc signals memory_full while
+  Emaxx's block allocator aborts: a crash, so it joins M3 as D133
+  (round 277 ported memory_full to the large allocations, not to the
+  blocks conses and the other small objects come from).
 - **Found after the scope lock (round 374 and its review), outside the
   round and in no milestone.**  One line each: the link-table entries
   of `symbolp' and `bare-symbol-p' answer t for the unbound marker

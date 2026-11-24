@@ -496,33 +496,67 @@ pub(crate) fn safe_list_length(list: &Value) -> i64 {
     len
 }
 
+/// lisp.h's SMALL_LIST_LEN_MAX: the counts fns.c:Fnthcdr walks with no
+/// circularity or quit check.
+const SMALL_LIST_LEN_MAX: i64 = 127;
+
+/// fns.c:Fnthcdr's walk for a small count: COUNT a fixnum of at most
+/// SMALL_LIST_LEN_MAX (a negative one takes no step), and Some of the
+/// tail of LIST after that many conses, or of nil where the list ends in
+/// nil first.  Some(None) where a tail it would step from is neither a
+/// cons nor nil, of which CHECK_LIST_END signals; None for any other
+/// COUNT, which the walk with the circularity and quit checks takes.  A
+/// function of the words alone: nothing here signals, allocates or
+/// quits.
+#[inline]
+pub(crate) fn small_count_nthcdr(count: &Value, list: &Value) -> Option<Option<Value>> {
+    let count = count
+        .fixnum()
+        .filter(|count| *count <= SMALL_LIST_LEN_MAX)?;
+    let mut tail = *list;
+    for _ in 0..count {
+        match tail.cons_ref() {
+            Some(cell) => tail = cell.cdr.get(),
+            None if tail.is_nil() => return Some(Some(Value::Nil)),
+            None => return Some(None),
+        }
+    }
+    Some(Some(tail))
+}
+
+/// fns.c:Fnth, Fcar (Fnthcdr (COUNT, LIST)), where the count is small
+/// (`small_count_nthcdr') and neither subr signals: the car of a cons
+/// tail, nil for nil.  None for any other COUNT, and where Fnthcdr's
+/// CHECK_LIST_END or Fcar would signal, which the subr itself does with
+/// its datum.  A function of the words alone, so that native code's
+/// entry for `nth' (native_comp/runtime.rs) answers from it.
+#[inline]
+pub(crate) fn small_count_nth(count: &Value, list: &Value) -> Option<Value> {
+    let tail = small_count_nthcdr(count, list)??;
+    match tail.cons_ref() {
+        Some(cell) => Some(cell.car.get()),
+        None => tail.is_nil().then_some(Value::Nil),
+    }
+}
+
 pub(crate) fn nthcdr_value(
     interp: &mut Interpreter,
     env: &mut Env,
     count: &Value,
     list: &Value,
 ) -> Result<Value, LispError> {
+    // A small fixnum count walks without circularity or quit checks, and
+    // CHECK_LIST_END reports the original list.
+    if let Some(tail) = small_count_nthcdr(count, list) {
+        return tail.ok_or_else(|| wrong_type_argument("listp", *list));
+    }
     let mut tail = *list;
     // fns.c:Fnthcdr counts down in an EMACS_INT.  A positive bignum counts
     // down from LARGE_NUM instead: no list or cycle is that long, and the
     // cycle reduction below adds back what the substitution left out.
     const LARGE_NUM: i64 = i64::MAX;
     let mut num = match count.kind() {
-        Kind::Integer(n) => {
-            // A small fixnum count walks without circularity or quit
-            // checks (SMALL_LIST_LEN_MAX).
-            if n <= 127 {
-                for _ in 0..n.max(0) {
-                    match tail.kind() {
-                        Kind::Cons(cell) => tail = cell.cdr.get(),
-                        Kind::Nil => return Ok(Value::Nil),
-                        _ => return Err(wrong_type_argument("listp", *list)),
-                    }
-                }
-                return Ok(tail);
-            }
-            n
-        }
+        Kind::Integer(n) => n,
         Kind::BigInteger(n) => {
             if BigInt::from(n).is_negative() {
                 return Ok(tail);

@@ -22,12 +22,12 @@ pub(crate) fn frame_top_margin(frame: FrameRef) -> i64 {
 
 /// FRAME's minibuffer window when it shows one below its root window
 /// (FRAME_HAS_MINIBUF_P and not FRAME_MINIBUF_ONLY_P).
-fn frame_mini_window(interp: &Interpreter, frame: FrameRef) -> Option<u64> {
+fn frame_mini_window(frame: FrameRef) -> Option<WindowRef> {
     let (root, mini) = {
         let frame = frame.borrow();
-        (frame.root_window_id(), frame.minibuffer_window_id())
+        (frame.root_window, frame.minibuffer_window)
     };
-    (mini != root && interp.window_frame_id(mini) == Some(frame)).then_some(mini)
+    mini.filter(|mini| Some(*mini) != root && mini.frame() == Some(frame))
 }
 
 /// frame.c:set_menu_bar_lines: a text frame's menu bar takes VALUE's
@@ -49,7 +49,7 @@ fn set_bar_lines(interp: &mut Interpreter, frame: FrameRef, value: Value, menu: 
         .unwrap_or(0);
     let minibuffer_only = {
         let frame = frame.borrow();
-        frame.root_window_id() == frame.minibuffer_window_id()
+        frame.root_window == frame.minibuffer_window
     };
     let olines = if menu {
         frame.borrow().menu_bar_lines
@@ -216,10 +216,14 @@ pub(crate) fn adjust_frame_size(
             state.height,
             state.width,
             state.text_height,
-            state.root_window_id(),
+            state.root_window,
         )
     };
-    let mini = frame_mini_window(interp, frame);
+    // A frame without its windows (a deleted one) has none to size.
+    let Some(root) = root else {
+        return Ok(());
+    };
+    let mini = frame_mini_window(frame);
     let old_inner_width = window_geometry(interp, root).0;
     let old_inner_height =
         window_geometry(interp, root).1 + mini.map_or(0, |mini| window_geometry(interp, mini).1);
@@ -322,7 +326,7 @@ pub(super) fn window_pixel_to_total(
 /// WINDOW's subtree for a DELTA-pixel resize.
 fn resize_root_window(
     interp: &mut Interpreter,
-    window: u64,
+    window: WindowRef,
     delta: i64,
     horizontal: bool,
     ignore: bool,
@@ -332,7 +336,7 @@ fn resize_root_window(
         interp,
         "window--resize-root-window",
         &[
-            interp.window_value(window),
+            window.value(),
             Value::Integer(delta),
             lisp_bool(horizontal),
             lisp_bool(ignore),
@@ -354,9 +358,11 @@ fn resize_frame_windows(
     horflag: bool,
     env: &mut Env,
 ) -> Result<(), LispError> {
-    let root = frame.borrow().root_window_id();
+    let Some(root) = frame.borrow().root_window else {
+        return Ok(());
+    };
     let old_pixel_size = window_pixel_size(interp, root, horflag);
-    let mini = frame_mini_window(interp, frame);
+    let mini = frame_mini_window(frame);
     // unit + m->pixel_height - window_body_height (m): a mini window has
     // no mode, header or tab line, so one line.
     let mini_height = if mini.is_some() { 1 } else { 0 };
@@ -366,26 +372,24 @@ fn resize_frame_windows(
 
     let (width, height, left, top) = window_geometry(interp, root);
     if new_pixel_size == old_pixel_size && (horflag || top == margin) {
-    } else if window_combination(interp, root).is_none() {
+    } else if window_combination(root).is_none() {
         if horflag {
-            set_window_total_cols(interp, root, new_size);
-            set_window_geometry(interp, root, (new_pixel_size, height, left, top))?;
+            root.set_total_cols(Some(new_size));
+            set_window_geometry(root, (new_pixel_size, height, left, top));
         } else {
-            set_window_top_line(interp, root, margin);
-            set_window_total_lines(interp, root, new_size);
-            set_window_geometry(interp, root, (width, new_pixel_size, left, margin))?;
+            root.set_top_line(Some(margin));
+            root.set_total_lines(Some(new_size));
+            set_window_geometry(root, (width, new_pixel_size, left, margin));
         }
     } else {
         if !horflag {
-            set_window_top_line(interp, root, margin);
-            set_window_geometry(interp, root, (width, height, left, margin))?;
+            root.set_top_line(Some(margin));
+            set_window_geometry(root, (width, height, left, margin));
         }
         let delta = new_pixel_size - old_pixel_size;
         for ignore in [false, true] {
             resize_root_window(interp, root, delta, horflag, ignore, env)?;
-            if window_resize_check(interp, root, horflag)
-                && new_pixel_size == window_new_pixel(interp, root)
-            {
+            if window_resize_check(root, horflag) && new_pixel_size == window_new_pixel(root) {
                 window_resize_apply(interp, root, horflag)?;
                 window_pixel_to_total(interp, frame, horflag, env)?;
                 break;
@@ -396,22 +400,20 @@ fn resize_frame_windows(
     if let Some(mini) = mini {
         let (mini_width, mini_pixel_height, mini_left, mini_top) = window_geometry(interp, mini);
         if horflag {
-            set_window_total_cols(interp, mini, new_size);
+            mini.set_total_cols(Some(new_size));
             set_window_geometry(
-                interp,
                 mini,
                 (new_pixel_size, mini_pixel_height, mini_left, mini_top),
-            )?;
+            );
         } else {
             let (_, root_height, _, root_top) = window_geometry(interp, root);
-            let (_, root_lines, _, root_top_line) = window_char_geometry(interp, root);
-            set_window_total_lines(interp, mini, mini_height);
-            set_window_top_line(interp, mini, root_top_line + root_lines);
+            let (_, root_lines, _, root_top_line) = window_char_geometry(root);
+            mini.set_total_lines(Some(mini_height));
+            mini.set_top_line(Some(root_top_line + root_lines));
             set_window_geometry(
-                interp,
                 mini,
                 (mini_width, mini_height, mini_left, root_top + root_height),
-            )?;
+            );
         }
     }
     // fset_redisplay (f).
@@ -422,60 +424,54 @@ fn resize_frame_windows(
 /// window.c:window_resize_apply_total: W's total size (width with
 /// HORFLAG) becomes its new total, its children placed from its column
 /// or line, advancing across an iso-combination.
-fn window_resize_apply_total(interp: &mut Interpreter, window: u64, horflag: bool) {
-    let new_total = window_slot_value(interp, window, WINDOW_NEW_TOTAL_SLOT)
-        .integer_value()
-        .unwrap_or(0);
-    let (_, _, left_col, top_line) = window_char_geometry(interp, window);
+fn window_resize_apply_total(window: WindowRef, horflag: bool) {
+    let new_total = window.new_total().integer_value().unwrap_or(0);
+    let (_, _, left_col, top_line) = window_char_geometry(window);
     let mut edge = if horflag {
-        set_window_total_cols(interp, window, new_total);
+        window.set_total_cols(Some(new_total));
         left_col
     } else {
-        set_window_total_lines(interp, window, new_total);
+        window.set_total_lines(Some(new_total));
         top_line
     };
-    let Some(horizontal) = window_combination(interp, window) else {
+    let Some(horizontal) = window_combination(window) else {
         return;
     };
-    let mut child = window_first_child(interp, window);
-    while let Some(child_id) = child {
+    let mut child = window.first_child();
+    while let Some(w) = child {
         if horflag {
-            set_window_left_col(interp, child_id, edge);
+            w.set_left_col(Some(edge));
         } else {
-            set_window_top_line(interp, child_id, edge);
+            w.set_top_line(Some(edge));
         }
-        window_resize_apply_total(interp, child_id, horflag);
+        window_resize_apply_total(w, horflag);
         if horizontal == horflag {
-            let (cols, lines, _, _) = window_char_geometry(interp, child_id);
+            let (cols, lines, _, _) = window_char_geometry(w);
             edge += if horflag { cols } else { lines };
         }
-        child = window_link(interp, child_id, WINDOW_NEXT_SIBLING_SLOT);
+        child = w.next_sibling();
     }
 }
 
 /// window.c:Fwindow_resize_apply_total: FRAME's windows take their new
 /// total sizes, the root window at column 0 below the bars and the mini
 /// window below it.
-pub(super) fn window_resize_apply_total_for_frame(
-    interp: &mut Interpreter,
-    frame: FrameRef,
-    horizontal: bool,
-) {
-    let root = frame.borrow().root_window_id();
+pub(super) fn window_resize_apply_total_for_frame(frame: FrameRef, horizontal: bool) {
+    let Some(root) = frame.borrow().root_window else {
+        return;
+    };
     // Necessary when deleting the top-/or leftmost window.
-    set_window_left_col(interp, root, 0);
-    set_window_top_line(interp, root, frame_top_margin(frame));
-    window_resize_apply_total(interp, root, horizontal);
-    if let Some(mini) = frame_mini_window(interp, frame) {
-        let new_total = window_slot_value(interp, mini, WINDOW_NEW_TOTAL_SLOT)
-            .integer_value()
-            .unwrap_or(0);
+    root.set_left_col(Some(0));
+    root.set_top_line(Some(frame_top_margin(frame)));
+    window_resize_apply_total(root, horizontal);
+    if let Some(mini) = frame_mini_window(frame) {
+        let new_total = mini.new_total().integer_value().unwrap_or(0);
         if horizontal {
-            set_window_total_cols(interp, mini, new_total);
+            mini.set_total_cols(Some(new_total));
         } else {
-            let (_, root_lines, _, root_top_line) = window_char_geometry(interp, root);
-            set_window_top_line(interp, mini, root_top_line + root_lines);
-            set_window_total_lines(interp, mini, new_total);
+            let (_, root_lines, _, root_top_line) = window_char_geometry(root);
+            mini.set_top_line(Some(root_top_line + root_lines));
+            mini.set_total_lines(Some(new_total));
         }
     }
 }

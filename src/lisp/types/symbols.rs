@@ -21,13 +21,26 @@ use std::rc::Rc;
 /// table that filled with such texts and was emptied when full (every
 /// name built with `format', every resolved alias) lost the literal names
 /// with them.
-pub(super) struct AddressNames(Box<[(usize, Option<SymbolName>)]>);
+///
+/// A slot is filled only with a symbol of the initial obarray, which the
+/// obarray keeps.  Funintern leaves the slot, whose hit then requires the
+/// symbol's `interned' field to be the initial obarray's; such a slot does
+/// not keep its symbol, so the collection empties it before the sweep can
+/// free the symbol (`release_uninterned'), once a Funintern has left one.
+pub(super) struct AddressNames {
+    slots: Box<[(usize, Option<SymbolName>)]>,
+    /// A Funintern since the last `release_uninterned'.
+    uninterned: bool,
+}
 
 const ADDRESS_SLOT_BITS: u32 = 12;
 
 impl Default for AddressNames {
     fn default() -> Self {
-        Self(vec![(0, None); 1 << ADDRESS_SLOT_BITS].into_boxed_slice())
+        Self {
+            slots: vec![(0, None); 1 << ADDRESS_SLOT_BITS].into_boxed_slice(),
+            uninterned: false,
+        }
     }
 }
 
@@ -39,20 +52,34 @@ impl AddressNames {
 
     #[inline]
     pub(super) fn get(&self, key: usize) -> Option<SymbolName> {
-        match self.0[Self::slot(key)] {
+        match self.slots[Self::slot(key)] {
             (found, symbol) if found == key => symbol,
             _ => None,
         }
     }
 
     pub(super) fn insert(&mut self, key: usize, symbol: SymbolName) {
-        self.0[Self::slot(key)] = (key, Some(symbol));
+        self.slots[Self::slot(key)] = (key, Some(symbol));
     }
 
-    /// Funintern: no slot answers with SYMBOL any more.
-    fn forget(&mut self, symbol: SymbolName) {
-        for slot in self.0.iter_mut().filter(|slot| slot.1 == Some(symbol)) {
-            *slot = (0, None);
+    /// Funintern: a slot may now name a symbol no obarray keeps.
+    fn note_uninterned(&mut self) {
+        self.uninterned = true;
+    }
+
+    /// The collection's pass, after a Funintern, before the sweep: empty
+    /// each slot whose symbol is no longer in the initial obarray, so no
+    /// slot outlives its symbol.
+    fn release_uninterned(&mut self) {
+        if !std::mem::take(&mut self.uninterned) {
+            return;
+        }
+        for slot in self.slots.iter_mut() {
+            if slot.1.is_some_and(|symbol| {
+                symbol.cell().interned() != crate::lisp::alloc::SymbolInterned::InInitialObarray
+            }) {
+                *slot = (0, None);
+            }
         }
     }
 }
@@ -1133,14 +1160,11 @@ impl SymbolOwner {
             names.remove(symbol, index);
             symbol
         };
-        self.forget(symbol);
-        Some(symbol)
-    }
-
-    /// The uninterned state of a symbol Funintern unlinked.
-    fn forget(&self, symbol: SymbolName) {
+        // Funintern's SYMBOL_UNINTERNED.  A slot of the address cache
+        // may still name it (see `AddressNames').
         symbol.cell().mark_uninterned();
-        self.0.by_address.borrow_mut().forget(symbol);
+        self.0.by_address.borrow_mut().note_uninterned();
+        Some(symbol)
     }
 
     /// The initial obarray's symbols in DOOBARRAY's order.
@@ -1271,6 +1295,19 @@ pub(super) fn with_address_names<R>(body: impl FnOnce(&AddressNames) -> R) -> R 
 
 pub(super) fn with_address_names_mut<R>(body: impl FnOnce(&mut AddressNames) -> R) -> R {
     with_current(|symbols| body(&mut symbols.by_address.borrow_mut()))
+}
+
+/// Whether a slot of the current table's address cache names the symbol
+/// whose cell is at IDENTITY, compared by address alone: the cell need
+/// not be live.
+#[cfg(test)]
+pub(super) fn address_slot_names(identity: usize) -> bool {
+    with_current(|symbols| {
+        symbols.by_address.borrow().slots.iter().any(|slot| {
+            slot.1
+                .is_some_and(|symbol| symbol.identity_ptr() == identity)
+        })
+    })
 }
 
 pub(crate) fn with_hash_tests<R>(body: impl FnOnce(&mut DescriptorPool) -> R) -> R {
@@ -1459,6 +1496,7 @@ fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {
         mark_symbol(name, mark);
     }
     symbols.hash_tests.borrow().mark_roots(mark);
+    symbols.by_address.borrow_mut().release_uninterned();
 }
 
 pub(super) fn mark_scope_roots(mark: &mut dyn FnMut(&Value)) {

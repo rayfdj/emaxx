@@ -83,11 +83,10 @@ impl Interpreter {
             if installed[index] || builtin(&symbol.symbol) {
                 continue;
             }
-            let text = symbol.symbol.as_str();
-            if !symbol.symbol.cell().is_uninterned()
-                && !crate::lisp::types::is_private_obarray_symbol(text)
+            if symbol.symbol.cell().interned()
+                == crate::lisp::alloc::SymbolInterned::InInitialObarray
             {
-                self.intern_symbol_name(text);
+                self.intern_symbol_name(symbol.symbol.as_str());
             }
             self.install_symbol(symbol);
         }

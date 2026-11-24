@@ -253,7 +253,7 @@ define_dispatch!(
                 let mut objects =
                     overlays_in_range(&interp.buffer.borrow(), pos, pos + 1, false, true);
                 if let Some(sorted) = args.get(1).filter(|value| value.is_truthy()) {
-                    let window = window_record_id_from_value(interp, sorted);
+                    let window = WindowRef::from_value(sorted);
                     sort_overlays(interp, &mut objects, window)?;
                     objects.reverse();
                 }

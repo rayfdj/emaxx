@@ -1169,7 +1169,7 @@ impl DumpContext {
             // PVEC_FRAME, PVEC_TERMINAL, PVEC_WINDOW: dump_nilled_pseudovec.
             Kind::Frame(_) => (self.dump_nilled_pseudovec()?, DumpType::Frame),
             Kind::Terminal(_) => (self.dump_nilled_pseudovec()?, DumpType::Terminal),
-            Kind::Window(window) => (self.dump_nilled_window(window)?, DumpType::Window),
+            Kind::Window(_) => (self.dump_nilled_pseudovec()?, DumpType::Window),
             // pdumper.c:dump_vectorlike rejects PVEC_SYMBOL_WITH_POS.
             Kind::SymbolWithPos(_) => return Err(self.unsupported(object, "pseudovector type 6")),
             Kind::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
@@ -1516,8 +1516,7 @@ impl DumpContext {
         self.field_lv(start, &mut words, 2, &val, WEIGHT_NORMAL);
         self.field_lv(start, &mut words, 3, &function, WEIGHT_NORMAL);
         self.field_lv(start, &mut words, 4, &plist, WEIGHT_NORMAL);
-        let private = !symbol.cell().is_uninterned()
-            && crate::lisp::types::is_private_obarray_symbol(symbol.as_str());
+        let private = symbol.cell().interned() == crate::lisp::alloc::SymbolInterned::Interned;
         let next = match symbol.cell().next.get() {
             Some(next) if private => Value::Symbol(next),
             _ => Value::Integer(0),
@@ -2306,18 +2305,6 @@ impl DumpContext {
         self.object_finish(&[0])
     }
 
-    /// dump_nilled_pseudovec of a window: every Lisp field nil, so the
-    /// loaded window is a deleted one of the new process.  The record is
-    /// the number of slots the window holds, which the loaded one holds
-    /// too; the dumping process's id for it is no identity in another.
-    fn dump_nilled_window(
-        &mut self,
-        window: crate::lisp::types::WindowObjectRef,
-    ) -> Result<u32, DumpError> {
-        self.object_start()?;
-        self.object_finish(&[window.held() as u64])
-    }
-
     // ----- Queues -----
 
     /// dump_drain_normal_queue.
@@ -2971,14 +2958,13 @@ pub(crate) fn symbol_flags_word(
     // `unintern' leaves the symbol object with SYMBOL_UNINTERNED; Emaxx
     // still keeps standard-obarray removals in a membership set, so the record
     // says both.
-    let interned: u64 = if symbol.cell().is_uninterned() || uninterned_from_obarray {
-        SYMBOL_UNINTERNED
-    } else if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
+    let interned: u64 = match symbol.cell().interned() {
+        _ if uninterned_from_obarray => SYMBOL_UNINTERNED,
+        crate::lisp::alloc::SymbolInterned::Uninterned => SYMBOL_UNINTERNED,
         // lisp.h: interned in some other obarray -- a private obarray's
         // own symbol object.
-        SYMBOL_INTERNED
-    } else {
-        SYMBOL_INTERNED_IN_INITIAL_OBARRAY
+        crate::lisp::alloc::SymbolInterned::Interned => SYMBOL_INTERNED,
+        crate::lisp::alloc::SymbolInterned::InInitialObarray => SYMBOL_INTERNED_IN_INITIAL_OBARRAY,
     };
     let mut word = redirect | (interned << 4);
     if uninterned_from_obarray {

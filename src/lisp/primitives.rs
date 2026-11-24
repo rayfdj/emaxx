@@ -51,6 +51,10 @@ mod completion;
 mod dispatch;
 pub(crate) use dispatch::current_column;
 pub(crate) use dispatch::restore_unicode_menu_case_table;
+pub(crate) use dispatch::{
+    bobp, bolp, current_buffer, eobp, eolp, following_char, point, point_max, point_min,
+    preceding_char,
+};
 pub(crate) use dispatch::{iterator_first_visible, row_index_of, window_text_geometry};
 mod file_io;
 mod filelock;
@@ -302,11 +306,16 @@ pub(crate) fn arith_error() -> LispError {
 pub(crate) use dispatch::DirectPrimitive;
 pub(crate) use dispatch::FnvBuildHasher;
 pub(crate) use dispatch::NameFacts;
+#[cfg(test)]
+pub(crate) use dispatch::WindowList;
+pub(crate) use dispatch::all_frames_window_cycle;
 pub(crate) use dispatch::check_point_in_composition;
 pub(crate) use dispatch::compute_name_facts;
 pub(crate) use dispatch::echo_area_message;
 #[cfg(test)]
 pub(crate) use dispatch::echo_area_message_with_spans;
+pub(crate) use dispatch::foreach_frame_window;
+pub(crate) use dispatch::frame_windows_for_deletion;
 pub(crate) use dispatch::frames_window_list;
 #[cfg(test)]
 pub(crate) use dispatch::has_dispatch_handler;

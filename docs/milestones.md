@@ -6,6 +6,8 @@ and the honesty audit) were counted on 23 November 2026 with 81 done. The
 owner signed off this assignment of the other 215 on that day. The list is
 closed: work proceeds one milestone at a time, in the order below, and is
 reported as items done of that milestone's list.
+A finding that joins a milestone under the first rule below is added to that
+milestone's list with the round that found it (D133, round 375's review).
 
 ## Rules
 
@@ -41,7 +43,7 @@ unfinished work pushed as a packaged draft (wip/r367).
 
 This document.
 
-## M2. Structure and performance (30 items; 2 done)
+## M2. Structure and performance (30 items; 5 done)
 
 Exit test: the remaining representation, collector and ownership engineering
 is done, the recorded per-call excesses are removed where GNU does less, and
@@ -96,15 +98,22 @@ a diagnostic run of the locked suite on the profile-guided build.
   (round 321). In progress (round 369: every access through one handle;
   round 371: the window is its own PVEC_WINDOW object with its slots in it;
   round 372: GNU's contents word and bits, its own number, use time and cursor
-  bit; round 373: geometry and redisplay state as its own integers and bits).
+  bit; round 373: geometry and redisplay state as its own integers and bits;
+  round 375: holders and Rust signatures keep the window, not its id).
+  **Done** (round 378: no window ids; window.h's struct window, its size and
+  census GNU's).
 - D4: Native code's calls into subrs cost ~65 vs 14 instructions (round 321).
   In progress (round 374: sixteen type predicates are their own entries, 78
-  against 73 for the probe; the general entry is unchanged).
+  against 73 for the probe; round 377: nineteen more subrs, the word-level
+  ones and the readers of the interpreter's state; the general entry is
+  unchanged).
 - D9: Dynamic-binding byte-code call from byte code ~80 instructions over GNU
   (rounds 289, 295)
+  **Done** (round 376: 634.0 against 636.2 a level of the recursion).
 - D13: looking-at ~250 instructions over GNU around the match (rounds 174-176,
   296)
 - D14: make-symbol ~690 instructions (round 173)
+  **Done** (round 379: 1,280 against 1,965 a call).
 - D17: Rust-to-byte-code call ~120 instructions over GNU (rounds 167, 297).
   In progress (round 370: 414 against 289 a `mapc' callback, was 458).
 - D22: Building ucs-names costs 1,024M vs 818M instructions (round 162)
@@ -120,7 +129,7 @@ a diagnostic run of the locked suite on the profile-guided build.
   **Done** (round 368: 0.98 and 0.71 of GNU's time on the profile-guided
   build).
 
-## M3. Fix list (54 items; 1 done)
+## M3. Fix list (55 items; 1 done)
 
 Exit test: every item below is fixed, or verified against its own recorded
 cases and closed. D119's panic comes first. Instruction counts of the call and
@@ -215,6 +224,9 @@ reason.
 - D132: A fatal signal waits for the next check (seen in round 366): GNU's
   handler for SIGTERM runs kill-emacs from the signal itself; Emaxx runs it
   when its …
+- D133: A block allocation the system refuses aborts (round 375's review):
+  GNU's lisp_align_malloc signals memory_full for the blocks conses and the
+  other small objects come from; Emaxx's new_block asserts
 - E46: Interpreted closure prints #, not #[...] (verify against the audit's
   own cases: a probe on round 366 already answers as GNU)
 - E54: Char table prints #, not #^[...] (verify against the audit's own cases:

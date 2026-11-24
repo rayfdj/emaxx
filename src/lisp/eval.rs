@@ -60,6 +60,7 @@ pub(crate) use threads::{ChannelOutcome, WaitChannel};
 mod treesit;
 mod variables;
 use bootstrap::*;
+pub(crate) use core::BACKTRACE_EVAL;
 pub(crate) use core::NativeForm;
 pub(crate) use core::is_special_form_name;
 mod ert;
@@ -3736,8 +3737,9 @@ pub(crate) struct WindowConfigurationSnapshot {
     selected_frame_id: crate::lisp::types::FrameRef,
     current_buffer_id: u64,
     /// data->current_window: FRAME_SELECTED_WINDOW of the frame.
-    selected_window_id: u64,
-    root_window_id: u64,
+    selected_window: Option<primitives::WindowRef>,
+    /// data->root_window: FRAME_ROOT_WINDOW of the frame.
+    root_window: Option<primitives::WindowRef>,
     frame_width: i64,
     frame_height: i64,
     /// window.c's saved_windows: one vector of `SAVED_WINDOW_SIZE' slots
@@ -3969,20 +3971,6 @@ pub(crate) struct FrameState {
     pub(crate) realized_faces_epoch: u64,
 }
 
-impl FrameState {
-    pub(crate) fn root_window_id(&self) -> u64 {
-        self.root_window.map_or(0, primitives::WindowRef::id)
-    }
-
-    pub(crate) fn selected_window_id(&self) -> u64 {
-        self.selected_window.map_or(0, primitives::WindowRef::id)
-    }
-
-    pub(crate) fn minibuffer_window_id(&self) -> u64 {
-        self.minibuffer_window.map_or(0, primitives::WindowRef::id)
-    }
-}
-
 fn empty_lisp_face_vector() -> Value {
     Value::vector(
         std::iter::once(Value::symbol("face")).chain(std::iter::repeat_n(
@@ -4041,7 +4029,8 @@ type RecordIdsByType = HashMap<String, BTreeSet<u64>, crate::lisp::primitives::F
 #[derive(Clone, Debug, Default)]
 pub(crate) struct MinibufferRuntimeState {
     active_buffer_id: Option<u64>,
-    active_window_id: Option<u64>,
+    /// minibuf.c's minibuf_window while the read is active.
+    active_window: Option<primitives::WindowRef>,
     activation_id: Option<u64>,
     depth: usize,
     prompt: Option<String>,
@@ -4110,18 +4099,20 @@ impl ImageGraphCopier {
         if let Some(copied) = self.symbols.get(&symbol.identity_ptr()) {
             return *copied;
         }
-        let copied = if symbol.cell().is_uninterned() {
-            SymbolName::make_uninterned(
+        let copied = match symbol.cell().interned() {
+            crate::lisp::alloc::SymbolInterned::Uninterned => SymbolName::make_uninterned(
                 Value::Nil,
                 crate::lisp::types::visible_symbol_name(symbol.as_str()),
                 crate::lisp::primitives::next_make_symbol_id(),
-            )
-        } else if crate::lisp::types::is_private_obarray_symbol(symbol.as_str()) {
+            ),
             // A private obarray's symbol: the copied obarray's buckets
             // hold the copy.
-            SymbolName::make_private(symbol.as_str().to_owned(), Value::Nil)
-        } else {
-            SymbolName::intern_with_lisp_name(symbol.as_str().to_owned(), Some(Value::Nil))
+            crate::lisp::alloc::SymbolInterned::Interned => {
+                SymbolName::make_private(symbol.as_str().to_owned(), Value::Nil)
+            }
+            crate::lisp::alloc::SymbolInterned::InInitialObarray => {
+                SymbolName::intern_with_lisp_name(symbol.as_str().to_owned(), Some(Value::Nil))
+            }
         };
         // Record the object before following its name: a name's properties
         // can point back to this symbol, or share any other copied object.
@@ -4512,19 +4503,14 @@ impl ImageGraphCopier {
                 copied
             }
             Kind::Window(window) => {
-                // The clone's own window under the same id, in its id
-                // space, holding as many slots; the slots copied after the
-                // window is on record (a window reaches itself through
-                // its frame and its siblings).
+                // The clone's own window; its Lisp fields copied after the
+                // window is on record (a window reaches itself through its
+                // frame and its siblings).
                 let key = window.identity();
                 if let Some(copied) = self.records.get(&key) {
                     return *copied;
                 }
-                let copied_window = crate::lisp::types::WindowObjectRef::new(
-                    window.id(),
-                    self.record_owner,
-                    window.held(),
-                );
+                let copied_window = crate::lisp::types::WindowObjectRef::new();
                 let copied = Value::Window(copied_window);
                 self.records.insert(key, copied);
                 copied_window.set_use_time(window.use_time());
@@ -4562,10 +4548,10 @@ impl ImageGraphCopier {
                 copied_window.set_window_end_valid(window.window_end_valid());
                 copied_window.set_redisplay(window.redisplay());
                 copied_window.set_suspend_auto_hscroll(window.suspend_auto_hscroll());
-                copied_window.set_contents(self.copy(&window.contents()));
-                for (index, slot) in window.held_values().enumerate() {
-                    copied_window.set_held(index, self.copy(&slot));
-                }
+                copied_window.set_base_line_number(window.base_line_number());
+                copied_window.set_base_line_pos(window.base_line_pos());
+                copied_window.copy_display_fields(&window);
+                copied_window.set_lisp_values(window.lisp_values().map(|value| self.copy(&value)));
                 copied
             }
             Kind::Closure(lambda) => {
@@ -5235,7 +5221,7 @@ impl Interpreter {
     }
 
     /// The record ID names, as a value: for the side tables that still
-    /// hold a record by id (a process's, a window's, a thread's) and hand
+    /// hold a record by id (a process's, a thread's) and hand
     /// it back to Lisp.  Such a table holds a live record (it is a root
     /// of it, or the record is reachable through the state), so a
     /// missing one is a bug.
@@ -5259,22 +5245,12 @@ impl Interpreter {
             let id = record.id;
             // The registry names the freed cell under this id, or it names
             // the record an image load put in its place (whose side tables
-            // are its own): only the former leaves.  A window leaves the
-            // windows' registry, where its id is.
-            if record.window {
-                match self.windows.get(id) {
-                    Some(held) if held.identity() == record.identity => {
-                        self.windows.remove(id);
-                    }
-                    _ => continue,
+            // are its own): only the former leaves.
+            match self.records.get(id) {
+                Some(held) if held.identity() == record.identity => {
+                    self.records.remove(id);
                 }
-            } else {
-                match self.records.get(id) {
-                    Some(held) if held.identity() == record.identity => {
-                        self.records.remove(id);
-                    }
-                    _ => continue,
-                }
+                _ => continue,
             }
             if let Some(type_name) = record.type_name.as_deref()
                 && let Some(ids) = self.record_ids_by_type_index.get_mut(type_name)
@@ -5283,9 +5259,6 @@ impl Interpreter {
                 if ids.is_empty() {
                     self.record_ids_by_type_index.remove(type_name);
                 }
-            }
-            if record.window {
-                continue;
             }
             // The side tables that know an object by id go with it: the
             // sqlite handle (sqlite.c's finalizer closes the database),
@@ -5489,13 +5462,11 @@ impl Interpreter {
 
     /// A window the image held, which pdumper.c:dump_nilled_pseudovec
     /// wrote with every Lisp field nil and the rest zero: a deleted
-    /// window of the new process (w->contents nil, its bits clear),
-    /// holding HELD nil slots, on no frame and with no sequence number.
-    /// Its id is this state's next, so it names no window this process
-    /// made and none it makes later: the dumping process's id is not an
-    /// identity here.
-    pub(crate) fn install_dead_window(&mut self, held: usize) -> primitives::WindowRef {
-        primitives::WindowRef::from_object(self.allocate_window(held))
+    /// window of the new process (w->contents nil, its bits clear), on
+    /// no frame and with no sequence number, an object of its own beside
+    /// the windows this process made.
+    pub(crate) fn install_dead_window(&mut self) -> primitives::WindowRef {
+        primitives::WindowRef::from_object(crate::lisp::types::WindowObjectRef::new())
     }
 
     /// A terminal the image nilled: a dead terminal object of its own,
@@ -5651,31 +5622,31 @@ impl Interpreter {
         }
     }
 
-    /// The records this state's C-side structures hold by id and that
-    /// the other loops of `mark_static_roots_into' do not reach (those
-    /// mark the process list, the live threads, the standard obarray, the
+    /// The windows this state's C-side structures hold and that the
+    /// other loops of `mark_static_roots_into' do not reach (those mark
+    /// the process list, the live threads, the standard obarray, the
     /// selected window and each live frame's windows, as process.c,
     /// thread.c, lread.c and window.c mark theirs): the windows the
     /// minibuffer state remembers (`minibuf_selected_window',
-    /// `Vminibuf_scroll_window'), the previously selected window, the
-    /// windows. Native units are reached through actual Lisp roots, as the
-    /// loaded-units table has weak values in GNU.
+    /// `minibuf_window') and the previously selected window
+    /// (`old_selected_window'), each staticpro'd in C and held here as
+    /// the object. Native units are reached through actual Lisp roots,
+    /// as the loaded-units table has weak values in GNU.
     /// A mutex, a condition variable, a tree-sitter object or a module
     /// function is not held here: C collects them when nothing reaches
     /// them, and the side tables that know them by id are purged with
-    /// them.  An id the sweep already freed has no entry and is skipped.
+    /// them.
     fn mark_record_holders(&self, mark: &mut impl FnMut(&Value)) {
-        let mut hold = |id: u64| {
-            if let Some(window) = self.window_ref(id) {
-                mark(&window.value());
-            }
-        };
-        hold(self.old_selected_window_id);
-        if let Some(id) = self.minibuffer_selected_window_id {
-            hold(id);
-        }
-        if let Some(id) = self.minibuffer_runtime.active_window_id {
-            hold(id);
+        for window in [
+            self.old_selected_window,
+            self.minibuffer_selected_window,
+            self.minibuf_window,
+            self.minibuffer_runtime.active_window,
+        ]
+        .into_iter()
+        .flatten()
+        {
+            mark(&window.value());
         }
     }
 
@@ -5983,7 +5954,9 @@ impl Interpreter {
             mark(buffer);
         }
         mark(&self.record_value(self.standard_obarray_id));
-        mark(&self.window_value(self.selected_window_id));
+        if let Some(window) = self.selected_window {
+            mark(&window.value());
+        }
         // The thread's Lisp values outside any interpreter (xdisp.c's
         // staticpro'd echo area; a tag cache).
         crate::lisp::primitives::mark_thread_local_roots(&mut mark);
@@ -6236,6 +6209,19 @@ impl Interpreter {
                 };
                 *frame = copied;
             }
+            // The windows the state holds as objects, each the copy's.
+            let clone_state = &mut *clone;
+            for window in [
+                &mut clone_state.selected_window,
+                &mut clone_state.minibuffer_selected_window,
+                &mut clone_state.minibuf_window,
+                &mut clone_state.old_selected_window,
+                &mut clone_state.minibuffer_runtime.active_window,
+            ] {
+                if let Some(source) = *window {
+                    *window = primitives::WindowRef::from_value(&c.copy(&source.value()));
+                }
+            }
             for terminal in &mut clone.terminals {
                 let Kind::Terminal(copied) = c.copy(&Value::Terminal(*terminal)).kind() else {
                     unreachable!("terminal copy keeps its object kind")
@@ -6286,12 +6272,6 @@ impl Interpreter {
             for slot in clone.records.values_mut() {
                 let Kind::Record(copied) = c.copy(&Value::Record(*slot)).kind() else {
                     unreachable!("a record copies to a record")
-                };
-                *slot = copied;
-            }
-            for slot in clone.windows.values_mut() {
-                let Kind::Window(copied) = c.copy(&Value::Window(*slot)).kind() else {
-                    unreachable!("a window copies to a window")
                 };
                 *slot = copied;
             }
@@ -6831,13 +6811,21 @@ pub struct InterpreterState {
     current_global_map: Option<Value>,
     /// The ID of the current buffer.
     current_buffer_id: u64,
-    /// The currently selected window record.
-    selected_window_id: u64,
-    /// Root and minibuffer window identities are interpreter/frame state,
-    /// never Lisp variables.
-    minibuffer_selected_window_id: Option<u64>,
-    /// Window selected when the last window-change cycle completed.
-    pub(crate) old_selected_window_id: u64,
+    /// window.c's selected_window: none only while the first frame's
+    /// windows are being made.
+    selected_window: Option<primitives::WindowRef>,
+    /// minibuf.c's minibuf_selected_window: the window selected when the
+    /// minibuffer was entered.
+    minibuffer_selected_window: Option<primitives::WindowRef>,
+    /// window.c's minibuf_window: the minibuffer window a read uses, the
+    /// selected frame's at each frame switch (move_minibuffers_onto_frame)
+    /// and at a read's start and end (choose_minibuf_frame), or the one
+    /// `set-minibuffer-window' named since.  None only while the first
+    /// frame's windows are being made.
+    minibuf_window: Option<primitives::WindowRef>,
+    /// window.c's old_selected_window: the window selected when the last
+    /// window-change cycle completed.
+    pub(crate) old_selected_window: Option<primitives::WindowRef>,
     /// Per-frame old selected window.  GNU's initial batch frame leaves this
     /// unset until the first completed window-change cycle.
     /// Monotonic selection stamp used by `window-use-time'.
@@ -6973,14 +6961,11 @@ pub struct InterpreterState {
     buffer_case_tables: coding::BufferCaseTables,
     /// Allocated record objects, by id (see `record_registry').
     records: record_registry::RecordRegistry,
-    /// The window objects, by id: as weak as `records', and purged with
-    /// it after a sweep.
-    windows: record_registry::WindowRegistry,
     /// This state's id space, for the records' `owner'.
     record_owner: u32,
-    /// Host pseudovector IDs grouped by their fixed type tags, principally
-    /// for window enumeration during buffer teardown. Generic Lisp records
-    /// do not enter this registry and type-slot stores maintain no index.
+    /// Host pseudovector IDs grouped by their fixed type tags, for the
+    /// census of the obarrays. Generic Lisp records do not enter this
+    /// registry and type-slot stores maintain no index.
     record_ids_by_type_index: RecordIdsByType,
     /// Record mark bits from the most recent real reachability pass.  Dense
     /// host storage keeps IDs stable, but dead records must not contribute to
@@ -7635,9 +7620,10 @@ impl Interpreter {
             buffer: crate::lisp::types::BufferRef::new(0, crate::buffer::Buffer::new("*scratch*")),
             current_global_map: None,
             current_buffer_id: 0,
-            selected_window_id: 0,
-            minibuffer_selected_window_id: None,
-            old_selected_window_id: 0,
+            selected_window: None,
+            minibuffer_selected_window: None,
+            minibuf_window: None,
+            old_selected_window: None,
             window_select_count: 1,
             windows_or_buffers_changed: 1,
             update_mode_lines: 0,
@@ -7797,7 +7783,6 @@ impl Interpreter {
                 (main_thread_id, main_thread),
                 (standard_obarray_id, standard_obarray),
             ]),
-            windows: record_registry::WindowRegistry::default(),
             record_owner,
             record_ids_by_type_index: [
                 ("thread".into(), BTreeSet::from([main_thread_id])),
@@ -9163,9 +9148,9 @@ impl Interpreter {
             false,
             selected_window_geometry,
         );
-        interp.set_selected_window_id(selected_window.id());
-        interp.set_root_window_id(selected_window.id());
-        interp.old_selected_window_id = selected_window.id();
+        interp.set_selected_window(Some(selected_window));
+        interp.set_root_window(Some(selected_window));
+        interp.old_selected_window = Some(selected_window);
         selected_window.set_use_time(1);
         // frame.c:make_frame shows the current buffer in the root window
         // through set_window_buffer, and the minibuffer in the minibuffer
@@ -9191,7 +9176,9 @@ impl Interpreter {
             true,
             minibuffer_window_geometry,
         );
-        interp.set_minibuffer_window_id(minibuffer_window.id());
+        interp.set_minibuffer_window(Some(minibuffer_window));
+        // init_window: `minibuf_window = f->minibuffer_window'.
+        interp.set_minibuf_window(Some(minibuffer_window));
         // The two windows show their buffers from the start.
         interp.recount_buffer_windows();
         // Interpreter::new also constructs several dumped values after the

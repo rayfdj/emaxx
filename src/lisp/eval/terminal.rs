@@ -997,19 +997,6 @@ impl Interpreter {
         };
         terminal.borrow().live.then_some(terminal)
     }
-
-    /// window.c stores the owning frame on every window, including internal
-    /// and deleted windows. It must survive a frame switch and frame deletion.
-    pub(crate) fn window_frame_id(&self, id: u64) -> Option<crate::lisp::types::FrameRef> {
-        match self
-            .window_ref(id)?
-            .slot(crate::lisp::primitives::WINDOW_FRAME_SLOT)
-            .kind()
-        {
-            Kind::Frame(id) => Some(id),
-            _ => None,
-        }
-    }
 }
 
 impl Interpreter {
@@ -1143,8 +1130,8 @@ impl Interpreter {
         let mini = p::make_leaf_window(self, mini_buffer_id, 1, true, (width, 1, 0, height - 1));
         // make_frame's set_window_buffer of each: their buffers are shown
         // in a window more.
-        self.adjust_window_count(root.id(), true);
-        self.adjust_window_count(mini.id(), true);
+        self.adjust_window_count(root, true);
+        self.adjust_window_count(mini, true);
         // make_terminal_frame's F<num>, from ++tty_frame_count.
         self.tty_frame_count += 1;
         let frame = crate::lisp::types::FrameRef::new(
@@ -1189,14 +1176,14 @@ impl Interpreter {
         );
         self.frame_states.insert(0, frame);
         for window in [root, mini] {
-            window.set_held_slot(self, p::WINDOW_FRAME_SLOT, Value::Frame(frame));
+            window.set_frame(Value::Frame(frame));
         }
         // make_frame's set_window_buffer (root_window, buf, 0, 0), then the
         // minibuffer window's: the buffer's last window start, its point,
         // its margins and its display stamp, no hooks run.
         let mut env = crate::lisp::types::Env::new();
-        p::set_window_buffer(self, root.id(), buffer_id, false, false, &mut env)?;
-        p::set_window_buffer(self, mini.id(), mini_buffer_id, false, false, &mut env)?;
+        p::set_window_buffer(self, root, buffer_id, false, false, &mut env)?;
+        p::set_window_buffer(self, mini, mini_buffer_id, false, false, &mut env)?;
         self.copy_frame_faces(self.selected_frame_id, frame);
         object.borrow_mut().top_frame = Some(frame);
         if object.id == 0 && TTY_ROUTE_ACTIVE.get() {
@@ -1209,6 +1196,9 @@ impl Interpreter {
         // old_selected_frame is window_change_record's alone.
         if id != self.selected_frame_id {
             self.selected_frame_id = id;
+            // do_switch_frame's move_minibuffers_onto_frame:
+            // `minibuf_window = f->minibuffer_window'.
+            self.minibuf_window = id.borrow().minibuffer_window;
         }
         let terminal = id.borrow().terminal.expect("live frame terminal");
         let mut state = terminal.borrow_mut();
@@ -1228,22 +1218,16 @@ impl Interpreter {
 
     pub(crate) fn retire_frame(&mut self, id: crate::lisp::types::FrameRef) {
         use crate::lisp::primitives as p;
-        let windows = self.windows_where(|window| {
-            window
-                .slot_opt(p::WINDOW_FRAME_SLOT)
-                .is_some_and(|frame| frame.word() == Value::Frame(id).word())
-        });
-        for window in windows {
+        // frame.c:delete_frame's delete_all_child_windows of the root
+        // window: every window of the frame's tree and its own minibuffer
+        // window, in that function's order.
+        for window in p::frame_windows_for_deletion(id) {
             // No contents, a leaf's buffer or an internal window's first
             // child: a deleted window.
-            self.wset_buffer(window.id(), Value::Nil);
-            for slot in [
-                p::WINDOW_PARENT_SLOT,
-                p::WINDOW_PREV_SIBLING_SLOT,
-                p::WINDOW_NEXT_SIBLING_SLOT,
-            ] {
-                window.set_held_slot(self, slot, Value::Nil);
-            }
+            self.wset_buffer(window, Value::Nil);
+            window.set_parent_window(None);
+            window.set_prev_sibling(None);
+            window.set_next_sibling(None);
         }
         let mut frame = id.borrow_mut();
         frame.root_window = None;

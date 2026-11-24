@@ -49,8 +49,8 @@ pub(crate) const STRING_CELL_BYTES: usize = strings::STRING_CELL_SIZE;
 #[cfg(test)]
 pub(crate) use symbols::allocated_uninterned_symbols;
 pub(crate) use symbols::{
-    SymbolText, adopt_image_symbol_blocks, allocate_symbol, image_cell_words, image_symbol_bytes,
-    image_symbol_offset, live_symbols, sweep_symbols,
+    SymbolInterned, SymbolText, adopt_image_symbol_blocks, allocate_symbol, image_cell_words,
+    image_symbol_bytes, image_symbol_offset, live_symbols, sweep_symbols,
 };
 pub use vectors::{ClosureRef, VectorHeader, VectorRef, VectorTag, VectorlikeRef};
 pub(crate) use vectors::{

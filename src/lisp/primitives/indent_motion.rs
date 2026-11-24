@@ -3,6 +3,7 @@
 //! out in columns -- Fcompute_motion, and Fvertical_motion when Emacs runs
 //! noninteractively (window.c's line-based scrolling goes through it).
 
+use super::WindowRef;
 use super::dispatch::CompositionIterator;
 use super::{buffer_display_table, multibyte_char_width, position_indentation, vector_items};
 use crate::lisp::eval::Interpreter;
@@ -20,12 +21,12 @@ pub(crate) struct Position {
     pub(crate) contin: bool,
 }
 
-/// The window a motion is laid out in: ID lends its display table and
-/// frame, and CONTENTS is the buffer it shows meanwhile (Fvertical_motion
-/// shows the current buffer in it while it moves).
+/// The window a motion is laid out in: WINDOW lends its display table
+/// and frame, and CONTENTS is the buffer it shows meanwhile
+/// (Fvertical_motion shows the current buffer in it while it moves).
 #[derive(Clone, Copy, Debug)]
 pub(crate) struct MotionWindow {
-    pub(crate) id: u64,
+    pub(crate) window: WindowRef,
     pub(crate) contents: u64,
 }
 
@@ -68,10 +69,7 @@ fn display_table_of(value: Value) -> Option<CharTableRef> {
 /// window.c window_display_table: WIN's own display table, else its
 /// buffer's `buffer-display-table', else `standard-display-table'.
 fn window_display_table(interp: &Interpreter, win: MotionWindow) -> Option<CharTableRef> {
-    let own = interp
-        .window_ref(win.id)
-        .and_then(|window| window.slot_opt(super::WINDOW_DISPLAY_TABLE_SLOT))
-        .and_then(display_table_of);
+    let own = display_table_of(win.window.display_table());
     if own.is_some() {
         return own;
     }
@@ -114,7 +112,7 @@ fn selective_display(interp: &Interpreter) -> i64 {
 /// Fget_char_property (POS, PROP, OBJECT) where OBJECT is the current
 /// buffer, or WINDOW showing it so that only the overlays for that window
 /// count.
-fn char_property(interp: &Interpreter, pos: usize, prop: &str, window: Option<u64>) -> Value {
+fn char_property(interp: &Interpreter, pos: usize, prop: &str, window: Option<WindowRef>) -> Value {
     let name = PropertyName::symbol(prop);
     {
         let buffer = interp.buffer.borrow();
@@ -131,12 +129,12 @@ fn char_property(interp: &Interpreter, pos: usize, prop: &str, window: Option<u6
 /// The object compute_motion's skip_invisible and vmotion read text
 /// properties through: WIN when it shows the current buffer, else the
 /// buffer.
-fn text_prop_window(interp: &Interpreter, win: MotionWindow) -> Option<u64> {
-    (win.contents == interp.current_buffer_id()).then_some(win.id)
+fn text_prop_window(interp: &Interpreter, win: MotionWindow) -> Option<WindowRef> {
+    (win.contents == interp.current_buffer_id()).then_some(win.window)
 }
 
 /// TEXT_PROP_MEANS_INVISIBLE of the `invisible' property at POS.
-fn invisible_at(interp: &Interpreter, pos: usize, window: Option<u64>) -> u8 {
+fn invisible_at(interp: &Interpreter, pos: usize, window: Option<WindowRef>) -> u8 {
     let prop = char_property(interp, pos, "invisible", window);
     super::invisibility_level(interp, &prop)
 }
@@ -150,7 +148,7 @@ fn skip_invisible(
     pos: usize,
     next_boundary: &mut usize,
     to: usize,
-    window: Option<u64>,
+    window: Option<WindowRef>,
 ) -> usize {
     let position = Value::Integer(pos as i64);
     let overlay_limit = super::next_overlay_change_position(&interp.buffer.borrow(), pos);
@@ -213,7 +211,7 @@ fn overlay_strings_width(interp: &Interpreter, pos: usize, win: MotionWindow) ->
                     .unwrap_or(Value::Nil)
             };
             let window = get("window");
-            if super::window_record_id_from_value(interp, &window).is_some_and(|id| id != win.id) {
+            if WindowRef::from_value(&window).is_some_and(|window| window != win.window) {
                 continue;
             }
             let before = get("before-string");
@@ -339,7 +337,7 @@ pub(crate) fn compute_motion(
     // Negative width means use all available text columns, less one for
     // the continuation glyph on a character terminal.
     if width < 0 {
-        let window_value = interp.window_value(win.id);
+        let window_value = win.window.value();
         width = super::dispatch::call(interp, "window-body-width", &[window_value], env)
             .ok()
             .and_then(|value| value.integer_value())
@@ -611,7 +609,7 @@ pub(crate) fn vmotion(
     vtarget: i64,
     win: MotionWindow,
 ) -> Position {
-    let hscroll = super::dispatch::display::window_hscroll_state(interp, win.id).hscroll;
+    let hscroll = super::dispatch::display::window_hscroll_state(win.window).hscroll;
     let lmargin = if hscroll > 0 { 1 - hscroll } else { 0 };
     let selective = selective_display(interp).max(-1);
     let window = text_prop_window(interp, win);

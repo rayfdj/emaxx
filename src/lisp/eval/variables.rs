@@ -115,7 +115,7 @@ impl Interpreter {
     pub(crate) fn begin_minibuffer_runtime(
         &mut self,
         buffer_id: u64,
-        window_id: u64,
+        window: primitives::WindowRef,
         prompt: String,
     ) -> MinibufferRuntimeState {
         let previous = self.minibuffer_runtime.clone();
@@ -125,7 +125,7 @@ impl Interpreter {
         command_loop_levels.push(self.command_loop_recursion_depth);
         self.minibuffer_runtime = MinibufferRuntimeState {
             active_buffer_id: Some(buffer_id),
-            active_window_id: Some(window_id),
+            active_window: Some(window),
             activation_id: Some(self.minibuffer_activation_count),
             depth: previous.depth.saturating_add(1),
             prompt: Some(prompt),
@@ -144,9 +144,8 @@ impl Interpreter {
 
     pub(crate) fn active_minibuffer_window_value(&self) -> Option<Value> {
         self.minibuffer_runtime
-            .active_window_id
-            .filter(|window_id| self.window_ref(*window_id).is_some())
-            .map(|id| self.window_value(id))
+            .active_window
+            .map(primitives::WindowRef::value)
     }
 
     pub(crate) fn active_minibuffer_activation_id(&self) -> Option<u64> {
@@ -3099,6 +3098,21 @@ impl Interpreter {
         self.capture_backtrace_context(env, activation_frame);
     }
 
+    /// `capture_current_backtrace_context' of a call, whose function is
+    /// `backtrace-eval' when BACKTRACE_EVAL answers so: it is asked only
+    /// when Edebug is not entered, and reads the function's name in place.
+    #[inline(always)]
+    pub(crate) fn capture_call_backtrace_context(
+        &mut self,
+        backtrace_eval: impl FnOnce() -> bool,
+        env: &Env,
+    ) {
+        if !self.edebug_entered_active(env) && !backtrace_eval() {
+            return;
+        }
+        self.capture_backtrace_context(env, None);
+    }
+
     #[cold]
     fn capture_backtrace_context(&mut self, env: &Env, activation_frame: Option<&EnvFrame>) {
         let mut context = env.clone();
@@ -3157,6 +3171,13 @@ impl Interpreter {
 /// already holds the state (the byte-code VM's call and return) pays
 /// the shell's parked test once.
 impl InterpreterState {
+    /// The index of the innermost backtrace record, the one the innermost
+    /// call made: bytecode.c's `specpdl_ptr - 1' at Breturn.
+    #[inline(always)]
+    pub(crate) fn innermost_backtrace_record(&self) -> usize {
+        self.backtrace_frames.len() - 1
+    }
+
     /// Whether SYMBOL is a forwarded variable `makunbound' detached from
     /// its C slot (data.c:set_internal).  The table is empty unless one
     /// was, so a store asks that first.
@@ -3524,14 +3545,6 @@ impl Interpreter {
             .find(|installed| installed.frame < index)
             .map_or(Value::Nil, |installed| installed.environment);
         crate::lisp::types::Env::from_vec(vec![EnvFrame::from_alist(environment)])
-    }
-
-    pub fn set_window_margins(&mut self, window_id: u64, left: Option<i64>, right: Option<i64>) {
-        crate::lisp::primitives::set_window_margin_cols(self, window_id, left, right);
-    }
-
-    pub fn window_margins(&self, window_id: u64) -> (Option<i64>, Option<i64>) {
-        crate::lisp::primitives::window_margin_cols(self, window_id)
     }
 
     /// Fhandler_bind_1's push_handler_bind of each CONDITIONS/HANDLER

@@ -1093,7 +1093,7 @@ impl Interpreter {
 
     /// Fintern_soft of a symbol: oblookup of its own current name finds it.
     pub(crate) fn standard_obarray_contains_object(&self, symbol: &SymbolName) -> bool {
-        crate::lisp::types::is_visible_symbol_name(symbol.as_str())
+        symbol.cell().interned() == crate::lisp::alloc::SymbolInterned::InInitialObarray
             && matches!(
                 SymbolName::lookup_initial(symbol.lisp_name()),
                 Some(Ok(found)) if found == *symbol

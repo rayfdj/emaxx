@@ -354,7 +354,7 @@ fn store_frame_parameter(
             let Some(window) = WindowRef::from_value(&val) else {
                 unreachable!()
             };
-            if !super::display::window_is_minibuffer(interp, window.id()) {
+            if !super::display::window_is_minibuffer(window) {
                 return Err(crate::lisp::primitives::values::doprnt_error(
                     interp,
                     "The `minibuffer' parameter does not specify a valid minibuffer window",
@@ -1057,8 +1057,8 @@ define_dispatch!(
                             .is_nil()
                             && match args.get(1).and_then(WindowRef::from_value) {
                                 Some(window) => {
-                                    candidate.borrow().minibuffer_window_id() == window.id()
-                                        || interp.window_frame_id(window.id()) == Some(*candidate)
+                                    candidate.borrow().minibuffer_window == Some(window)
+                                        || window.frame() == Some(*candidate)
                                 }
                                 None => true,
                             }
@@ -1387,14 +1387,11 @@ pub(super) fn select_frame(
     if id == interp.selected_frame_id {
         return Ok(());
     }
-    let window = id.borrow().selected_window_id();
+    let window = super::display::frame_selected_window(id);
     super::call(
         interp,
         "select-window",
-        &[
-            interp.window_value(window),
-            if norecord { Value::T } else { Value::Nil },
-        ],
+        &[window.value(), if norecord { Value::T } else { Value::Nil }],
         env,
     )?;
     Ok(())
@@ -1481,6 +1478,11 @@ pub(super) fn delete_frame(
         if let Some(replacement) = replacement {
             select_frame(interp, replacement, false, env)?;
         }
+    } else {
+        // move_minibuffers_onto_frame (f, selected_frame, true): the
+        // selected frame's minibuffer window is minibuf_window.
+        let selected_mini = interp.minibuffer_window();
+        interp.set_minibuf_window(selected_mini);
     }
     interp.retire_frame(id);
     if !noelisp

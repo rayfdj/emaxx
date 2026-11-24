@@ -397,107 +397,92 @@ fn native_unit_traces_seven_fields_from_a_subr_and_collects_the_unreachable_cycl
 
 #[test]
 fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
-    use crate::lisp::primitives::{WINDOW_FRAME_SLOT, WindowRef};
-    use windows::{
-        WINDOW_GNU_VECTOR_SLOTS, WINDOW_LISP_WORDS, WINDOW_REST_WORDS, WINDOW_SLOT_COUNT,
-    };
+    use crate::lisp::primitives::{WindowMarker, WindowRef};
+    use windows::{WINDOW_LISP_WORDS, WINDOW_VECTOR_WORDS};
+    // A field's offset and its store, a bit's number and its store.
+    type FieldStore = (usize, fn(WindowRef, Value));
+    type BitStore = (u32, fn(WindowRef, bool));
 
     let mut interpreter = crate::lisp::eval::Interpreter::new();
-    let before = live_record_census();
-    let window = interpreter.make_window(vec![Value::Integer(17), Value::Integer(29)]);
-    let after = live_record_census();
+    let before = live_vector_census();
+    let window = interpreter.allocate_window();
+    let after = live_vector_census();
+    let other = interpreter.allocate_window();
     let value = window.value();
     let Kind::Window(object) = value.kind() else {
         panic!("a window is a window object")
     };
     let header = object.0.as_ptr();
-    // The real allocated header: lisp.h's PVEC_WINDOW, the Lisp words
-    // first (the contents, then the slots) and the id, the owner and
-    // held count, window.h's twenty-four integers from the use time to
-    // window_end_pos and the bits in the twenty-nine words after them.
+    // The real allocated header: lisp.h's PVEC_WINDOW, window.h's
+    // twenty-five Lisp fields, PSEUDOVECSIZE (struct window,
+    // mode_line_help_echo), and the rest, 544 bytes in all as
+    // sizeof (struct window) is in the configured GNU build.
     unsafe {
         assert_eq!((*header).tag(), VectorTag::Window);
         assert_eq!(VectorTag::Window as usize, 11);
-        assert_eq!((WINDOW_LISP_WORDS, WINDOW_REST_WORDS), (22, 29));
-        assert_eq!(
-            (*header).nbytes(),
-            (1 + WINDOW_LISP_WORDS + WINDOW_REST_WORDS) * WORD_SIZE
-        );
+        assert_eq!((WINDOW_LISP_WORDS, WINDOW_VECTOR_WORDS), (25, 67));
+        assert_eq!((*header).nbytes(), 544);
+        assert_eq!((*header).nbytes(), (1 + WINDOW_VECTOR_WORDS) * WORD_SIZE);
         assert_eq!((*header).size & PSEUDOVECTOR_SIZE_MASK, WINDOW_LISP_WORDS);
         assert_eq!(
             ((*header).size >> PSEUDOVECTOR_SIZE_BITS) & PSEUDOVECTOR_SIZE_MASK,
-            WINDOW_REST_WORDS
+            WINDOW_VECTOR_WORDS - WINDOW_LISP_WORDS
         );
         assert!(value_of(header).eq_value(value));
-        let words = header.cast::<usize>();
-        // make_window gives a window no contents; the slots follow them.
-        assert_eq!(words.add(1).read(), Value::Nil.word());
-        assert_eq!(words.add(2).read(), Value::Integer(17).word());
-        assert_eq!(words.add(3).read(), Value::Integer(29).word());
-        assert_eq!(
-            words.add(2 + WINDOW_FRAME_SLOT).read(),
-            interpreter.selected_frame_value().word()
-        );
-        // A slot the window does not hold is a nil word of the object.
-        for index in WINDOW_FRAME_SLOT + 1..WINDOW_SLOT_COUNT {
-            assert_eq!(words.add(2 + index).read(), Value::Nil.word());
+        let bytes = header.cast::<u8>();
+        let word = |offset: usize| bytes.add(offset).cast::<usize>().read();
+        let int = |offset: usize| bytes.add(offset).cast::<i32>().read();
+        let long = |offset: usize| bytes.add(offset).cast::<i64>().read();
+        // allocate_window's window: every Lisp field nil, the glyph
+        // matrices null, prev_buffers and next_buffers nil.
+        for offset in (8..=200).step_by(8).chain([224, 232]) {
+            assert_eq!(word(offset), Value::Nil.word(), "Lisp field at {offset}");
         }
-        assert_eq!(words.add(1 + WINDOW_LISP_WORDS).read() as u64, window.id());
-        // A store through the handle is the object's own word.
-        window.set_slot(&mut interpreter, WINDOW_SLOT_COUNT - 1, Value::Integer(313));
-        assert_eq!(
-            words.add(WINDOW_LISP_WORDS).read(),
-            Value::Integer(313).word()
-        );
-        window.set_contents(Value::Integer(7));
-        assert_eq!(words.add(1).read(), Value::Integer(7).word());
-        // The use time and the sequence number make_window gave it are
-        // the two words after the owner and held count.
-        let integers = words.add(1 + WINDOW_LISP_WORDS + 2).cast::<i64>();
-        assert_eq!(integers.read(), 0);
-        window.set_use_time(41);
-        assert_eq!(integers.read(), 41);
-        assert_eq!(integers.add(1).read(), interpreter.window_sequence_number);
-        assert_eq!(integers.add(1).read(), window.sequence_number());
-        // window.h's other integers follow, from change_stamp to
-        // window_end_pos in its order: all zero in a new window, but for
-        // the column number displayed, which is -1, none.
-        let fields = integers.add(2);
-        let read_fields = || std::array::from_fn::<i64, 22, _>(|index| fields.add(index).read());
-        let mut expected = [0; 22];
-        expected[18] = -1;
-        assert_eq!(read_fields(), expected);
-        assert_eq!(window.column_number_displayed(), -1);
-        // The bits are bytes of the words after them, in window.h's
-        // order from mini to suspend_auto_hscroll, then one for each
-        // edge and size and for the window_end_pos the window has been
-        // given.
-        let bits = header
-            .cast::<u8>()
-            .add((1 + WINDOW_LISP_WORDS + 26) * WORD_SIZE);
-        let read = || std::array::from_fn::<u8, 20, _>(|index| bits.add(index).read());
-        assert_eq!(read(), [0; 20]);
-        let stores: [fn(WindowRef, bool); 11] = [
-            WindowRef::set_mini,
-            WindowRef::set_horizontal,
-            WindowRef::set_update_mode_line,
-            WindowRef::set_last_had_star,
-            WindowRef::set_start_at_line_beg,
-            WindowRef::set_force_start,
-            WindowRef::set_optional_new_start,
-            WindowRef::set_cursor_off_p,
-            WindowRef::set_window_end_valid,
-            WindowRef::set_redisplay,
-            WindowRef::set_suspend_auto_hscroll,
+        assert_eq!((word(208), word(216)), (0, 0));
+        // Each store through the handle is the field at window.h's offset.
+        let fields: [FieldStore; 16] = [
+            (8, WindowRef::set_frame),
+            (40, |w, v| w.set_normal_size(false, v)),
+            (48, |w, v| w.set_normal_size(true, v)),
+            (56, WindowRef::set_new_total),
+            (64, WindowRef::set_new_normal),
+            (72, WindowRef::set_new_pixel),
+            (80, WindowRef::set_contents),
+            (88, WindowRef::set_old_buffer),
+            (96, |w, v| w.set_marker_field(WindowMarker::Start, v)),
+            (104, |w, v| w.set_marker_field(WindowMarker::Pointm, v)),
+            (112, |w, v| w.set_marker_field(WindowMarker::OldPointm, v)),
+            (160, WindowRef::set_display_table),
+            (168, WindowRef::set_dedicated),
+            (176, WindowRef::set_combination_limit),
+            (184, WindowRef::set_window_parameters),
+            (192, WindowRef::set_cursor_type),
         ];
-        for (index, store) in stores.into_iter().enumerate() {
-            store(window, true);
-            let mut expected = [0; 20];
-            expected[..=index].fill(1);
-            assert_eq!(read(), expected, "bit {index}");
+        for (index, (offset, store)) in fields.into_iter().enumerate() {
+            store(window, Value::Integer(300 + index as i64));
+            assert_eq!(word(offset), Value::Integer(300 + index as i64).word());
         }
-        // Each store through the handle is the object's own integer, and
-        // an edge, a size or a window_end_pos given sets its bit.
+        window.set_prev_buffers(Value::Integer(331));
+        window.set_next_buffers(Value::Integer(332));
+        assert_eq!(
+            (word(224), word(232)),
+            (Value::Integer(331).word(), Value::Integer(332).word())
+        );
+        // The links, which a window reads as the windows they are.
+        window.set_next_sibling(Some(other));
+        window.set_prev_sibling(Some(other));
+        window.set_parent_window(Some(other));
+        assert_eq!([word(16), word(24), word(32)], [other.value().word(); 3]);
+        assert_eq!(window.parent_window(), Some(other));
+        // The EMACS_INTs use_time and sequence_number, then window.h's
+        // ints from change_stamp to total_lines, the given bits in the four
+        // bytes after them, and the ptrdiff_ts from hscroll on.
+        window.set_use_time(41);
+        window.set_sequence_number(42);
+        assert_eq!((long(240), long(248)), (41, 42));
+        let ints = || std::array::from_fn::<i32, 13, _>(|index| int(256 + 4 * index));
+        assert_eq!(ints(), [0; 13]);
+        assert_eq!(int(308), 0);
         window.set_change_stamp(100);
         window.set_pixel_left(Some(101));
         window.set_pixel_top(Some(102));
@@ -511,134 +496,160 @@ fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
         window.set_old_body_pixel_height(110);
         window.set_total_cols(Some(111));
         window.set_total_lines(Some(112));
+        assert_eq!(ints(), std::array::from_fn(|index| 100 + index as i32));
+        assert_eq!(int(308), 0xff);
         window.set_hscroll(113);
         window.set_min_hscroll(114);
         window.set_last_modified(115);
         window.set_last_overlay_modified(116);
         window.set_last_point(117);
-        window.set_column_number_displayed(118);
-        window.set_left_margin_cols(119);
-        window.set_right_margin_cols(120);
-        window.set_window_end_pos(Some(121));
-        assert_eq!(
-            read_fields(),
-            std::array::from_fn::<i64, 22, _>(|index| 100 + index as i64)
-        );
-        assert_eq!(read(), [1; 20]);
+        window.set_base_line_number(118);
+        window.set_base_line_pos(119);
+        window.set_column_number_displayed(120);
+        let longs = [312, 320, 336, 344, 352, 376, 384, 392].map(long);
+        assert_eq!(longs, [113, 114, 115, 116, 117, 118, 119, 120]);
+        // The margins are ints, window_end_pos a ptrdiff_t with a given bit.
+        window.set_left_margin_cols(121);
+        window.set_right_margin_cols(122);
+        window.set_window_end_pos(Some(123));
+        assert_eq!((int(484), int(488), long(512)), (121, 122, 123));
+        assert_eq!(int(308), 0x1ff);
         // One taken back is zero again, its bit clear.
         window.set_total_cols(None);
         window.set_window_end_pos(None);
-        assert_eq!((fields.add(11).read(), fields.add(21).read()), (0, 0));
-        let mut expected = [1; 20];
-        expected[17] = 0;
-        expected[19] = 0;
-        assert_eq!(read(), expected);
-        // No Lisp word of the object changed for any of them.
-        for index in (2..WINDOW_SLOT_COUNT - 1).filter(|index| *index != WINDOW_FRAME_SLOT) {
-            assert_eq!(words.add(2 + index).read(), Value::Nil.word());
+        assert_eq!((int(300), long(512), int(308)), (0, 0, 0xbf));
+        // A C int keeps the low 32 bits of what is stored in it.
+        window.set_change_stamp(1 << 32 | 7);
+        assert_eq!((int(256), window.change_stamp()), (7, 7));
+        // The bit-fields are bits of the word at 524, each at the place
+        // GCC gives window.h's bit of that name.
+        let stores: [BitStore; 11] = [
+            (0, WindowRef::set_mini),
+            (1, WindowRef::set_horizontal),
+            (2, WindowRef::set_update_mode_line),
+            (3, WindowRef::set_last_had_star),
+            (4, WindowRef::set_start_at_line_beg),
+            (5, WindowRef::set_force_start),
+            (6, WindowRef::set_optional_new_start),
+            (8, WindowRef::set_cursor_off_p),
+            (15, WindowRef::set_window_end_valid),
+            (16, WindowRef::set_redisplay),
+            (17, WindowRef::set_suspend_auto_hscroll),
+        ];
+        let bits = || bytes.add(524).cast::<u32>().read();
+        assert_eq!(bits(), 0);
+        for (bit, store) in stores {
+            store(window, true);
+            assert_eq!(bits() & (1 << bit), 1 << bit, "bit {bit}");
+            store(window, false);
+            assert_eq!(bits(), 0, "bit {bit} cleared");
         }
     }
-    assert_eq!(
-        std::mem::size_of::<windows::WindowState>(),
-        (WINDOW_LISP_WORDS + WINDOW_REST_WORDS) * WORD_SIZE
-    );
-    assert_eq!(std::mem::size_of::<windows::WindowState>(), 408);
+    assert_eq!(std::mem::size_of::<windows::WindowState>(), 536);
     assert_eq!(value.word(), object.identity() | 5);
     assert!(matches!(value.kind(), Kind::Window(same) if same.ptr_eq(&object)));
-    assert!(WindowRef::from_value(&value).is_some_and(|same| same.id() == window.id()));
-    // alloc.c counts a window as window.c's whole struct, one vector.
+    assert_eq!(WindowRef::from_value(&value), Some(window));
+    // alloc.c counts a window as window.c's whole struct, one vector of
+    // its 68 words, the header among them.
     assert_eq!(after.0 - before.0, 1);
-    assert_eq!(after.1 - before.1, WINDOW_GNU_VECTOR_SLOTS);
+    assert_eq!(after.1 - before.1, 68);
 }
 
 #[test]
-fn window_holds_its_first_slots_and_gains_the_rest_by_stores() {
-    use crate::lisp::primitives::{WINDOW_BASE_LINE_SLOT, WINDOW_FRAME_SLOT, WINDOW_START_SLOT};
-    use windows::WINDOW_SLOT_COUNT;
+fn window_has_every_field_from_make_window_on() {
+    use crate::lisp::primitives::{WindowMarker, window_marker};
 
     let mut interpreter = crate::lisp::eval::Interpreter::new();
-    // make_window keeps the slots up to the frame's, whatever it is given.
-    let window = interpreter.make_window(vec![Value::T; WINDOW_SLOT_COUNT]);
-    assert_eq!(window.slots().len(), WINDOW_FRAME_SLOT + 1);
-    assert_eq!(window.slot_opt(WINDOW_START_SLOT), Some(Value::T));
+    // allocate_window: every Lisp field nil, the rest zero, no edge or
+    // size given (and no column number displayed, -1, here already).
+    let bare = interpreter.allocate_window();
+    assert!(bare.lisp_values().iter().all(Value::is_nil));
+    assert_eq!(bare.frame(), None);
+    assert_eq!((bare.sequence_number(), bare.use_time()), (0, 0));
+    assert_eq!((bare.base_line_number(), bare.base_line_pos()), (0, 0));
+    assert_eq!(bare.column_number_displayed(), -1);
+    assert_eq!((bare.pixel_width(), bare.total_lines()), (None, None));
+    assert_eq!((bare.left_fringe_width(), bare.scroll_bar_width()), (0, 0));
+    assert!(!bare.mini() && !bare.cursor_off_p());
+    // make_window: the fields it gives values other than nil and zero,
+    // on the selected frame, next in sequence.
+    let last = interpreter.window_sequence_number;
+    let window = interpreter.make_window();
+    assert_eq!(window.sequence_number(), last + 1);
+    assert_eq!(window.frame(), Some(interpreter.selected_frame_id));
+    assert_eq!(window.normal_size(false), Value::float(1.0));
+    assert_eq!(window.normal_size(true), Value::float(1.0));
     assert_eq!(
-        window.slot_opt(WINDOW_FRAME_SLOT),
-        Some(interpreter.selected_frame_value())
+        [window.new_total(), window.new_normal(), window.new_pixel()],
+        [Value::Integer(0); 3]
     );
-    // The one slot past the frame's, the base line's, is absent, which
-    // reads as nil but is not a held nil.
-    assert_eq!(WINDOW_BASE_LINE_SLOT, WINDOW_FRAME_SLOT + 1);
-    assert_eq!(WINDOW_SLOT_COUNT, WINDOW_BASE_LINE_SLOT + 1);
-    assert_eq!(window.slot_opt(WINDOW_BASE_LINE_SLOT), None);
-    assert_eq!(window.slot(WINDOW_BASE_LINE_SLOT), Value::Nil);
-    // A store where the slot is held only: nothing for an absent one.
-    window.set_slot_if_held(&mut interpreter, WINDOW_BASE_LINE_SLOT, Value::T);
-    assert_eq!(window.slot_opt(WINDOW_BASE_LINE_SLOT), None);
-    assert_eq!(window.slots().len(), WINDOW_FRAME_SLOT + 1);
-    // ensure_slot grows the held slots with nil.
-    window.ensure_slot(&mut interpreter, WINDOW_BASE_LINE_SLOT);
-    assert_eq!(window.slots().len(), WINDOW_SLOT_COUNT);
-    assert_eq!(window.slot_opt(WINDOW_BASE_LINE_SLOT), Some(Value::Nil));
-    window.set_slot_if_held(&mut interpreter, WINDOW_BASE_LINE_SLOT, Value::T);
-    assert_eq!(window.slot_opt(WINDOW_BASE_LINE_SLOT), Some(Value::T));
-    // A window that holds fewer, as the dead window of a dump can: the
-    // slots between its last and one it gains are held nils.
-    let few = interpreter.install_dead_window(2);
-    assert_eq!(few.slots().len(), 2);
-    assert_eq!(few.slot_opt(2), None);
-    few.set_slot_if_held(&mut interpreter, 4, Value::T);
-    assert_eq!(few.slot_opt(4), None);
-    assert_eq!(few.slots().len(), 2);
-    few.ensure_slot(&mut interpreter, 4);
-    assert_eq!(few.slots().len(), 5);
-    assert_eq!(few.slot_opt(3), Some(Value::Nil));
-    assert_eq!(few.slot_opt(4), Some(Value::Nil));
-    few.set_slot_if_held(&mut interpreter, 4, Value::T);
-    assert_eq!(few.slot_opt(4), Some(Value::T));
-    few.set_slot(&mut interpreter, WINDOW_SLOT_COUNT - 1, Value::Integer(5));
-    assert_eq!(few.slots().len(), WINDOW_SLOT_COUNT);
-    assert_eq!(few.slot_opt(WINDOW_SLOT_COUNT - 1), Some(Value::Integer(5)));
-    assert_eq!(few.slot_opt(WINDOW_SLOT_COUNT - 2), Some(Value::Nil));
-    // An ensure of a held slot changes nothing.
-    window.ensure_slot(&mut interpreter, WINDOW_START_SLOT);
-    assert_eq!(window.slots().len(), WINDOW_SLOT_COUNT);
-    assert_eq!(window.slot_opt(WINDOW_START_SLOT), Some(Value::T));
+    assert_eq!(window.cursor_type(), Value::T);
+    assert_eq!(window.vertical_scroll_bar_type(), Value::T);
+    assert_eq!(window.horizontal_scroll_bar_type(), Value::T);
+    assert_eq!(
+        (window.prev_buffers(), window.next_buffers()),
+        (Value::Nil, Value::Nil)
+    );
+    assert_eq!(
+        (window.left_fringe_width(), window.right_fringe_width()),
+        (-1, -1)
+    );
+    assert_eq!(
+        (window.scroll_bar_width(), window.scroll_bar_height()),
+        (-1, -1)
+    );
+    assert_eq!((window.hscroll_whole(), window.vscroll()), (0, 0));
+    assert_eq!(window.column_number_displayed(), -1);
+    // Three markers of its own that point nowhere.
+    let markers = WindowMarker::ALL.map(|which| window_marker(window, which).expect("a marker"));
+    assert!(markers.iter().all(|marker| marker.buffer().is_none()));
+    assert!(!markers[0].ptr_eq(&markers[1]) && !markers[1].ptr_eq(&markers[2]));
+    assert!(!markers[0].ptr_eq(&markers[2]));
+    // Every field is there to read and store: nothing is absent.
+    assert_eq!(window.window_parameters(), Value::Nil);
+    window.set_base_line_pos(-1);
+    assert_eq!(window.base_line_pos(), -1);
+    window.set_window_parameters(Value::T);
+    assert_eq!(window.window_parameters(), Value::T);
+    // The dead window of a dump is allocate_window's.
+    let dead = interpreter.install_dead_window();
+    assert!(dead.lisp_values().iter().all(Value::is_nil));
+    assert_eq!((dead.frame(), dead.sequence_number()), (None, 0));
+    assert!(!dead.is_valid());
 }
 
 #[test]
-fn window_traces_every_slot_and_is_reclaimed_from_the_registry_and_type_index() {
-    use windows::{WINDOW_LISP_WORDS, WINDOW_SLOT_COUNT};
+fn window_traces_every_slot_and_is_reclaimed_off_the_frames() {
+    use crate::lisp::primitives::foreach_frame_window;
+    use windows::WINDOW_LISP_WORDS;
     const HIDE: usize = 0x5555_5555_5555_5555;
+    // window.h's Lisp fields and prev_buffers and next_buffers.
+    const FIELDS: usize = WINDOW_LISP_WORDS + 2;
 
-    // The window's address, its id, and each slot's vector, then its
-    // contents'.
-    type Hidden = (usize, u64, [usize; WINDOW_LISP_WORDS]);
+    // The window's address and each field's vector.
+    type Hidden = (usize, [usize; FIELDS]);
 
     #[inline(never)]
     fn allocate(
         interpreter: &mut crate::lisp::eval::Interpreter,
     ) -> (crate::lisp::alloc::RootedVec<Value>, Hidden) {
-        let window = interpreter.make_window(Vec::new());
+        let window = interpreter.make_window();
         let value = window.value();
-        let mut children = [0; WINDOW_LISP_WORDS];
-        // A vector nothing but its slot holds, in every slot: the last
-        // stores are of slots a new window does not yet hold.  And one
-        // in the contents.
-        for (index, child) in children.iter_mut().enumerate() {
-            let vector = Value::vector([Value::Integer(index as i64), value]);
-            if index < WINDOW_SLOT_COUNT {
-                window.set_slot(interpreter, index, vector);
-            } else {
-                window.set_contents(vector);
-            }
+        let mut children = [0; FIELDS];
+        // A vector nothing but its field holds, in every Lisp field,
+        // those mark_window marks apart among them.
+        let vectors: [Value; FIELDS] =
+            std::array::from_fn(|index| Value::vector([Value::Integer(index as i64), value]));
+        for (child, vector) in children.iter_mut().zip(&vectors) {
             *child = (vector.word() & !7) ^ HIDE;
         }
+        window.set_lisp_values(vectors);
         let Kind::Window(object) = value.kind() else {
             panic!("a window is a window object")
         };
         let mut roots = crate::lisp::alloc::RootedVec::new();
         roots.push(value);
-        (roots, (object.identity() ^ HIDE, window.id(), children))
+        (roots, (object.identity() ^ HIDE, children))
     }
     #[inline(never)]
     fn is_live(hidden: usize, tag: VectorTag) -> bool {
@@ -651,38 +662,28 @@ fn window_traces_every_slot_and_is_reclaimed_from_the_registry_and_type_index() 
     fn check_slots(
         interpreter: &crate::lisp::eval::Interpreter,
         roots: &crate::lisp::alloc::RootedVec<Value>,
-        id: u64,
+        hidden: usize,
     ) {
         let value = roots[0];
         let Kind::Window(window) = value.kind() else {
             panic!("window kind")
         };
-        assert_eq!(window.id(), id);
-        assert_eq!(window.held(), WINDOW_SLOT_COUNT);
-        for index in 0..WINDOW_LISP_WORDS {
-            let word = if index < WINDOW_SLOT_COUNT {
-                window.slot(index)
-            } else {
-                Some(window.contents())
-            };
-            let Some(Kind::Vector(vector)) = word.map(|slot| slot.kind()) else {
-                panic!("traced window slot {index}")
+        assert_eq!(window.identity() ^ HIDE, hidden);
+        for (index, field) in window.lisp_values().into_iter().enumerate() {
+            let Kind::Vector(vector) = field.kind() else {
+                panic!("traced window field {index}")
             };
             assert_eq!(vector.get(0), Some(Value::Integer(index as i64)));
             assert!(vector.get(1).expect("cycle slot").eq_value(value));
         }
-        // The registry and the type index name the same object.
-        assert!(
-            interpreter
-                .window_ref(id)
-                .is_some_and(|found| found.value().eq_value(value))
-        );
-        assert!(interpreter.record_ids_by_type("window").contains(&id));
+        // No frame's tree has the window: the root alone keeps it.
+        let handle = crate::lisp::primitives::WindowRef::from_object(window);
+        assert!(!foreach_frame_window(interpreter).contains(&handle));
     }
     let mut interpreter = crate::lisp::eval::Interpreter::new();
     let environment = Env::new();
-    let windows_before = interpreter.record_ids_by_type("window");
-    let (roots, (window, id, children)) = allocate(&mut interpreter);
+    let windows_before = foreach_frame_window(&interpreter);
+    let (roots, (window, children)) = allocate(&mut interpreter);
     for _ in 0..3 {
         crate::lisp::alloc::clobber_stack();
         crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
@@ -690,7 +691,7 @@ fn window_traces_every_slot_and_is_reclaimed_from_the_registry_and_type_index() 
         for child in &children {
             assert!(is_live(*child, VectorTag::Normal));
         }
-        check_slots(&interpreter, &roots, id);
+        check_slots(&interpreter, &roots, window);
     }
     drop(roots);
     crate::lisp::alloc::clobber_stack();
@@ -705,13 +706,10 @@ fn window_traces_every_slot_and_is_reclaimed_from_the_registry_and_type_index() 
             "unreachable window slot retained"
         );
     }
-    // The freed window's id names nothing: neither the registry nor the
-    // type index keeps a window the sweep freed.
-    assert!(interpreter.window_ref(id).is_none());
-    assert_eq!(interpreter.record_ids_by_type("window"), windows_before);
-    // The windows of the frame, which the frame holds, are as they were.
-    for id in windows_before {
-        assert!(interpreter.window_ref(id).is_some());
+    // The frames' windows, which the frames hold, are as they were.
+    assert_eq!(foreach_frame_window(&interpreter), windows_before);
+    for kept in windows_before.iter() {
+        assert!(kept.is_valid());
     }
 }
 
@@ -719,8 +717,20 @@ fn window_traces_every_slot_and_is_reclaimed_from_the_registry_and_type_index() 
 fn window_number_use_time_and_cursor_bit_live_and_die_with_the_window() {
     const HIDE: usize = 0x5555_5555_5555_5555;
 
-    // The window's address, its id and its sequence number.
-    type Hidden = (usize, u64, i64);
+    // The window's address, its sequence number and its use time.
+    type Hidden = (usize, i64, i64);
+
+    // The window the roots hold: its use time, and whether its cursor is
+    // on.
+    fn held(roots: &crate::lisp::alloc::RootedVec<Value>) -> crate::lisp::primitives::WindowRef {
+        crate::lisp::primitives::WindowRef::from_value(&roots[0]).expect("a window")
+    }
+    fn use_time(roots: &crate::lisp::alloc::RootedVec<Value>) -> i64 {
+        held(roots).use_time()
+    }
+    fn cursor_visible(roots: &crate::lisp::alloc::RootedVec<Value>) -> bool {
+        !held(roots).cursor_off_p()
+    }
 
     #[inline(never)]
     fn allocate(
@@ -729,29 +739,32 @@ fn window_number_use_time_and_cursor_bit_live_and_die_with_the_window() {
         // window.c:make_window's `w->sequence_number = ++sequence_number',
         // a use time of zero and the cursor on.
         let last = interpreter.window_sequence_number;
-        let window = interpreter.make_window(Vec::new());
-        let id = window.id();
+        let window = interpreter.make_window();
+        let value = window.value();
+        let mut roots = crate::lisp::alloc::RootedVec::new();
+        roots.push(value);
         assert_eq!(window.sequence_number(), last + 1);
         assert_eq!(interpreter.window_sequence_number, last + 1);
         assert_eq!((window.use_time(), window.cursor_off_p()), (0, false));
-        assert_eq!(interpreter.window_use_time(id), 0);
-        assert!(interpreter.window_cursor_visible(id));
+        assert_eq!(use_time(&roots), 0);
+        assert!(cursor_visible(&roots));
         // select_window's use time and Finternal_show_cursor's bit are
         // the window's own.
-        interpreter.record_window_selection(id);
-        interpreter.set_window_cursor_visible(id, false);
+        interpreter.record_window_selection(window);
+        window.set_cursor_off_p(true);
         assert!(window.use_time() > 0 && window.cursor_off_p());
-        assert_eq!(interpreter.window_use_time(id), window.use_time());
-        assert!(!interpreter.window_cursor_visible(id));
-        let value = window.value();
+        assert_eq!(use_time(&roots), window.use_time());
+        assert!(!cursor_visible(&roots));
         let Kind::Window(object) = value.kind() else {
             panic!("a window is a window object")
         };
-        let mut roots = crate::lisp::alloc::RootedVec::new();
-        roots.push(value);
         (
             roots,
-            (object.identity() ^ HIDE, id, window.sequence_number()),
+            (
+                object.identity() ^ HIDE,
+                window.sequence_number(),
+                window.use_time(),
+            ),
         )
     }
     #[inline(never)]
@@ -763,41 +776,53 @@ fn window_number_use_time_and_cursor_bit_live_and_die_with_the_window() {
                     && unsafe { header_tag(header) } == VectorTag::Window)
     }
     #[inline(never)]
-    fn check(interpreter: &crate::lisp::eval::Interpreter, id: u64, number: i64) {
-        let window = interpreter.window_ref(id).expect("a live window");
+    fn check(roots: &crate::lisp::alloc::RootedVec<Value>, hidden: usize, number: i64) {
+        let window = held(roots);
+        let Kind::Window(object) = window.value().kind() else {
+            panic!("a window is a window object")
+        };
+        assert_eq!(object.identity() ^ HIDE, hidden);
         assert_eq!(window.sequence_number(), number);
         assert!(window.use_time() > 0 && window.cursor_off_p());
-        assert!(!interpreter.window_cursor_visible(id));
+        assert!(!cursor_visible(roots));
     }
     let mut interpreter = crate::lisp::eval::Interpreter::new();
     let environment = Env::new();
-    let (roots, (window, id, number)) = allocate(&mut interpreter);
+    let frame_times_before = crate::lisp::primitives::foreach_frame_window(&interpreter)
+        .iter()
+        .map(|window| (window.use_time(), window.cursor_off_p()))
+        .collect::<Vec<_>>();
+    let (roots, (window, number, time)) = allocate(&mut interpreter);
     for _ in 0..2 {
         crate::lisp::alloc::clobber_stack();
         crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
         assert!(is_live(window));
-        check(&interpreter, id, number);
+        check(&roots, window, number);
     }
     drop(roots);
     crate::lisp::alloc::clobber_stack();
     crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
     assert!(!is_live(window), "unreachable window retained");
-    // Nothing is kept under the freed window's id: no use time, and no
-    // cursor turned off.
-    assert!(interpreter.window_ref(id).is_none());
-    assert_eq!(interpreter.window_use_time(id), 0);
-    assert!(interpreter.window_cursor_visible(id));
+    // Nothing kept the freed window's use time or its cursor bit: the
+    // frames' windows have theirs, as they had before it was made.
+    let frame_times = crate::lisp::primitives::foreach_frame_window(&interpreter)
+        .iter()
+        .map(|window| (window.use_time(), window.cursor_off_p()))
+        .collect::<Vec<_>>();
+    assert_eq!(frame_times, frame_times_before);
+    assert!(frame_times.iter().all(|(_, off)| !off));
+    assert!(frame_times.iter().all(|(kept, _)| *kept != time));
     // The counter is the interpreter's: the next window has the next
     // number, and starts as any new window does.
     assert_eq!(interpreter.window_sequence_number, number);
-    let next = interpreter.make_window(Vec::new());
+    let next = interpreter.make_window();
     assert_eq!(next.sequence_number(), number + 1);
     assert_eq!((next.use_time(), next.cursor_off_p()), (0, false));
 }
 
 #[test]
 fn window_alone_holds_its_three_markers() {
-    use crate::lisp::primitives::{WINDOW_MARKER_SLOTS, window_record_slots};
+    use crate::lisp::primitives::{WindowMarker, make_leaf_window};
     const HIDE: usize = 0x5555_5555_5555_5555;
 
     #[inline(never)]
@@ -805,10 +830,9 @@ fn window_alone_holds_its_three_markers() {
         interpreter: &mut crate::lisp::eval::Interpreter,
     ) -> (crate::lisp::alloc::RootedVec<Value>, [usize; 3]) {
         let buffer = interpreter.current_buffer_id();
-        let slots = window_record_slots(interpreter, Some(buffer), 1);
-        let window = interpreter.make_window(slots);
-        let markers = WINDOW_MARKER_SLOTS.map(|slot| {
-            let Kind::Marker(marker) = window.slot(slot).kind() else {
+        let window = make_leaf_window(interpreter, buffer, 1, false, (80, 10, 0, 0));
+        let markers = WindowMarker::ALL.map(|which| {
+            let Kind::Marker(marker) = window.marker_field(which).kind() else {
                 panic!("a leaf window's marker")
             };
             assert!(marker.buffer().is_some(), "a marker of the window's buffer");
@@ -850,4 +874,188 @@ fn window_alone_holds_its_three_markers() {
     // With the window they go, off the buffer's chain first.
     assert!(!markers.iter().any(|marker| is_live(*marker)));
     assert_eq!(chained(&interpreter), chained_before);
+}
+
+#[test]
+fn the_interpreters_window_holders_keep_their_windows() {
+    // window.c staticpros selected_window, old_selected_window and
+    // minibuf_selected_window, and minibuf.c minibuf_window: each holds
+    // its window as the object, which lives while it is held and goes
+    // when the holder lets go.
+    const HIDE: usize = 0x5555_5555_5555_5555;
+    const HOLDERS: usize = 4;
+
+    #[inline(never)]
+    fn allocate(interpreter: &mut crate::lisp::eval::Interpreter) -> [usize; HOLDERS] {
+        // A window nothing else holds in each holder: the frame keeps
+        // the window it had selected.
+        let windows: [_; HOLDERS] = std::array::from_fn(|_| interpreter.make_window());
+        let frame_selected = interpreter.selected_frame_id.borrow().selected_window;
+        interpreter.set_selected_window(Some(windows[0]));
+        interpreter.selected_frame_id.borrow_mut().selected_window = frame_selected;
+        interpreter.old_selected_window = Some(windows[1]);
+        interpreter.replace_minibuffer_selected_window(Some(windows[2]));
+        let buffer = interpreter.current_buffer_id();
+        interpreter.begin_minibuffer_runtime(buffer, windows[3], String::new());
+        windows.map(|window| {
+            let Kind::Window(object) = window.value().kind() else {
+                panic!("a window is a window object")
+            };
+            object.identity() ^ HIDE
+        })
+    }
+    #[inline(never)]
+    fn is_live(hidden: usize) -> bool {
+        let address = hidden ^ HIDE;
+        matches!(unsafe { crate::lisp::alloc::mem_find(address) },
+            Some(crate::lisp::alloc::Found::Vectorlike(header))
+                if header as usize == address
+                    && unsafe { header_tag(header) } == VectorTag::Window)
+    }
+    // What each holder holds is the window made for it, which no frame's
+    // tree has.
+    #[inline(never)]
+    fn check(interpreter: &crate::lisp::eval::Interpreter, held: &[usize]) {
+        let holders = [
+            interpreter.selected_window(),
+            interpreter.old_selected_window,
+            interpreter.minibuffer_selected_window(),
+            interpreter
+                .active_minibuffer_window_value()
+                .as_ref()
+                .and_then(crate::lisp::primitives::WindowRef::from_value),
+        ];
+        let frame_windows = crate::lisp::primitives::foreach_frame_window(interpreter);
+        for (holder, hidden) in holders.iter().skip(HOLDERS - held.len()).zip(held) {
+            let window = holder.expect("the holder's window");
+            let Kind::Window(object) = window.value().kind() else {
+                panic!("a window is a window object")
+            };
+            assert_eq!(object.identity() ^ HIDE, *hidden);
+            assert!(!window.is_valid());
+            assert!(!frame_windows.contains(&window));
+        }
+    }
+    // Holder INDEX lets go of its window.
+    #[inline(never)]
+    fn release(interpreter: &mut crate::lisp::eval::Interpreter, index: usize) {
+        match index {
+            0 => {
+                let frame_selected = interpreter.selected_frame_id.borrow().selected_window;
+                interpreter.set_selected_window(frame_selected);
+            }
+            1 => interpreter.old_selected_window = interpreter.selected_window(),
+            2 => {
+                interpreter.replace_minibuffer_selected_window(None);
+            }
+            _ => interpreter.restore_minibuffer_runtime(Default::default()),
+        }
+    }
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let environment = Env::new();
+    let windows_before = crate::lisp::primitives::foreach_frame_window(&interpreter);
+    let held = allocate(&mut interpreter);
+    for _ in 0..2 {
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+        assert!(held.iter().all(|window| is_live(*window)));
+        check(&interpreter, &held);
+    }
+    for index in 0..HOLDERS {
+        release(&mut interpreter, index);
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+        // The window let go of is collected; the windows still held
+        // are as they were, and so are the frames' windows.
+        let window = held[index];
+        assert!(!is_live(window), "window of holder {index} retained");
+        assert_eq!(
+            crate::lisp::primitives::foreach_frame_window(&interpreter),
+            windows_before
+        );
+        assert!(held[index + 1..].iter().all(|window| is_live(*window)));
+        check(&interpreter, &held[index + 1..]);
+    }
+    assert_eq!(
+        crate::lisp::primitives::foreach_frame_window(&interpreter),
+        windows_before
+    );
+}
+
+#[test]
+fn a_list_of_windows_keeps_them_for_the_collector() {
+    // A walk's windows are held by the list while its user runs Lisp
+    // (window.c's window_list is a Lisp list on the C stack): a window
+    // of the list that nothing else names survives a collection, a
+    // deleted window, and goes once the list does.
+    use crate::lisp::primitives::{WindowList, WindowRef};
+    const HIDE: usize = 0x5555_5555_5555_5555;
+
+    #[inline(never)]
+    fn listed(interpreter: &mut crate::lisp::eval::Interpreter) -> (WindowList, [usize; 3]) {
+        let mut list = WindowList::new();
+        let hidden = std::array::from_fn(|_| {
+            let window = interpreter.make_window();
+            list.push(window);
+            let Kind::Window(object) = window.value().kind() else {
+                panic!("a window is a window object")
+            };
+            object.identity() ^ HIDE
+        });
+        (list, hidden)
+    }
+    #[inline(never)]
+    fn is_live(hidden: usize) -> bool {
+        let address = hidden ^ HIDE;
+        matches!(unsafe { crate::lisp::alloc::mem_find(address) },
+            Some(crate::lisp::alloc::Found::Vectorlike(header))
+                if header as usize == address
+                    && unsafe { header_tag(header) } == VectorTag::Window)
+    }
+    #[inline(never)]
+    fn check(interpreter: &crate::lisp::eval::Interpreter, list: &[WindowRef], hidden: &[usize]) {
+        assert_eq!(list.len(), hidden.len());
+        let frame_windows = crate::lisp::primitives::foreach_frame_window(interpreter);
+        for (window, address) in list.iter().zip(hidden) {
+            assert!(is_live(*address));
+            // A window nothing shows: deleted, and on no frame's tree.
+            assert!(!window.is_valid());
+            let Kind::Window(object) = window.value().kind() else {
+                panic!("a window is a window object")
+            };
+            assert_eq!(object.identity() ^ HIDE, *address);
+            assert!(!frame_windows.contains(window));
+        }
+    }
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let environment = Env::new();
+    let windows_before = crate::lisp::primitives::foreach_frame_window(&interpreter);
+    let (mut list, hidden) = listed(&mut interpreter);
+    for _ in 0..2 {
+        crate::lisp::alloc::clobber_stack();
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+        check(&interpreter, &list, &hidden);
+    }
+    // A window taken off the list is collected; the others stay.
+    #[inline(never)]
+    fn take_second(list: &mut WindowList) {
+        list.remove(1);
+    }
+    take_second(&mut list);
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+    assert!(!is_live(hidden[1]), "a window off the list retained");
+    assert_eq!(
+        crate::lisp::primitives::foreach_frame_window(&interpreter),
+        windows_before
+    );
+    check(&interpreter, &list, &[hidden[0], hidden[2]]);
+    drop(list);
+    crate::lisp::alloc::clobber_stack();
+    crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &environment);
+    assert!(hidden.iter().all(|address| !is_live(*address)));
+    assert_eq!(
+        crate::lisp::primitives::foreach_frame_window(&interpreter),
+        windows_before
+    );
 }

@@ -329,3 +329,4 @@ mod eval_02;
 mod eval_03;
 mod eval_04;
 mod eval_05;
+mod uninterned_symbols;

@@ -3382,6 +3382,11 @@ pub(super) extern "C" fn direct_native_markerp(value: NativeWord) -> NativeWord 
     native_type_predicate(predicates::markerp, value)
 }
 
+/// data.c:Frecordp.
+pub(super) extern "C" fn direct_native_recordp(value: NativeWord) -> NativeWord {
+    native_type_predicate(predicates::recordp, value)
+}
+
 /// data.c:Fsubrp.
 pub(super) extern "C" fn direct_native_subrp(value: NativeWord) -> NativeWord {
     native_type_predicate(predicates::subrp, value)
@@ -3440,6 +3445,161 @@ pub(super) extern "C" fn direct_native_char_or_string_p(value: NativeWord) -> Na
 /// data.c:Farrayp.
 pub(super) extern "C" fn direct_native_arrayp(value: NativeWord) -> NativeWord {
     native_type_predicate(predicates::arrayp, value)
+}
+
+/// data.c:Fremove_pos_from_symbol: the symbol of a symbol with position,
+/// any other word as it came.  The object alone answers, as it answers
+/// the type predicates above, so this entry takes no active call either.
+pub(super) extern "C" fn direct_native_remove_pos_from_symbol(value: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    crate::lisp::primitives::remove_pos_from_symbol(&unsafe { Value::from_word(value) }).word()
+}
+
+/// data.c:Fbare_symbol for the subr at INDEX of the ABI's table, a
+/// constant of the generated entry this is inlined into.  A bare symbol
+/// and a symbol with position answer from the word with no active call,
+/// as `direct_native_remove_pos_from_symbol' answers; any other argument
+/// is the subr's own call, as the generated entry made it of every
+/// argument, and that call signals.
+#[inline(always)]
+pub(super) fn direct_native_bare_symbol(index: usize, symbol: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    match crate::lisp::primitives::bare_symbol_of(&unsafe { Value::from_word(symbol) }) {
+        Some(bare) => bare.word(),
+        None => invoke_subr(index, &[symbol]),
+    }
+}
+
+/// data.c:Fsymbol_with_pos_pos, as `direct_native_bare_symbol' is: the
+/// position of a symbol with position from the word, the subr's own
+/// call, which signals, of any other argument.
+#[inline(always)]
+pub(super) fn direct_native_symbol_with_pos_pos(index: usize, sympos: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    match crate::lisp::primitives::symbol_with_pos_pos(&unsafe { Value::from_word(sympos) }) {
+        Some(position) => position.word(),
+        None => invoke_subr(index, &[sympos]),
+    }
+}
+
+/// data.c:Fkeywordp.  A bare symbol answers from its name and obarray,
+/// and any object that is no symbol answers nil, from the word alone.  A
+/// symbol with position is one only while symbols_with_pos_enabled is
+/// set (lisp.h:SYMBOLP), so for that object alone the variable is read,
+/// through the active call, as `direct_native_symbolp' reads it.
+/// Nothing here signals, allocates or runs Lisp, so the handlers stay as
+/// native code left them.
+pub(super) extern "C" fn direct_native_keywordp(object: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument word is live.
+    let object = unsafe { Value::from_word(object) };
+    native_boolean(predicates::keywordp(&object, || {
+        with_active(|active| unsafe { &*active.interpreter }.symbols_with_positions_enabled())
+    }))
+}
+
+/// fns.c:Fnth for the subr at INDEX, as `direct_native_bare_symbol' is
+/// given its index.  A small count of a list that neither Fnthcdr nor
+/// Fcar complains of (`small_count_nth') answers from the words with no
+/// active call; any other N or LIST is the subr's own call, as the
+/// generated entry made it of every pair: a longer walk with its quit
+/// checks, or the signal with GNU's datum.
+#[inline(always)]
+pub(super) fn direct_native_nth(index: usize, n: NativeWord, list: NativeWord) -> NativeWord {
+    // SAFETY: the caller's argument words are live.
+    let (count, elements) = unsafe { (Value::from_word(n), Value::from_word(list)) };
+    match crate::lisp::primitives::small_count_nth(&count, &elements) {
+        Some(element) => element.word(),
+        None => invoke_subr(index, &[n, list]),
+    }
+}
+
+/// The entry of a subr whose answer READ makes of the interpreter's state
+/// and which, on this path, neither signals, allocates a Lisp object nor
+/// runs Lisp: the active call's interpreter, through a shared reference,
+/// as `direct_native_functionp' reads it, with no handler sync and no
+/// `Result'.  Nothing READ does can observe a handler native code popped,
+/// so the next general entry reconciles it, as it would have here.
+#[inline(always)]
+fn native_context_entry(read: impl FnOnce(&Interpreter) -> Value) -> NativeWord {
+    with_active(|active| read(unsafe { &*active.interpreter }).word())
+}
+
+/// editfns.c:Fpoint.
+pub(super) extern "C" fn direct_native_point() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::point)
+}
+
+/// editfns.c:Fpoint_min.
+pub(super) extern "C" fn direct_native_point_min() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::point_min)
+}
+
+/// editfns.c:Fpoint_max.
+pub(super) extern "C" fn direct_native_point_max() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::point_max)
+}
+
+/// editfns.c:Ffollowing_char.
+pub(super) extern "C" fn direct_native_following_char() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::following_char)
+}
+
+/// editfns.c:Fprevious_char, `preceding-char'.
+pub(super) extern "C" fn direct_native_preceding_char() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::preceding_char)
+}
+
+/// editfns.c:Fbolp.
+pub(super) extern "C" fn direct_native_bolp() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::bolp)
+}
+
+/// editfns.c:Feolp.
+pub(super) extern "C" fn direct_native_eolp() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::eolp)
+}
+
+/// editfns.c:Fbobp.
+pub(super) extern "C" fn direct_native_bobp() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::bobp)
+}
+
+/// editfns.c:Feobp.
+pub(super) extern "C" fn direct_native_eobp() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::eobp)
+}
+
+/// buffer.c:Fcurrent_buffer.
+pub(super) extern "C" fn direct_native_current_buffer() -> NativeWord {
+    native_context_entry(crate::lisp::primitives::current_buffer)
+}
+
+/// window.c:Fselected_window: the interpreter's selected window, found
+/// in its registry of windows, which a lookup's cache aside it reads.
+pub(super) extern "C" fn direct_native_selected_window() -> NativeWord {
+    native_context_entry(Interpreter::selected_window_value)
+}
+
+/// frame.c:Fselected_frame.
+pub(super) extern "C" fn direct_native_selected_frame() -> NativeWord {
+    native_context_entry(Interpreter::selected_frame_value)
+}
+
+/// alloc.c:Fpurecopy for the subr at INDEX, as `direct_native_nth' is
+/// given its index.  While `purify-flag' is nil the DEFUN returns its
+/// argument before anything else, and so does this entry, having read
+/// the variable as `native_context_entry' reads; any other value is the
+/// subr's own call, as the generated entry made it of every argument.
+#[inline(always)]
+pub(super) fn direct_native_purecopy(index: usize, obj: NativeWord) -> NativeWord {
+    let unpurified = with_active(|active| {
+        crate::lisp::primitives::purify_flag(unsafe { &*active.interpreter }).is_nil()
+    });
+    if unpurified {
+        obj
+    } else {
+        invoke_subr(index, &[obj])
+    }
 }
 
 pub(super) extern "C" fn direct_native_eq(left: NativeWord, right: NativeWord) -> NativeWord {
@@ -7237,18 +7397,123 @@ mod tests {
         }
     }
 
+    /// The predicates of a wrong-type-argument that a subr of GNU's makes
+    /// anew at each signal, so that two signals of it hold two lists:
+    /// data.c:Fbare_symbol's list2 (Qsymbolp, Qsymbol_with_pos_p).  Every
+    /// other condition the compared entries signal holds a predicate
+    /// symbol and the argument complained of.
+    const FRESH_PREDICATE_LISTS: &[&[&str]] = &[&["symbolp", "symbol-with-pos-p"]];
+
     /// Whether two conditions are one signal: lists of the same objects,
-    /// the datum a subr complains of among them.
+    /// the datum a subr complains of among them.  The one exception is
+    /// the predicate of a wrong-type-argument, its second element, where
+    /// both are the same list of `FRESH_PREDICATE_LISTS'.
     fn same_condition(left: Value, right: Value) -> bool {
+        let listed = |predicate: Value, names: &[&str]| {
+            predicate.to_vec().is_ok_and(|symbols| {
+                symbols.len() == names.len()
+                    && symbols
+                        .iter()
+                        .zip(names)
+                        .all(|(symbol, name)| symbol.eq_value(Value::symbol(name)))
+            })
+        };
+        let fresh_predicates = |left: Value, right: Value| {
+            FRESH_PREDICATE_LISTS
+                .iter()
+                .any(|names| listed(left, names) && listed(right, names))
+        };
         match (left.to_vec(), right.to_vec()) {
             (Ok(left), Ok(right)) => {
+                let wrong_type = left
+                    .first()
+                    .is_some_and(|symbol| symbol.eq_value(Value::symbol("wrong-type-argument")));
                 left.len() == right.len()
                     && left
                         .iter()
                         .zip(&right)
-                        .all(|(left, right)| left.eq_value(*right))
+                        .enumerate()
+                        .all(|(place, (left, right))| {
+                            left.eq_value(*right)
+                                || (place == 1 && wrong_type && fresh_predicates(*left, *right))
+                        })
             }
             _ => left.eq_value(right),
+        }
+    }
+
+    #[test]
+    fn same_condition_takes_a_new_predicate_list_only_where_gnu_makes_one() {
+        let symbol = Value::symbol;
+        let datum = Value::Integer(5);
+        let condition =
+            |error: &str, predicate: Value| Value::list([symbol(error), predicate, datum]);
+        let bare_symbol = || Value::list([symbol("symbolp"), symbol("symbol-with-pos-p")]);
+        // Fbare_symbol's condition, its list made at each signal.
+        assert!(same_condition(
+            condition("wrong-type-argument", bare_symbol()),
+            condition("wrong-type-argument", bare_symbol()),
+        ));
+        // One list is one object.
+        let shared = Value::list([symbol("a"), symbol("b")]);
+        assert!(same_condition(
+            condition("wrong-type-argument", shared),
+            condition("wrong-type-argument", shared),
+        ));
+        // Lists GNU makes at no signal, the list of another condition, and
+        // the list in another place are each two objects.
+        let other = || Value::list([symbol("a"), symbol("b")]);
+        let reversed = || Value::list([symbol("symbol-with-pos-p"), symbol("symbolp")]);
+        let longer = || {
+            Value::list([
+                symbol("symbolp"),
+                symbol("symbol-with-pos-p"),
+                symbol("symbolp"),
+            ])
+        };
+        for (left, right) in [
+            (
+                condition("wrong-type-argument", other()),
+                condition("wrong-type-argument", other()),
+            ),
+            (
+                condition("wrong-type-argument", reversed()),
+                condition("wrong-type-argument", reversed()),
+            ),
+            (
+                condition("wrong-type-argument", longer()),
+                condition("wrong-type-argument", longer()),
+            ),
+            (
+                condition("wrong-type-argument", bare_symbol()),
+                condition("wrong-type-argument", symbol("symbolp")),
+            ),
+            (
+                condition("error", bare_symbol()),
+                condition("error", bare_symbol()),
+            ),
+            (
+                Value::list([
+                    symbol("wrong-type-argument"),
+                    symbol("symbolp"),
+                    bare_symbol(),
+                ]),
+                Value::list([
+                    symbol("wrong-type-argument"),
+                    symbol("symbolp"),
+                    bare_symbol(),
+                ]),
+            ),
+            (
+                condition("wrong-type-argument", bare_symbol()),
+                Value::list([
+                    symbol("wrong-type-argument"),
+                    bare_symbol(),
+                    Value::Integer(6),
+                ]),
+            ),
+        ] {
+            assert!(!same_condition(left, right), "{left:?} and {right:?}");
         }
     }
 
@@ -7556,6 +7821,12 @@ mod tests {
                 slots: vec![symbol, Value::T],
             })),
         );
+        s.add(
+            "a reader form of no record",
+            Value::ReaderForm(ReaderFormRef::allocate(ReaderForm::HashTable {
+                fields: vec![symbol, Value::T],
+            })),
+        );
         s.objects
     }
 
@@ -7756,9 +8027,9 @@ mod tests {
         }
     }
 
-    /// A link-table entry that answers from its argument words and the
-    /// objects they name: the subr's name, how many arguments it takes,
-    /// and whether it is a predicate, answering t or nil.
+    /// A link-table entry the samples are given to: the subr's name, how
+    /// many arguments its entry takes, and whether it is a predicate,
+    /// answering t or nil.
     struct WordLevelEntry {
         name: &'static str,
         arguments: usize,
@@ -7806,32 +8077,55 @@ mod tests {
         word_entry("number-or-marker-p", 1, true),
         word_entry("char-or-string-p", 1, true),
         word_entry("arrayp", 1, true),
+        word_entry("remove-pos-from-symbol", 1, false),
+        word_entry("bare-symbol", 1, false),
+        word_entry("symbol-with-pos-pos", 1, false),
+        word_entry("keywordp", 1, true),
+        word_entry("nth", 2, false),
+        word_entry("recordp", 1, true),
     ];
 
-    /// The generator's other targets, which read the interpreter, walk or
-    /// store into their arguments, allocate or call Lisp: each has a
-    /// contract test of its own.
-    const OTHER_DIRECT_ENTRIES: &[&str] = &[
-        "eql",
-        "type-of",
-        "symbol-value",
-        "get",
-        "funcall",
-        "list",
-        "memq",
-        "assq",
-        "nreverse",
-        "nconc",
-        "aref",
-        "char-table-extra-slot",
-        "functionp",
-        "aset",
-        "autoload-do-load",
-        "gethash",
-        "puthash",
-        "length",
-        "plist-member",
-        "make-closure",
+    /// The generator's targets that read the interpreter or walk their
+    /// arguments and neither store into them, make a new object each call
+    /// nor call Lisp: compared with their primitives over the samples as
+    /// the entries above are, but for the reader's forms, a third
+    /// argument nil.  Each also has a contract test of its own.
+    const READING_ENTRIES: &[WordLevelEntry] = &[
+        word_entry("eql", 2, true),
+        word_entry("type-of", 1, false),
+        word_entry("symbol-value", 1, false),
+        word_entry("get", 2, false),
+        word_entry("memq", 2, false),
+        word_entry("assq", 2, false),
+        word_entry("aref", 2, false),
+        word_entry("char-table-extra-slot", 2, false),
+        word_entry("functionp", 1, true),
+        word_entry("gethash", 3, false),
+        word_entry("length", 1, false),
+        word_entry("plist-member", 3, false),
+    ];
+
+    /// The generator's targets that this harness cannot compare with
+    /// their primitives, with the arity of each entry (-2 for MANY's
+    /// count and vector).  Each has a contract test of its own.
+    const UNCOMPARED_ENTRIES: &[(&str, i32)] = &[
+        // MANY, which the harness does not call, and it calls Lisp.
+        ("funcall", -2),
+        // MANY, and each call makes a new list, so that two answers are
+        // never one object.
+        ("list", -2),
+        // MANY, and it stores into its arguments.
+        ("nconc", -2),
+        // MANY, and each call makes a new closure.
+        ("make-closure", -2),
+        // It stores into its argument, which would change the samples.
+        ("nreverse", 1),
+        // It stores into its first argument.
+        ("aset", 3),
+        // It stores into its table.
+        ("puthash", 3),
+        // It loads a file, which runs Lisp.
+        ("autoload-do-load", 3),
     ];
 
     #[test]
@@ -7840,7 +8134,9 @@ mod tests {
 
         // The names here are the names the generator gives a target of
         // their own, read from its selection as the fast-path inventory
-        // reads it: a name added there is tested here or named above.
+        // reads it, each with the arity of its entry, which the generator
+        // asserts of GNU's subr: a name added there is compared here, or
+        // named above with the reason it is not, at that arity.
         let generator = std::fs::read_to_string(concat!(
             env!("CARGO_MANIFEST_DIR"),
             "/tools/generate_native_subrs.rs"
@@ -7856,20 +8152,42 @@ mod tests {
             .split_once("fn read_min_arg_constants")
             .expect("the end of the generator's target selection")
             .0;
-        let selected = regex::Regex::new(r#""([^"\\]+)"\s*=>"#)
+        let names = regex::Regex::new(r#""([^"\\]+)"\s*=>"#)
             .expect("compile the selection pattern")
             .captures_iter(selection)
-            .map(|capture| capture[1].to_owned())
+            .count();
+        let selected = regex::Regex::new(r#""([^"\\]+)"\s*=>\s*\(\s*"[^"\\]+"\s*,\s*(-?\d+)\s*\)"#)
+            .expect("compile the selection pattern")
+            .captures_iter(selection)
+            .map(|capture| {
+                let arity = capture[2].parse::<i32>().expect("an arity");
+                (capture[1].to_owned(), arity)
+            })
             .collect::<BTreeSet<_>>();
+        assert_eq!(selected.len(), names, "each selected name has an arity");
+        // `purecopy' takes its object, the other context entries nothing.
         let listed = WORD_LEVEL_ENTRIES
             .iter()
-            .map(|entry| entry.name)
-            .chain(OTHER_DIRECT_ENTRIES.iter().copied())
-            .map(str::to_owned)
+            .chain(READING_ENTRIES)
+            .map(|entry| (entry.name, entry.arguments as i32))
+            .chain(
+                CONTEXT_ENTRIES
+                    .iter()
+                    .map(|name| (*name, i32::from(*name == "purecopy"))),
+            )
+            .chain(UNCOMPARED_ENTRIES.iter().copied())
+            .map(|(name, arity)| (name.to_owned(), arity))
             .collect::<BTreeSet<_>>();
+        let listed_names = listed.iter().map(|(name, _)| name).collect::<BTreeSet<_>>();
         assert_eq!(
-            listed.len(),
-            WORD_LEVEL_ENTRIES.len() + OTHER_DIRECT_ENTRIES.len(),
+            (listed.len(), listed_names.len()),
+            (
+                WORD_LEVEL_ENTRIES.len()
+                    + READING_ENTRIES.len()
+                    + CONTEXT_ENTRIES.len()
+                    + UNCOMPARED_ENTRIES.len(),
+                listed.len()
+            ),
             "an entry is listed once"
         );
         assert_eq!(selected, listed);
@@ -7885,11 +8203,25 @@ mod tests {
         assert_eq!(kinds, [true; UNBOUND_ORDINAL], "a sample of every kind");
 
         // (t answered, nil answered) of each entry over the samples.
-        let mut answers = vec![(false, false); WORD_LEVEL_ENTRIES.len()];
+        let compared = || WORD_LEVEL_ENTRIES.iter().chain(READING_ENTRIES);
+        let mut answers = vec![(false, false); compared().count()];
         for enabled in [Value::Nil, Value::T] {
             interpreter.set_symbol_value_cell("symbols-with-pos-enabled", enabled);
-            for (entry, answered) in WORD_LEVEL_ENTRIES.iter().zip(&mut answers) {
+            for (place, (entry, answered)) in compared().zip(&mut answers).enumerate() {
+                let reads = place >= WORD_LEVEL_ENTRIES.len();
                 let mut agree = |names: &[&str], arguments: &[Value]| {
+                    // The reader's forms are objects GNU does not have,
+                    // which an entry that reads further than the object's
+                    // kind reports as an internal error, its message a
+                    // string made at each signal: only the word-level
+                    // entries are asked of them.
+                    if reads
+                        && arguments
+                            .iter()
+                            .any(|argument| matches!(argument.kind(), Kind::ReaderForm(_)))
+                    {
+                        return;
+                    }
                     let answer = assert_entry_agrees(
                         &mut interpreter,
                         &mut runtime,
@@ -7923,11 +8255,21 @@ mod tests {
                             }
                         }
                     }
+                    3 => {
+                        for (left_name, left) in samples.iter() {
+                            for (right_name, right) in samples.iter() {
+                                agree(
+                                    &[left_name, right_name, "nil"],
+                                    &[*left, *right, Value::Nil],
+                                );
+                            }
+                        }
+                    }
                     count => panic!("{} takes {count} arguments", entry.name),
                 }
             }
         }
-        for (entry, answered) in WORD_LEVEL_ENTRIES.iter().zip(&answers) {
+        for (entry, answered) in compared().zip(&answers) {
             if entry.predicate {
                 assert_eq!(
                     *answered,
@@ -7948,6 +8290,872 @@ mod tests {
                     &mut environment,
                 )
                 .expect("delete the sample process");
+            }
+        }
+    }
+
+    /// The value of the Lisp form SOURCE.
+    fn eval_form(interpreter: &mut Interpreter, environment: &mut Env, source: &str) -> Value {
+        let form = crate::lisp::reader::Reader::new(source)
+            .read()
+            .unwrap_or_else(|error| panic!("{source} parses: {error:?}"))
+            .unwrap_or_else(|| panic!("{source} is a form"));
+        interpreter
+            .eval(&form, environment)
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    }
+
+    /// VALUE as `prin1-to-string' prints it.
+    fn printed(interpreter: &mut Interpreter, environment: &mut Env, value: Value) -> String {
+        crate::lisp::primitives::call(interpreter, "prin1-to-string", &[value], environment)
+            .and_then(|text| text.as_string())
+            .unwrap_or_else(|error| panic!("print {value:?}: {error:?}"))
+    }
+
+    /// NAME given the arguments the form ARGUMENTS lists, called with
+    /// `symbols-with-pos-enabled' ENABLED: its entry and its primitive
+    /// answer alike (`assert_entry_agrees'), and their answer is
+    /// EXPECTED: a value as it prints, or "signal: " and the condition
+    /// signalled as it prints.  The arguments are made and the answer is
+    /// printed with the variable nil.
+    fn assert_printed_answer(
+        interpreter: &mut Interpreter,
+        runtime: &mut NativeRuntime,
+        environment: &mut Env,
+        name: &str,
+        arguments: &str,
+        enabled: bool,
+        expected: &str,
+    ) {
+        let flag = |interpreter: &mut Interpreter, enabled: bool| {
+            let value = if enabled { Value::T } else { Value::Nil };
+            interpreter.set_symbol_value_cell("symbols-with-pos-enabled", value);
+        };
+        flag(interpreter, false);
+        // The collector scans the vector.
+        let mut rooted = crate::lisp::alloc::RootedVec::new();
+        rooted.push(eval_form(interpreter, environment, arguments));
+        let values = rooted[0].to_vec().expect("a list of arguments");
+        flag(interpreter, enabled);
+        let answer = assert_entry_agrees(interpreter, runtime, environment, name, &values);
+        flag(interpreter, false);
+        let (prefix, answer) = match answer {
+            Ok(value) => ("", value),
+            Err(condition) => ("signal: ", condition),
+        };
+        rooted.push(answer);
+        assert_eq!(
+            format!("{prefix}{}", printed(interpreter, environment, answer)),
+            expected,
+            "{name} of {arguments} with symbols-with-pos-enabled {enabled}"
+        );
+    }
+
+    /// GNU Emacs 30.2's answers of the subrs below: each row is a subr,
+    /// the form whose value is the list of its arguments, and what it
+    /// answers of them with `symbols-with-pos-enabled' nil and then t:
+    /// the value as `prin1-to-string' prints it, or "signal: " and the
+    /// condition it signals printed the same way.  The answers are GNU's
+    /// own output: its batch run applied each subr to these forms' values
+    /// and printed the rows.  Every form uses C primitives alone.
+    const GNU_WORD_ENTRY_ANSWERS: &[(&str, &str, &str, &str)] = &[
+        ("remove-pos-from-symbol", "(list 'foo)", "foo", "foo"),
+        (
+            "remove-pos-from-symbol",
+            "(list (position-symbol 'foo 7))",
+            "foo",
+            "foo",
+        ),
+        ("remove-pos-from-symbol", "(list nil)", "nil", "nil"),
+        ("remove-pos-from-symbol", "(list t)", "t", "t"),
+        (
+            "remove-pos-from-symbol",
+            "(list (position-symbol nil 3))",
+            "nil",
+            "nil",
+        ),
+        ("remove-pos-from-symbol", "(list :key)", ":key", ":key"),
+        (
+            "remove-pos-from-symbol",
+            "(list (position-symbol :key 9))",
+            ":key",
+            ":key",
+        ),
+        ("remove-pos-from-symbol", "(list 5)", "5", "5"),
+        ("remove-pos-from-symbol", "(list \"s\")", "\"s\"", "\"s\""),
+        (
+            "remove-pos-from-symbol",
+            "(list '(a . b))",
+            "(a . b)",
+            "(a . b)",
+        ),
+        ("remove-pos-from-symbol", "(list [a])", "[a]", "[a]"),
+        ("bare-symbol", "(list 'foo)", "foo", "foo"),
+        (
+            "bare-symbol",
+            "(list (position-symbol 'foo 7))",
+            "foo",
+            "foo",
+        ),
+        ("bare-symbol", "(list nil)", "nil", "nil"),
+        ("bare-symbol", "(list t)", "t", "t"),
+        (
+            "bare-symbol",
+            "(list (position-symbol nil 3))",
+            "nil",
+            "nil",
+        ),
+        ("bare-symbol", "(list :key)", ":key", ":key"),
+        (
+            "bare-symbol",
+            "(list (position-symbol :key 9))",
+            ":key",
+            ":key",
+        ),
+        (
+            "bare-symbol",
+            "(list 5)",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) 5)",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) 5)",
+        ),
+        (
+            "bare-symbol",
+            "(list \"s\")",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) \"s\")",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) \"s\")",
+        ),
+        (
+            "bare-symbol",
+            "(list '(a . b))",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) (a . b))",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) (a . b))",
+        ),
+        (
+            "bare-symbol",
+            "(list [a])",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) [a])",
+            "signal: (wrong-type-argument (symbolp symbol-with-pos-p) [a])",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list 'foo)",
+            "signal: (wrong-type-argument symbol-with-pos-p foo)",
+            "signal: (wrong-type-argument symbol-with-pos-p foo)",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list (position-symbol 'foo 7))",
+            "7",
+            "7",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list nil)",
+            "signal: (wrong-type-argument symbol-with-pos-p nil)",
+            "signal: (wrong-type-argument symbol-with-pos-p nil)",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list t)",
+            "signal: (wrong-type-argument symbol-with-pos-p t)",
+            "signal: (wrong-type-argument symbol-with-pos-p t)",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list (position-symbol nil 3))",
+            "3",
+            "3",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list :key)",
+            "signal: (wrong-type-argument symbol-with-pos-p :key)",
+            "signal: (wrong-type-argument symbol-with-pos-p :key)",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list (position-symbol :key 9))",
+            "9",
+            "9",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list 5)",
+            "signal: (wrong-type-argument symbol-with-pos-p 5)",
+            "signal: (wrong-type-argument symbol-with-pos-p 5)",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list \"s\")",
+            "signal: (wrong-type-argument symbol-with-pos-p \"s\")",
+            "signal: (wrong-type-argument symbol-with-pos-p \"s\")",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list '(a . b))",
+            "signal: (wrong-type-argument symbol-with-pos-p (a . b))",
+            "signal: (wrong-type-argument symbol-with-pos-p (a . b))",
+        ),
+        (
+            "symbol-with-pos-pos",
+            "(list [a])",
+            "signal: (wrong-type-argument symbol-with-pos-p [a])",
+            "signal: (wrong-type-argument symbol-with-pos-p [a])",
+        ),
+        ("keywordp", "(list :foo)", "t", "t"),
+        ("keywordp", "(list 'foo)", "nil", "nil"),
+        ("keywordp", "(list nil)", "nil", "nil"),
+        ("keywordp", "(list t)", "nil", "nil"),
+        ("keywordp", "(list (intern \":\"))", "t", "t"),
+        ("keywordp", "(list (intern \"\"))", "nil", "nil"),
+        ("keywordp", "(list (intern \":é\"))", "t", "t"),
+        ("keywordp", "(list (make-symbol \":k\"))", "nil", "nil"),
+        ("keywordp", "(list (make-symbol \"k\"))", "nil", "nil"),
+        (
+            "keywordp",
+            "(list (intern \":x\" (obarray-make)))",
+            "nil",
+            "nil",
+        ),
+        (
+            "keywordp",
+            "(list (intern \"y\" (obarray-make)))",
+            "nil",
+            "nil",
+        ),
+        (
+            "keywordp",
+            "(list (let ((gone (intern \":d4-gone\"))) (unintern gone obarray) gone))",
+            "nil",
+            "nil",
+        ),
+        ("keywordp", "(list (position-symbol :foo 3))", "nil", "t"),
+        ("keywordp", "(list (position-symbol 'foo 3))", "nil", "nil"),
+        (
+            "keywordp",
+            "(list (position-symbol (make-symbol \":k\") 3))",
+            "nil",
+            "nil",
+        ),
+        (
+            "keywordp",
+            "(list (position-symbol (intern \":x\" (obarray-make)) 3))",
+            "nil",
+            "nil",
+        ),
+        ("keywordp", "(list \":s\")", "nil", "nil"),
+        ("keywordp", "(list 5)", "nil", "nil"),
+        ("keywordp", "(list '(:foo))", "nil", "nil"),
+        ("keywordp", "(list [:foo])", "nil", "nil"),
+        ("recordp", "(list (record 'foo 1))", "t", "t"),
+        ("recordp", "(list (make-record 'foo 0 nil))", "t", "t"),
+        ("recordp", "(list [foo 1])", "nil", "nil"),
+        ("recordp", "(list nil)", "nil", "nil"),
+        ("recordp", "(list 'foo)", "nil", "nil"),
+        ("recordp", "(list \"s\")", "nil", "nil"),
+        ("recordp", "(list '(foo 1))", "nil", "nil"),
+        ("recordp", "(list (make-bool-vector 2 nil))", "nil", "nil"),
+        ("recordp", "(list (make-char-table 'foo))", "nil", "nil"),
+        ("recordp", "(list (make-hash-table))", "nil", "nil"),
+        ("recordp", "(list (symbol-function 'car))", "nil", "nil"),
+        (
+            "recordp",
+            "(list (car (read-from-string \"#s(foo 1)\")))",
+            "t",
+            "t",
+        ),
+        (
+            "recordp",
+            "(list (car (read-from-string \"#s(hash-table data (a 1))\")))",
+            "nil",
+            "nil",
+        ),
+    ];
+
+    /// The counts of GNU_NTH_ANSWERS' columns, as forms.
+    const GNU_NTH_COUNTS: [&str; 11] = [
+        "-1",
+        "0",
+        "1",
+        "2",
+        "3",
+        "127",
+        "128",
+        "(1+ most-positive-fixnum)",
+        "(1- most-negative-fixnum)",
+        "1.0",
+        "nil",
+    ];
+
+    /// GNU 30.2's answers of `nth', as GNU_WORD_ENTRY_ANSWERS gives them:
+    /// each row is a form whose value is the list, then for each count of
+    /// GNU_NTH_COUNTS what `nth' answers of that count and the list with
+    /// `symbols-with-pos-enabled' nil and then t.
+    const GNU_NTH_ANSWERS: &[(&str, [(&str, &str); 11])] = &[
+        (
+            "nil",
+            [
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "'(a b c)",
+            [
+                ("a", "a"),
+                ("a", "a"),
+                ("b", "b"),
+                ("c", "c"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("nil", "nil"),
+                ("a", "a"),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "'(a b . c)",
+            [
+                ("a", "a"),
+                ("a", "a"),
+                ("b", "b"),
+                (
+                    "signal: (wrong-type-argument listp c)",
+                    "signal: (wrong-type-argument listp c)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp (a b . c))",
+                    "signal: (wrong-type-argument listp (a b . c))",
+                ),
+                (
+                    "signal: (wrong-type-argument listp (a b . c))",
+                    "signal: (wrong-type-argument listp (a b . c))",
+                ),
+                (
+                    "signal: (wrong-type-argument listp (a b . c))",
+                    "signal: (wrong-type-argument listp (a b . c))",
+                ),
+                (
+                    "signal: (wrong-type-argument listp (a b . c))",
+                    "signal: (wrong-type-argument listp (a b . c))",
+                ),
+                ("a", "a"),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "'x",
+            [
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp x)",
+                    "signal: (wrong-type-argument listp x)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "5",
+            [
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp 5)",
+                    "signal: (wrong-type-argument listp 5)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "(position-symbol nil 3)",
+            [
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                    "signal: (wrong-type-argument listp #<symbol nil at 3>)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "(append (make-vector 127 'a) '(b c))",
+            [
+                ("a", "a"),
+                ("a", "a"),
+                ("a", "a"),
+                ("a", "a"),
+                ("a", "a"),
+                ("b", "b"),
+                ("c", "c"),
+                ("nil", "nil"),
+                ("a", "a"),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+        (
+            "(let ((ring (list 1 2 3))) (nconc ring ring))",
+            [
+                ("1", "1"),
+                ("1", "1"),
+                ("2", "2"),
+                ("3", "3"),
+                ("1", "1"),
+                ("2", "2"),
+                ("3", "3"),
+                ("3", "3"),
+                ("1", "1"),
+                (
+                    "signal: (wrong-type-argument integerp 1.0)",
+                    "signal: (wrong-type-argument integerp 1.0)",
+                ),
+                (
+                    "signal: (wrong-type-argument integerp nil)",
+                    "signal: (wrong-type-argument integerp nil)",
+                ),
+            ],
+        ),
+    ];
+
+    /// The link-table entries that read the interpreter's state and, on
+    /// the path they take, neither signal, allocate nor run Lisp: the nine
+    /// readers of GNU_CONTEXT_ANSWERS in its order, the three of the
+    /// current buffer, window and frame, and `purecopy', whose one
+    /// argument is answered while `purify-flag' is nil.
+    const CONTEXT_ENTRIES: &[&str] = &[
+        "point",
+        "point-min",
+        "point-max",
+        "following-char",
+        "preceding-char",
+        "bolp",
+        "eolp",
+        "bobp",
+        "eobp",
+        "current-buffer",
+        "selected-window",
+        "selected-frame",
+        "purecopy",
+    ];
+
+    /// GNU 30.2's answers of the first nine CONTEXT_ENTRIES: each row is a
+    /// form that makes a buffer and leaves it current, then for each
+    /// position from its point-min to its point-max the list of the nine
+    /// answers there, as `prin1-to-string' prints it.  The buffers are an
+    /// empty one, a multibyte one with newlines, characters of two and
+    /// three bytes and raw bytes, the same text narrowed, and a unibyte
+    /// one.  Every form uses C primitives alone.
+    const GNU_CONTEXT_ANSWERS: &[(&str, &[&str])] = &[
+        (
+            "(progn (set-buffer (get-buffer-create \"d4-context-empty\")) (erase-buffer))",
+            &["(1 1 1 0 0 t t t t)"],
+        ),
+        (
+            "(progn (set-buffer (get-buffer-create \"d4-context-text\")) (erase-buffer) (insert \"ab\\nc\\351\\n\\n中d\") (insert (unibyte-string 233)) (insert \"\\n\"))",
+            &[
+                "(1 1 12 97 0 t nil t nil)",
+                "(2 1 12 98 97 nil nil nil nil)",
+                "(3 1 12 10 98 nil t nil nil)",
+                "(4 1 12 99 10 t nil nil nil)",
+                "(5 1 12 4194281 99 nil nil nil nil)",
+                "(6 1 12 10 4194281 nil t nil nil)",
+                "(7 1 12 10 10 t t nil nil)",
+                "(8 1 12 20013 10 t nil nil nil)",
+                "(9 1 12 100 20013 nil nil nil nil)",
+                "(10 1 12 4194281 100 nil nil nil nil)",
+                "(11 1 12 10 4194281 nil t nil nil)",
+                "(12 1 12 0 10 t t nil t)",
+            ],
+        ),
+        (
+            "(progn (set-buffer (get-buffer-create \"d4-context-narrowed\")) (erase-buffer) (insert \"ab\\nc\\351\\n\\n中d\\n\") (narrow-to-region 3 8))",
+            &[
+                "(3 3 8 10 0 t t t nil)",
+                "(4 3 8 99 10 t nil nil nil)",
+                "(5 3 8 4194281 99 nil nil nil nil)",
+                "(6 3 8 10 4194281 nil t nil nil)",
+                "(7 3 8 10 10 t t nil nil)",
+                "(8 3 8 0 10 t t nil t)",
+            ],
+        ),
+        (
+            "(progn (set-buffer (get-buffer-create \"d4-context-unibyte\")) (erase-buffer) (set-buffer-multibyte nil) (insert (unibyte-string 97 10 233 98 10)))",
+            &[
+                "(1 1 6 97 0 t nil t nil)",
+                "(2 1 6 10 97 nil t nil nil)",
+                "(3 1 6 233 10 t nil nil nil)",
+                "(4 1 6 98 233 nil nil nil nil)",
+                "(5 1 6 10 98 nil t nil nil)",
+                "(6 1 6 0 10 t t nil t)",
+            ],
+        ),
+    ];
+
+    /// Each of CONTEXT_ENTRIES that takes no argument, asked of the
+    /// interpreter as it is: its entry and its primitive answer alike,
+    /// and neither signals.  The answers, in CONTEXT_ENTRIES' order.
+    fn context_answers(
+        interpreter: &mut Interpreter,
+        runtime: &mut NativeRuntime,
+        environment: &mut Env,
+    ) -> Vec<Value> {
+        CONTEXT_ENTRIES
+            .iter()
+            .filter(|name| **name != "purecopy")
+            .map(|name| {
+                assert_entry_agrees(interpreter, runtime, environment, name, &[])
+                    .unwrap_or_else(|condition| panic!("{name} signals {condition:?}"))
+            })
+            .collect()
+    }
+
+    #[test]
+    fn context_entries_agree_with_their_primitives() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+
+        // At each position of each buffer, the readers answer as their
+        // primitives and as GNU does, and the buffer entry answers the
+        // buffer the form made current: each form begins with `set-buffer'.
+        let mut buffers = crate::lisp::alloc::RootedVec::new();
+        for (form, rows) in GNU_CONTEXT_ANSWERS {
+            eval_form(&mut interpreter, &mut environment, form);
+            buffers.push(eval_form(
+                &mut interpreter,
+                &mut environment,
+                "(current-buffer)",
+            ));
+            let start = eval_form(&mut interpreter, &mut environment, "(point-min)")
+                .as_integer()
+                .expect("point-min");
+            let end = eval_form(&mut interpreter, &mut environment, "(point-max)")
+                .as_integer()
+                .expect("point-max");
+            assert_eq!(
+                rows.len() as i64,
+                end - start + 1,
+                "a row for each position of {form}"
+            );
+            for (position, expected) in (start..).zip(rows.iter()) {
+                eval_form(
+                    &mut interpreter,
+                    &mut environment,
+                    &format!("(goto-char {position})"),
+                );
+                let answers = context_answers(&mut interpreter, &mut runtime, &mut environment);
+                assert!(
+                    answers[9].eq_value(buffers[buffers.len() - 1]),
+                    "current-buffer of {form}"
+                );
+                // The collector scans the vector.
+                let mut readers = crate::lisp::alloc::RootedVec::new();
+                readers.push(Value::list(answers[..9].iter().copied()));
+                assert_eq!(
+                    printed(&mut interpreter, &mut environment, readers[0]),
+                    *expected,
+                    "{form} at {position}"
+                );
+            }
+        }
+        // Back in each buffer by `set-buffer', the entries follow it, at
+        // the point it kept.
+        for index in 0..buffers.len() {
+            let buffer = buffers[index];
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "set-buffer",
+                &[buffer],
+                &mut environment,
+            )
+            .expect("set-buffer");
+            let answers = context_answers(&mut interpreter, &mut runtime, &mut environment);
+            assert!(
+                answers[9].eq_value(buffer),
+                "current-buffer after set-buffer"
+            );
+        }
+
+        // `purecopy': with `purify-flag' nil the argument itself, the
+        // entry's own answer.  With an `equal' hash table there, the
+        // subr's own call, which copies the object once and finds that
+        // copy again in the table.
+        let mut objects = crate::lisp::alloc::RootedVec::new();
+        for form in [
+            "nil",
+            "5",
+            "'context-entry",
+            "(list 1 \"two\" (list 3))",
+            "\"text\"",
+            "1.5",
+            "(point-marker)",
+        ] {
+            objects.push(eval_form(&mut interpreter, &mut environment, form));
+        }
+        for flag in ["nil", "(make-hash-table :test 'equal)"] {
+            eval_form(
+                &mut interpreter,
+                &mut environment,
+                &format!("(setq purify-flag {flag})"),
+            );
+            for index in 0..objects.len() {
+                let object = objects[index];
+                let answer = assert_entry_agrees(
+                    &mut interpreter,
+                    &mut runtime,
+                    &mut environment,
+                    "purecopy",
+                    &[object],
+                )
+                .expect("purecopy does not signal");
+                assert!(
+                    flag != "nil" || answer.eq_value(object),
+                    "purecopy of {object:?} with purify-flag nil"
+                );
+            }
+        }
+        eval_form(&mut interpreter, &mut environment, "(setq purify-flag nil)");
+
+        // A handler native code pushed and then popped by its own store:
+        // its registration stays until a general entry reconciles it.  Each
+        // entry answers as its primitive does and leaves it so.
+        let frame = runtime.new_call_frame(std::ptr::null_mut(), &interpreter);
+        runtime.begin_call(&frame);
+        let condition = runtime
+            .heap
+            .encode(&Value::symbol("error"))
+            .expect("condition word");
+        let handler = with_active_call(&mut interpreter, &mut environment, &mut runtime, || {
+            runtime_push_handler(condition, 1)
+        });
+        assert!(!handler.is_null());
+        runtime.thread.set_handler(std::ptr::null_mut());
+        assert!(!runtime.handlers_in_sync());
+        let object = Value::symbol("context-entry");
+        for name in CONTEXT_ENTRIES {
+            let arguments: &[Value] = if *name == "purecopy" {
+                std::slice::from_ref(&object)
+            } else {
+                &[]
+            };
+            let ordinary =
+                crate::lisp::primitives::call(&mut interpreter, name, arguments, &mut environment)
+                    .unwrap_or_else(|error| panic!("{name}: {error:?}"));
+            let index = super::super::abi::native_subrs()
+                .iter()
+                .position(|subroutine| subroutine.name == *name)
+                .unwrap_or_else(|| panic!("{name} belongs to the native ABI"));
+            let words = arguments
+                .iter()
+                .map(|value| value.word())
+                .collect::<Vec<_>>();
+            let native = with_active_call(
+                &mut interpreter,
+                &mut environment,
+                &mut runtime,
+                || unsafe {
+                    call_word_target(
+                        native_subr_address(index).cast_const(),
+                        NativeCallingConvention::Fixed,
+                        &words,
+                    )
+                },
+            );
+            assert_eq!(native, ordinary.word(), "{name} with a popped handler");
+            assert!(
+                !runtime.handlers_in_sync() && runtime.handlers.len() == 1,
+                "{name} leaves the popped handler to the next general entry"
+            );
+        }
+        runtime
+            .finish_call(&mut interpreter, &frame)
+            .expect("the call reconciles the popped handler");
+        assert!(runtime.handlers.is_empty());
+    }
+
+    /// The agreement of an entry with its primitive shows one function
+    /// behind both; these rows show that the function is GNU's.
+    #[test]
+    fn word_level_entries_answer_as_gnu_does() {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        for (name, arguments, disabled, enabled) in GNU_WORD_ENTRY_ANSWERS {
+            for (flag, expected) in [(false, disabled), (true, enabled)] {
+                assert_printed_answer(
+                    &mut interpreter,
+                    &mut runtime,
+                    &mut environment,
+                    name,
+                    arguments,
+                    flag,
+                    expected,
+                );
+            }
+        }
+        for (list, answers) in GNU_NTH_ANSWERS {
+            for (count, (disabled, enabled)) in GNU_NTH_COUNTS.iter().zip(answers) {
+                let arguments = format!("(list {count} {list})");
+                for (flag, expected) in [(false, disabled), (true, enabled)] {
+                    assert_printed_answer(
+                        &mut interpreter,
+                        &mut runtime,
+                        &mut environment,
+                        "nth",
+                        &arguments,
+                        flag,
+                        expected,
+                    );
+                }
             }
         }
     }
@@ -16420,21 +17628,11 @@ mod tests {
             root.value(),
             frame.borrow().root_window.expect("source root").value()
         );
-        assert_eq!(
-            root.slot(crate::lisp::primitives::WINDOW_FRAME_SLOT),
-            Value::Frame(copied)
-        );
-        let object = |window: crate::lisp::primitives::WindowRef| match window.value().kind() {
-            Kind::Window(object) => object,
-            _ => unreachable!("a window is a window object"),
-        };
-        assert_ne!(
-            object(root).owner(),
-            object(frame.borrow().root_window.expect("source root")).owner()
-        );
-        assert!(object(root).ptr_eq(&object(
-            cloned.window_ref(root.id()).expect("clone window index")
-        )));
+        assert_eq!(root.frame(), Some(copied));
+        // The copy's root window is the one the copy's frames walk to,
+        // and none of the source's.
+        assert!(crate::lisp::primitives::foreach_frame_window(&cloned).contains(&root));
+        assert!(!crate::lisp::primitives::foreach_frame_window(&source).contains(&root));
         assert_eq!(
             state
                 .selected_window

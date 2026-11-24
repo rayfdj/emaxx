@@ -643,9 +643,9 @@ pub(crate) fn previous_property_change(
     })
 }
 
-/// A window object (WINDOWP), live or not: its record id.
-fn window_object(interp: &Interpreter, object: &Value) -> Option<u64> {
-    window_record_id_from_value(interp, object)
+/// A window object (WINDOWP), live or not.
+fn window_object(object: &Value) -> Option<super::WindowRef> {
+    super::WindowRef::from_value(object)
 }
 
 /// textprop.c:get_char_property_and_overlay: PROP of the character at
@@ -688,7 +688,7 @@ pub(crate) fn get_char_property_and_overlay(
     let mut window = None;
     let object = if object.is_nil() {
         Value::Buffer(interp.buffer)
-    } else if let Some(id) = window_object(interp, &object) {
+    } else if let Some(id) = window_object(&object) {
         let buffer = window_buffer_id(interp, &object)
             .ok_or_else(|| wrong_type_argument("window-live-p", object))?;
         window = Some(id);
@@ -820,7 +820,7 @@ pub(crate) fn get_pos_property(
     let position = Value::Integer(pos);
     let object = if object.is_nil() {
         Value::Buffer(interp.buffer)
-    } else if window_object(interp, &object).is_some() {
+    } else if window_object(&object).is_some() {
         window_buffer_id(interp, &object)
             .and_then(|buffer| interp.buffer_value(buffer))
             .unwrap_or(Value::Nil)

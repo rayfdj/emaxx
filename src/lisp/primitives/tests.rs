@@ -25165,8 +25165,10 @@ fn native_fixed_pseudovectors_use_gnu_full_vector_footprints() {
     // alloc.c:sweep_vectors accounts the complete VECSIZE of these
     // pseudovectors, not only the Lisp fields traced by the marker.  These
     // values come from the configured GNU headers:
-    // process=42, window=66, window-configuration=13, thread=63,
-    // mutex=9, and condition-variable=8 words.
+    // process=42, window-configuration=13, thread=63, mutex=9, and
+    // condition-variable=8 words; a window is 68 (sizeof (struct window)
+    // is 544 bytes, the header among them), and make_window makes its
+    // three markers, 6 words each (a struct Lisp_Marker is 48 bytes).
     let mut interp = Interpreter::new();
     let before = interp.live_object_census();
     let mut values = [
@@ -25186,13 +25188,13 @@ fn native_fixed_pseudovectors_use_gnu_full_vector_footprints() {
     .map(|(kind, name)| interp.create_pseudovector(kind, name, Vec::new()))
     .collect::<Vec<_>>();
     // A window is an object of its own kind, made by make_window.
-    values.push(interp.make_window(Vec::new()).value());
+    values.push(interp.make_window().value());
     let after = interp.live_object_census();
 
-    assert_eq!(after.vectors - before.vectors, values.len());
+    assert_eq!(after.vectors - before.vectors, values.len() + 3);
     assert_eq!(
         after.vector_slots - before.vector_slots,
-        42 + 66 + 13 + 63 + 9 + 8
+        42 + 68 + 3 * 6 + 13 + 63 + 9 + 8
     );
     assert_eq!(values.len(), 6);
 }
@@ -29742,10 +29744,10 @@ fn window_end_and_posn_follow_published_interactive_geometry() {
     // A frontend publishing live geometry changes both answers: its
     // redisplay records the window's end (w->window_end_pos).
     set_interactive_window_metrics(Some(InteractiveWindowMetrics { window_end: 199 }));
-    let window_id = interp.selected_window_id();
+    let window = interp.selected_window_ref();
     let buffer_id = interp.current_buffer_id();
     let point = interp.buffer.borrow().point();
-    super::window::record_window_display(&mut interp, window_id, buffer_id, point, 199);
+    super::window::record_window_display(&mut interp, window, buffer_id, point, 199);
     let end = call(&mut interp, "window-end", &[], &mut env).expect("window-end");
     assert_eq!(end, Value::Integer(199), "window-end reads the glass state");
 
@@ -30476,12 +30478,12 @@ fn glass_mode_line_honors_font_lock_face_string_properties() {
     .expect("mode-line form parses")
     .expect("mode-line form exists");
     interp.eval(&form, &mut env).expect("mode-line form runs");
-    let window_id = interp.selected_window_id();
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window_id);
+    let window = interp.selected_window_ref();
+    let measure = crate::tty::ModeLineMeasure::for_window(&interp, window);
     let (_, spans) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        window_id,
+        window,
         1,
         InteractiveWindowMetrics { window_end: 1 },
         80,
@@ -30849,7 +30851,7 @@ fn window_render_layout_reports_split_geometry_in_tree_order() {
         (bottom.left, bottom.top, bottom.width, bottom.height),
         (0, 12, 80, 11)
     );
-    assert_eq!(bottom.window_id, lower_id.id());
+    assert_eq!(bottom.window, WindowRef::from_object(lower_id));
     assert!(!bottom.selected);
     assert_eq!(
         top.buffer_id, bottom.buffer_id,
@@ -30966,15 +30968,16 @@ fn window_mode_lines_render_in_each_windows_own_context() {
     .expect("a form is present");
     interp.eval(&spec, &mut env).expect("spec installs");
 
-    let selected_before = interp.selected_window_id();
+    let selected_before = interp.selected_window_ref();
     let buffer_before = interp.current_buffer_id();
     let point_before = interp.buffer.borrow().point();
     let metrics = crate::lisp::primitives::InteractiveWindowMetrics { window_end: 14 };
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id());
+    let measure =
+        crate::tty::ModeLineMeasure::for_window(&interp, WindowRef::from_object(lower_id));
     let (mode_line, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id.id(),
+        WindowRef::from_object(lower_id),
         9,
         metrics,
         80,
@@ -30990,7 +30993,7 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         "L reflects the window's point, not the selected window's: {mode_line:?}"
     );
     assert_eq!(
-        interp.selected_window_id(),
+        interp.selected_window_ref(),
         selected_before,
         "selection restored"
     );
@@ -31024,11 +31027,12 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("dedicate softly");
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id());
+    let measure =
+        crate::tty::ModeLineMeasure::for_window(&interp, WindowRef::from_object(lower_id));
     let (softly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id.id(),
+        WindowRef::from_object(lower_id),
         9,
         metrics,
         80,
@@ -31046,11 +31050,12 @@ fn window_mode_lines_render_in_each_windows_own_context() {
         &mut env,
     )
     .expect("dedicate strongly");
-    let measure = crate::tty::ModeLineMeasure::for_window(&interp, lower_id.id());
+    let measure =
+        crate::tty::ModeLineMeasure::for_window(&interp, WindowRef::from_object(lower_id));
     let (strongly, _) = crate::lisp::primitives::render_window_mode_line(
         &mut interp,
         &mut env,
-        lower_id.id(),
+        WindowRef::from_object(lower_id),
         9,
         metrics,
         80,
@@ -36412,6 +36417,208 @@ fn dynamic_binding_byte_code_arguments_as_funcall_lambda() {
 }
 
 #[test]
+fn dynamic_byte_code_returns_unbind_as_funcall_lambda_unbinds() {
+    // eval.c:funcall_lambda's unbind_to of a dynamic-binding byte-code
+    // function's argument bindings, called from byte code: undone at the
+    // return, the innermost first, a watched formal's `unlet' heard; a
+    // formal that gains a watcher or a buffer-local value during the call
+    // is restored as GNU restores it; a throw or a signal from 200 levels
+    // down unbinds every level.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dyn (lambda (form) (let ((lexical-binding nil)) (byte-compile form))))
+      log)
+  (defvar t376-a nil)
+  (defvar t376-b nil)
+  (defvar t376-s 'global)
+  (add-variable-watcher 't376-a (lambda (sym new op where) (push (list sym new op) log)))
+  (fset 't376-ab (funcall dyn '(lambda (t376-a t376-b) (list t376-a t376-b))))
+  (fset 't376-ba (funcall dyn '(lambda (t376-b t376-a) (list t376-a t376-b))))
+  (fset 't376-call (funcall dyn '(lambda ()
+                                   (list (t376-ab 1 2) t376-a t376-b
+                                         (t376-ba 3 4) t376-a t376-b))))
+  (fset 't376-deep (funcall dyn '(lambda (t376-s n)
+                                   (if (> n 0) (t376-deep (list n) (1- n))
+                                     (throw 't376 (list 'bottom t376-s))))))
+  (fset 't376-deep-sig (funcall dyn '(lambda (t376-s n)
+                                       (if (> n 0) (t376-deep-sig n (1- n))
+                                         (signal 'error (list t376-s))))))
+  (fset 't376-top (funcall dyn '(lambda ()
+                                  (list (catch 't376 (t376-deep 'top 200)) t376-s
+                                        (condition-case e (t376-deep-sig 'top 200)
+                                          (error (list e t376-s)))
+                                        t376-s))))
+  (list (t376-call) (prog1 (nreverse log) (setq log nil)) (t376-top) t376-s))"#,
+        r#"(((1 2) nil nil (4 3) nil nil) ((t376-a nil set) (t376-a nil set) (t376-a 1 let) (t376-a nil unlet) (t376-a 4 let) (t376-a nil unlet)) ((bottom (1)) global ((error 1) global) global) global)"#,
+        "dynamic byte-code returns",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dyn (lambda (form) (let ((lexical-binding nil)) (byte-compile form))))
+      log)
+  (defvar t376-p nil)
+  (defvar t376-q nil)
+  (defvar t376-r nil)
+  (let ((watch (lambda (sym new op where) (push (list sym new op (and where t)) log))))
+    (fset 't376-outer (funcall dyn `(lambda (t376-p t376-q)
+                                      (add-variable-watcher 't376-p ,watch)
+                                      (list t376-p t376-q))))
+    (fset 't376-inner (funcall dyn `(lambda (t376-q t376-r)
+                                      (add-variable-watcher 't376-r ,watch)
+                                      (list t376-q t376-r))))
+    (fset 't376-local (funcall dyn '(lambda (t376-q t376-r)
+                                      (set (make-local-variable 't376-r) 'here)
+                                      (list t376-q t376-r))))
+    (fset 't376-calls (funcall dyn '(lambda ()
+                                      (list (t376-outer 1 2) t376-p t376-q
+                                            (t376-inner 3 4) t376-q t376-r
+                                            (with-temp-buffer
+                                              (list (t376-local 5 6) t376-q t376-r
+                                                    (local-variable-p 't376-r)))
+                                            t376-r))))
+    (list (t376-calls) (nreverse log) t376-p t376-q t376-r)))"#,
+        r#"(((1 2) nil nil (3 4) nil nil ((5 here) nil here t) nil) ((t376-p nil unlet nil) (t376-r nil unlet nil) (t376-r 6 let nil) (t376-r here set t) (t376-r nil set nil)) nil nil nil)"#,
+        "bindings that stop being plain during the call",
+    );
+}
+
+#[test]
+fn a_signal_from_unbinding_a_byte_code_callee_comes_out_in_its_caller() {
+    // eval.c:funcall_lambda's unbind_to of a dynamic-binding byte-code
+    // function's arguments, called from byte code: a formal whose watcher
+    // signals or throws at `unlet' (given the watcher during the call, so
+    // the call took the frame entered in place) leaves the callee whole,
+    // its record gone and the caller's kept, and the signal or throw comes
+    // out in the caller as it comes out of Ffuncall into the Bcall; the
+    // return where every binding is undone quietly answers as GNU does;
+    // twelve such signals in a row leave the backtrace and the call depth
+    // as they found them.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defvar t376-u 'gu)
+  (defvar t376-x 'gx)
+  (fset 't376-bt (byte-compile '(lambda ()
+                                  (let (names)
+                                    (mapbacktrace
+                                     (lambda (_e fun _a _f)
+                                       (when (and (symbolp fun)
+                                                  (string-prefix-p "t376-" (symbol-name fun)))
+                                         (push fun names)))
+                                     #'t376-bt)
+                                    (nreverse names)))))
+  (fset 't376-refuse (lambda (sym _new op _where)
+                       (cond ((eq op 'unlet) (error "unlet %s" sym))
+                             ((eq op 'makunbound) (throw 't376-out sym)))))
+  (fset 't376-plain (let ((lexical-binding nil))
+                      (byte-compile '(lambda (t376-u t376-x) (list t376-u t376-x (t376-bt))))))
+  (fset 't376-sig (let ((lexical-binding nil))
+                    (byte-compile '(lambda (t376-u t376-x)
+                                     (add-variable-watcher 't376-u #'t376-refuse)
+                                     (list t376-u t376-x)))))
+  (fset 't376-thr (let ((lexical-binding nil))
+                    (byte-compile '(lambda (t376-x)
+                                     (add-variable-watcher 't376-x
+                                                           (lambda (sym _n op _w)
+                                                             (when (eq op 'unlet) (throw 't376-out sym))))
+                                     t376-x))))
+  (fset 't376-mid (byte-compile '(lambda ()
+                                   (list (t376-plain 1 2) t376-u t376-x
+                                         (condition-case e (t376-sig 3 4)
+                                           (error (list 'caught (cadr e) (t376-bt))))
+                                         (progn (remove-variable-watcher 't376-u #'t376-refuse)
+                                                t376-u)
+                                         (catch 't376-out (t376-thr 5))
+                                         (t376-bt)))))
+  (fset 't376-many (byte-compile '(lambda (n)
+                                    (let (out)
+                                      (dotimes (_ n)
+                                        (push (condition-case nil (t376-sig 6 7)
+                                                (error (length (t376-bt))))
+                                              out)
+                                        (remove-variable-watcher 't376-u #'t376-refuse))
+                                      (list (nreverse out) (t376-bt))))))
+  (list (t376-mid) (t376-many 12) t376-u t376-x))"#,
+        r#"(((1 2 (t376-bt t376-plain t376-mid)) gu gx (caught "unlet t376-u" (t376-bt t376-mid)) 3 t376-x (t376-bt t376-mid)) ((2 2 2 2 2 2 2 2 2 2 2 2) (t376-bt t376-many)) 6 7)"#,
+        "a signal from unbinding a byte-code callee",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (fset 't376-bt (byte-compile '(lambda ()
+                                  (let (names)
+                                    (mapbacktrace
+                                     (lambda (_e fun _a _f)
+                                       (when (and (symbolp fun)
+                                                  (string-prefix-p "t376-" (symbol-name fun)))
+                                         (push fun names)))
+                                     #'t376-bt)
+                                    (nreverse names)))))
+  (fset 't376-refuse (lambda (sym _new op _where) (when (eq op 'unlet) (error "unlet %s" sym))))
+  (let (calls)
+    (dotimes (i 12)
+      (let ((w (intern (format "t376-w%d" i)))
+            (f (intern (format "t376-f%d" i)))
+            (c (intern (format "t376-c%d" i))))
+        (eval `(defvar ,w nil))
+        (fset f (let ((lexical-binding nil))
+                  (byte-compile `(lambda (,w) (add-variable-watcher ',w #'t376-refuse) ,w))))
+        (fset c (byte-compile `(lambda () (list (,f 1) 'after))))
+        (push `(condition-case nil (,c) (error (t376-bt))) calls)))
+    (fset 't376-top5 (byte-compile `(lambda () (list ,@(nreverse calls) (t376-bt)))))
+    (list (t376-top5) (t376-bt))))"#,
+        r#"(((t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5) (t376-bt t376-top5)) (t376-bt))"#,
+        "twelve signals from unbinding byte-code callees",
+    );
+}
+
+#[test]
+fn byte_code_frames_leave_with_their_call_records_innermost() {
+    // bytecode.c's Breturn reads the callee's record as `specpdl_ptr - 1':
+    // after a byte op's signal caught in the frame (its record gone), in a
+    // handler-bind handler (the op's `aref' record innermost), in an
+    // unwind form of a frame a signal leaves, and on the exit of a frame
+    // `backtrace-debug' marked, the debugger's value returned.
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+  (defvar t376-log nil)
+  (fset 't376-frames (byte-compile '(lambda ()
+                                      (let (names)
+                                        (catch 'done
+                                          (mapbacktrace
+                                           (lambda (_evald fun args _flags)
+                                             (when (eq fun 't376-top2) (throw 'done nil))
+                                             (when (symbolp fun)
+                                               (push (list fun (mapcar (lambda (a) (if (functionp a) 'fn a)) args))
+                                                     names)))
+                                           #'t376-frames))
+                                        (nreverse names)))))
+  (fset 't376-callee (byte-compile '(lambda (x) (list x (t376-frames)))))
+  (fset 't376-catcher (byte-compile '(lambda (v)
+                                       (list (condition-case e (aref v 9) (error (car e)))
+                                             (condition-case e (nth 'x v) (error (car e)))
+                                             (condition-case e (setcar v 1) (error (car e)))
+                                             (t376-callee 'after)))))
+  (fset 't376-hb (byte-compile '(lambda (v)
+                                  (condition-case nil
+                                      (handler-bind ((error (lambda (_e) (push (t376-frames) t376-log))))
+                                        (aref v 2))
+                                    (error 'caught)))))
+  (fset 't376-up-inner (byte-compile '(lambda (v) (unwind-protect (aref v 3) (push (t376-frames) t376-log)))))
+  (fset 't376-up (byte-compile '(lambda (v) (condition-case nil (t376-up-inner v) (error 'left)))))
+  (fset 't376-mark (byte-compile '(lambda (n) (backtrace-debug 1 t) (list n (t376-frames)))))
+  (fset 't376-marker (byte-compile '(lambda () (list (t376-mark 7) (t376-frames)))))
+  (fset 't376-top2 (byte-compile '(lambda ()
+                                    (list (t376-catcher [1])
+                                          (t376-hb [1])
+                                          (t376-up [1])
+                                          (let ((debugger (lambda (&rest args)
+                                                            (push (list 'debugger args) t376-log)
+                                                            'from-debugger)))
+                                            (t376-marker))))))
+  (list (t376-top2) (nreverse t376-log)))"#,
+        r#"(((args-out-of-range wrong-type-argument wrong-type-argument (after ((t376-frames nil) (t376-callee (after)) (t376-catcher ([1]))))) caught left (from-debugger ((t376-frames nil) (t376-marker nil)))) (((t376-frames nil) (aref ([1] 2)) (handler-bind-1 (fn (error) fn)) (t376-hb ([1]))) ((t376-frames nil) (t376-up-inner ([1])) (t376-up ([1]))) (debugger (exit (7 ((t376-frames nil) (t376-mark (7)) (t376-marker nil)))))))"#,
+        "byte-code frames and their records",
+    );
+}
+
+#[test]
 fn backtrace_locals_as_eval_c() {
     // eval.c:Fbacktrace__locals: the bindings on the specpdl between a
     // frame's record and the next one's, oldest first, each with the value
@@ -36542,6 +36749,67 @@ fn window_motion_counts_the_window_body_as_window_c() {
 }
 
 #[test]
+fn the_frames_windows_are_found_as_window_c_walks_the_frames() {
+    // window.c finds a frame's windows from its tree: foreach_window's
+    // leaves in canonical order and then the root's `next', the
+    // minibuffer window; delete_all_child_windows' later siblings first,
+    // then children, then the window itself; Fnext_window (w, Qt, Qt)'s
+    // cycle from the selected window round to it.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        let value = interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"));
+        WindowRef::from_value(&value)
+    };
+    let a = run(&mut interp, "(setq wt-a (selected-window))").expect("a window");
+    let b = run(&mut interp, "(setq wt-b (split-window))").expect("a window");
+    let column = run(&mut interp, "(window-parent wt-a)").expect("a parent");
+    let c = run(&mut interp, "(setq wt-c (split-window wt-a nil t))").expect("a window");
+    let row = run(&mut interp, "(window-parent wt-a)").expect("a parent");
+    let mini = run(&mut interp, "(minibuffer-window)").expect("a minibuffer window");
+    // The tree: a column of a row (wt-a beside wt-c) above wt-b.
+    assert_eq!(interp.selected_frame_id.borrow().root_window, Some(column));
+    assert_eq!(column.first_child(), Some(row));
+    assert_eq!(row.first_child(), Some(a));
+    let listed = |windows: crate::lisp::primitives::WindowList| windows.to_vec();
+    assert_eq!(
+        listed(crate::lisp::primitives::foreach_frame_window(&interp)),
+        vec![a, c, b, mini]
+    );
+    assert_eq!(
+        listed(crate::lisp::primitives::frame_windows_for_deletion(
+            interp.selected_frame_id
+        )),
+        vec![mini, b, c, a, row, column]
+    );
+    assert_eq!(
+        listed(crate::lisp::primitives::all_frames_window_cycle(&interp)),
+        vec![a, c, b, mini]
+    );
+    run(&mut interp, "(select-window wt-c)");
+    assert_eq!(
+        listed(crate::lisp::primitives::all_frames_window_cycle(&interp)),
+        vec![c, b, mini, a]
+    );
+    // The cycle is next-window's.
+    assert_eq!(run(&mut interp, "(next-window wt-b t t)"), Some(mini));
+    assert_eq!(run(&mut interp, "(next-window nil t t)"), Some(b));
+    // A deleted window is on no frame's tree.
+    run(&mut interp, "(delete-window wt-b)");
+    assert!(!b.is_valid());
+    assert_eq!(
+        listed(crate::lisp::primitives::foreach_frame_window(&interp)),
+        vec![a, c, mini]
+    );
+}
+
+#[test]
 fn buffers_count_the_windows_showing_them() {
     // window.c:adjust_window_count keeps b->window_count, on the base
     // buffer of an indirect one, at each wset_buffer: set_window_buffer,
@@ -36629,28 +36897,17 @@ fn buffers_count_the_windows_showing_them() {
     // shows that buffer for as long as the motion takes, and
     // adjust_window_count, there and back, leaves the window's end and
     // base line to be found again.
-    let selected = interp.selected_window_id();
-    let window = interp.window_ref(selected).expect("the selected window");
-    // The window's end is valid, and its base line cached in a slot the
-    // window holds, as indexing the record's slots was.
+    let window = interp.selected_window_ref();
+    // The window's end is valid, and its base line cached.
     window.set_window_end_valid(true);
-    window.set_held_slot(
-        &mut interp,
-        crate::lisp::primitives::WINDOW_BASE_LINE_SLOT,
-        Value::T,
-    );
+    window.set_base_line_number(3);
+    window.set_base_line_pos(5);
     run(
         &mut interp,
         r#"(with-current-buffer "wc-a" (vertical-motion 0))"#,
     );
-    let slot = |interp: &Interpreter, slot: usize| {
-        interp
-            .window_ref(selected)
-            .expect("the selected window")
-            .slot_opt(slot)
-            .expect("a slot the window holds")
-    };
     assert!(window.window_end_valid());
+    assert_eq!(window.base_line_pos(), 5);
     run(
         &mut interp,
         r#"(setq wc-m (list (window-point)
@@ -36660,7 +36917,9 @@ fn buffers_count_the_windows_showing_them() {
                             (buffer-name (window-buffer))))"#,
     );
     assert!(!window.window_end_valid());
-    assert!(slot(&interp, crate::lisp::primitives::WINDOW_BASE_LINE_SLOT).is_nil());
+    // adjust_window_count's `w->base_line_pos = 0': no base line.
+    assert_eq!(interp.selected_window_ref(), window);
+    assert_eq!(window.base_line_pos(), 0);
     assert_eq!((count(&interp, "wc-a"), count(&interp, "wc-b")), (2, 0));
     run(
         &mut interp,
@@ -36790,7 +37049,7 @@ fn window_contents_and_bits_say_what_a_window_is() {
     let column = handle(run(&mut interp, "(setq wk-column (window-parent))"));
     assert_eq!((shape(column), column.horizontal()), (INTERNAL, false));
     assert_eq!(column.contents(), top.value());
-    assert_eq!(column.first_child().map(WindowRef::id), Some(top.id()));
+    assert_eq!(column.first_child(), Some(top));
     assert!(!column.mini() && column.contents_buffer_id().is_none());
     assert_eq!((shape(bottom), bottom.contents()), (LEAF, buffer));
     // A split the other way makes a horizontal combination; a window
@@ -36869,18 +37128,63 @@ fn window_contents_and_bits_say_what_a_window_is() {
     let id = interp.current_buffer_id();
     let shown = interp.buffer_window_count(id);
     let lone = make_leaf_window(&mut interp, id, 1, true, (80, 1, 0, 0));
-    interp.adjust_window_count(lone.id(), true);
+    interp.adjust_window_count(lone, true);
     assert_eq!(interp.buffer_window_count(id), shown + 1);
     assert_eq!((shape(lone), lone.mini()), (LEAF, true));
-    interp.wset_buffer(lone.id(), Value::Nil);
+    interp.wset_buffer(lone, Value::Nil);
     assert_eq!(interp.buffer_window_count(id), shown);
     assert_eq!((shape(lone), lone.mini()), (DELETED, true));
-    interp.wset_combination(lone.id(), true, top.value());
+    interp.wset_combination(lone, true, top.value());
     assert_eq!((shape(lone), lone.horizontal()), (INTERNAL, true));
     assert_eq!(lone.contents(), top.value());
-    interp.wset_combination(lone.id(), false, Value::Nil);
+    interp.wset_combination(lone, false, Value::Nil);
     assert_eq!((shape(lone), lone.horizontal()), (DELETED, true));
     interp.check_window_counts();
+}
+
+/// The window of COPY, a deep_clone_image of INTERP, at WINDOW's place
+/// there: the minibuffer window of the same frame of the frame list, or
+/// the window the same children lead to from that frame's root window.
+fn copied_window(interp: &Interpreter, copy: &Interpreter, window: WindowRef) -> WindowRef {
+    let frame = window.frame().expect("a window of a frame");
+    let index = interp
+        .frame_states
+        .iter()
+        .position(|listed| *listed == frame)
+        .expect("a frame of the frame list");
+    let copied_frame = copy.frame_states[index];
+    if frame.borrow().minibuffer_window == Some(window) {
+        return copied_frame
+            .borrow()
+            .minibuffer_window
+            .expect("the copy's minibuffer window");
+    }
+    let next = |window: WindowRef| window.next_sibling();
+    // Which child of its parent each window is, from WINDOW up.
+    let mut path = Vec::new();
+    let mut node = window;
+    while let Some(parent) = node.parent_window() {
+        let mut child = parent.first_child().expect("a parent's first child");
+        let mut place = 0;
+        while child != node {
+            child = next(child).expect("a later sibling");
+            place += 1;
+        }
+        path.push(place);
+        node = parent;
+    }
+    assert_eq!(frame.borrow().root_window, Some(node));
+    let mut copied = copied_frame
+        .borrow()
+        .root_window
+        .expect("the copy's root window");
+    for place in path.into_iter().rev() {
+        copied = copied.first_child().expect("the copy's first child");
+        for _ in 0..place {
+            copied = next(copied).expect("the copy's later sibling");
+        }
+    }
+    copied
 }
 
 #[test]
@@ -36971,7 +37275,7 @@ fn window_sequence_number_use_time_and_cursor_bit_are_the_windows_own() {
     // A copy of the image has the windows' numbers, use times and
     // cursor bits in its own windows.
     let copy = interp.deep_clone_image();
-    let copied = copy.window_ref(bottom.id()).expect("the copied window");
+    let copied = copied_window(&interp, &copy, bottom);
     assert_ne!(copied.value(), bottom.value());
     assert_eq!(
         (
@@ -37050,36 +37354,36 @@ fn window_geometry_is_the_windows_own_integers() {
     // old sizes and no margins.
     let id = interp.current_buffer_id();
     let lone = make_leaf_window(&mut interp, id, 1, false, (80, 10, 3, 4));
-    interp.adjust_window_count(lone.id(), true);
+    interp.adjust_window_count(lone, true);
     assert_eq!(pixels(lone), (Some(80), Some(10), Some(3), Some(4)));
     assert_eq!(chars(lone), (None, None, None, None));
-    assert_eq!(window_char_geometry(&interp, lone.id()), (80, 10, 3, 4));
+    assert_eq!(window_char_geometry(lone), (80, 10, 3, 4));
     assert_eq!((old_sizes(lone), margins(lone)), ((0, 0, 0, 0), (0, 0)));
-    assert_eq!(window_margin_cols(&interp, lone.id()), (None, None));
+    assert_eq!(window_margin_cols(lone), (None, None));
     // `w->total_cols = 70' and `w->top_line = 6' are the window's own,
     // apart from its pixels; the others still read as those.
-    set_window_total_cols(&interp, lone.id(), 70);
-    set_window_top_line(&interp, lone.id(), 6);
+    lone.set_total_cols(Some(70));
+    lone.set_top_line(Some(6));
     assert_eq!(chars(lone), (Some(70), None, None, Some(6)));
     assert_eq!(pixels(lone), (Some(80), Some(10), Some(3), Some(4)));
-    assert_eq!(window_char_geometry(&interp, lone.id()), (70, 10, 3, 6));
-    set_window_left_col(&interp, lone.id(), 0);
-    set_window_total_lines(&interp, lone.id(), 0);
-    assert_eq!(window_char_geometry(&interp, lone.id()), (70, 0, 0, 6));
+    assert_eq!(window_char_geometry(lone), (70, 10, 3, 6));
+    lone.set_left_col(Some(0));
+    lone.set_total_lines(Some(0));
+    assert_eq!(window_char_geometry(lone), (70, 0, 0, 6));
     // The dead window of a dump is given nothing.
-    let dead = interp.install_dead_window(3);
+    let dead = interp.install_dead_window();
     assert_eq!(pixels(dead), (None, None, None, None));
     assert_eq!(chars(dead), (None, None, None, None));
-    assert_eq!(window_char_geometry(&interp, dead.id()), (0, 0, 0, 0));
+    assert_eq!(window_char_geometry(dead), (0, 0, 0, 0));
     assert_eq!((old_sizes(dead), margins(dead)), ((0, 0, 0, 0), (0, 0)));
     // Nothing holds the two from here on: the lone window shows its
     // buffer no longer.
-    interp.wset_buffer(lone.id(), Value::Nil);
+    interp.wset_buffer(lone, Value::Nil);
 
     // The frame's windows: what Lisp reads is the window's integers.
     let top = handle(interp.selected_window_value());
     assert!(matches!(pixels(top), (Some(_), Some(_), Some(0), Some(_))));
-    let (cols, lines, left_col, top_line) = window_char_geometry(&interp, top.id());
+    let (cols, lines, left_col, top_line) = window_char_geometry(top);
     assert_eq!(
         run(
             &mut interp,
@@ -37116,7 +37420,7 @@ fn window_geometry_is_the_windows_own_integers() {
     // window-resize-apply-total gives the frame's root; the old window
     // and the new one have the lines window_resize_apply gave them, the
     // new one starting where the old one ends.
-    let before = (pixels(top), window_char_geometry(&interp, top.id()));
+    let before = (pixels(top), window_char_geometry(top));
     let bottom = handle(run(&mut interp, "(setq wg-bottom (split-window))"));
     let column = handle(run(&mut interp, "(window-parent)"));
     assert_eq!(pixels(column), before.0);
@@ -37132,8 +37436,8 @@ fn window_geometry_is_the_windows_own_integers() {
             .map(|(a, b)| a + b),
         Some(lines)
     );
-    let (_, top_lines, _, top_top_line) = window_char_geometry(&interp, top.id());
-    let (_, bottom_lines, _, bottom_top_line) = window_char_geometry(&interp, bottom.id());
+    let (_, top_lines, _, top_top_line) = window_char_geometry(top);
+    let (_, bottom_lines, _, bottom_top_line) = window_char_geometry(bottom);
     assert_eq!(bottom_top_line, top_top_line + top_lines);
     assert_eq!(
         run(
@@ -37168,7 +37472,7 @@ fn window_geometry_is_the_windows_own_integers() {
     // been given, in its own windows.
     let copy = interp.deep_clone_image();
     for window in [top, bottom, column] {
-        let copied = copy.window_ref(window.id()).expect("the copied window");
+        let copied = copied_window(&interp, &copy, window);
         assert_ne!(copied.value(), window.value());
         assert_eq!(
             (
@@ -37209,7 +37513,7 @@ fn window_geometry_is_the_windows_own_integers() {
         Value::cons(Value::Integer(2), Value::Integer(3))
     );
     for (window, name) in [(top, "(selected-window)"), (bottom, "wg-bottom")] {
-        let (cols, lines, left_col, top_line) = window_char_geometry(&interp, window.id());
+        let (cols, lines, left_col, top_line) = window_char_geometry(window);
         assert_eq!(
             run(
                 &mut interp,
@@ -37288,22 +37592,22 @@ fn window_redisplay_bits_and_counters_are_the_windows_own() {
     // bits clear.
     let id = interp.current_buffer_id();
     let lone = make_leaf_window(&mut interp, id, 1, false, (80, 10, 0, 0));
-    interp.adjust_window_count(lone.id(), true);
-    let dead = interp.install_dead_window(3);
+    interp.adjust_window_count(lone, true);
+    let dead = interp.install_dead_window();
     for window in [lone, dead] {
         assert_eq!((counters(window), bits(window)), (NEW, [false; 8]));
-        assert_eq!(window_last_point(&interp, window.id()), None);
-        assert_eq!(window_column_number_displayed(&interp, window.id()), None);
+        assert_eq!(window_last_point(window), None);
+        assert_eq!(window_column_number_displayed(window), None);
     }
     // `w->last_point = 5' and `w->column_number_displayed = 0' are the
     // window's integers; none is 0 of the one and -1 of the other.
-    set_window_last_point(&interp, lone.id(), Some(5));
-    set_window_column_number_displayed(&interp, lone.id(), Some(0));
+    set_window_last_point(lone, Some(5));
+    set_window_column_number_displayed(lone, Some(0));
     assert_eq!((lone.last_point(), lone.column_number_displayed()), (5, 0));
-    assert_eq!(window_last_point(&interp, lone.id()), Some(5));
-    assert_eq!(window_column_number_displayed(&interp, lone.id()), Some(0));
-    set_window_last_point(&interp, lone.id(), None);
-    set_window_column_number_displayed(&interp, lone.id(), None);
+    assert_eq!(window_last_point(lone), Some(5));
+    assert_eq!(window_column_number_displayed(lone), Some(0));
+    set_window_last_point(lone, None);
+    set_window_column_number_displayed(lone, None);
     assert_eq!((lone.last_point(), lone.column_number_displayed()), (0, -1));
     // Each bit is stored and read by its own name, alone.
     let stores: [Bit; 8] = [
@@ -37326,18 +37630,18 @@ fn window_redisplay_bits_and_counters_are_the_windows_own() {
         ),
     ];
     for (index, (store, read)) in stores.into_iter().enumerate() {
-        set_window_flag(&mut interp, lone.id(), store, true);
+        store(lone, true);
         let mut expected = [false; 8];
         expected[index] = true;
         assert_eq!(bits(lone), expected, "bit {index}");
-        assert!(window_flag(&interp, lone.id(), read));
-        set_window_flag(&mut interp, lone.id(), store, false);
-        assert!(!window_flag(&interp, lone.id(), read));
+        assert!(read(lone));
+        store(lone, false);
+        assert!(!read(lone));
     }
     assert_eq!(bits(lone), [false; 8]);
     // Nothing holds the two from here on: the lone window shows its
     // buffer no longer.
-    interp.wset_buffer(lone.id(), Value::Nil);
+    interp.wset_buffer(lone, Value::Nil);
 
     // Fset_window_hscroll stores w->hscroll and suspends the automatic
     // scrolling; Fscroll_left with SET-MINIMUM stores w->min_hscroll.
@@ -37402,7 +37706,7 @@ fn window_redisplay_bits_and_counters_are_the_windows_own() {
     top.set_optional_new_start(true);
     let copy = interp.deep_clone_image();
     for window in [top, bottom, column] {
-        let copied = copy.window_ref(window.id()).expect("the copied window");
+        let copied = copied_window(&interp, &copy, window);
         assert_ne!(copied.value(), window.value());
         assert_eq!(
             (counters(copied), bits(copied)),
@@ -37447,6 +37751,152 @@ fn window_redisplay_bits_and_counters_are_the_windows_own() {
     assert_eq!(top.window_end_pos(), Some(0));
     assert!(!top.suspend_auto_hscroll() && !top.start_at_line_beg() && !top.force_start());
     assert!(!top.window_end_valid());
+}
+
+#[test]
+fn a_window_configuration_holds_its_current_window() {
+    // window.c:Fcurrent_window_configuration: `data->current_window =
+    // FRAME_SELECTED_WINDOW (f)', the window itself, which
+    // Fset_window_configuration selects and compare_window_configurations
+    // tells from the saved windows by EQ.
+    let mut interp = crate::test_support::initialized_gnu_window_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let mut run = |interp: &mut Interpreter, program: &str| {
+        let form = Reader::new(program)
+            .read()
+            .expect("the step should parse")
+            .expect("the step should hold a form");
+        interp
+            .eval(&form, &mut env)
+            .unwrap_or_else(|error| panic!("{program}: {error:?}"))
+    };
+    let handle = |value: Value| WindowRef::from_value(&value).expect("a window");
+    let first = handle(run(&mut interp, "(setq wc-first (selected-window))"));
+    let second = handle(run(
+        &mut interp,
+        "(progn (setq wc-second (split-window)) (select-window wc-second))",
+    ));
+    assert!(first != second && interp.selected_window() == Some(second));
+    let configuration = run(
+        &mut interp,
+        "(setq wc-saved (current-window-configuration))",
+    );
+    // The configuration's current window is the selected window, the
+    // object, beside its root window.
+    let slots = |interp: &Interpreter, configuration: Value| {
+        let Kind::Record(record) = configuration.kind() else {
+            panic!("a window configuration")
+        };
+        let record = interp.find_record(record).expect("its record");
+        assert_eq!(
+            record.kind,
+            crate::lisp::eval::RecordKind::WindowConfiguration
+        );
+        (record.slots[1], record.slots[5])
+    };
+    let (current, root) = slots(&interp, configuration);
+    assert!(current.eq_value(second.value()));
+    assert_eq!(
+        WindowRef::from_value(&root),
+        interp.selected_frame_id.borrow().root_window
+    );
+    // It compares equal to another taken now, and not to one taken with
+    // the other window current.
+    assert_eq!(
+        run(
+            &mut interp,
+            "(compare-window-configurations wc-saved (current-window-configuration))"
+        ),
+        Value::T
+    );
+    assert_eq!(
+        run(
+            &mut interp,
+            "(progn (select-window wc-first)
+                    (compare-window-configurations wc-saved (current-window-configuration)))"
+        ),
+        Value::Nil
+    );
+    assert_eq!(interp.selected_window(), Some(first));
+    // Restoring it selects its current window, in the interpreter and
+    // in the frame.
+    run(&mut interp, "(set-window-configuration wc-saved)");
+    assert_eq!(interp.selected_window(), Some(second));
+    assert_eq!(
+        interp.selected_frame_id.borrow().selected_window,
+        Some(second)
+    );
+    // The window deleted and nothing else naming it, the configuration
+    // still holds it across a collection, and restores and selects the
+    // same window.
+    let number = second.sequence_number();
+    run(
+        &mut interp,
+        "(progn (delete-window wc-second) (setq wc-second nil) (garbage-collect))",
+    );
+    assert_eq!(interp.selected_window(), Some(first));
+    assert!(!second.is_valid());
+    let (current, _) = slots(&interp, configuration);
+    assert!(current.eq_value(second.value()));
+    run(&mut interp, "(set-window-configuration wc-saved)");
+    assert_eq!(interp.selected_window(), Some(second));
+    assert!(second.is_valid() && second.sequence_number() == number);
+    assert_eq!(
+        run(
+            &mut interp,
+            "(list (window-live-p (selected-window)) (length (window-list)))"
+        ),
+        Value::list([Value::T, Value::Integer(2)])
+    );
+}
+
+#[test]
+fn a_copied_image_holds_its_own_windows() {
+    // The windows an interpreter holds as objects (selected_window,
+    // old_selected_window, minibuf_selected_window, minibuf_window) are
+    // the copy's own in a copied image, the ones its frame names.
+    let mut interp = Interpreter::new();
+    let selected = interp.selected_window_ref();
+    let mini = WindowRef::from_value(&interp.minibuffer_window_value()).expect("a mini window");
+    assert_eq!(interp.old_selected_window, Some(selected));
+    interp.replace_minibuffer_selected_window(Some(selected));
+    let buffer = interp.current_buffer_id();
+    interp.begin_minibuffer_runtime(buffer, mini, String::new());
+    let copy = interp.deep_clone_image();
+    let copied = copy.selected_window_ref();
+    let copied_mini =
+        WindowRef::from_value(&copy.minibuffer_window_value()).expect("a mini window");
+    assert!(copied != selected && copied_mini != mini);
+    assert_eq!(
+        (copied.sequence_number(), copied_mini.sequence_number()),
+        (selected.sequence_number(), mini.sequence_number())
+    );
+    assert_eq!(
+        (
+            copied_window(&interp, &copy, selected),
+            copied_window(&interp, &copy, mini)
+        ),
+        (copied, copied_mini)
+    );
+    assert_eq!(
+        copy.selected_frame_id.borrow().selected_window,
+        Some(copied)
+    );
+    assert_eq!(copy.old_selected_window, Some(copied));
+    assert_eq!(copy.minibuffer_selected_window(), Some(copied));
+    assert_eq!(
+        copy.active_minibuffer_window_value()
+            .as_ref()
+            .and_then(WindowRef::from_value),
+        Some(copied_mini)
+    );
+    // A store in the copy's window is not one in the original's.
+    copied.set_hscroll(7);
+    assert_eq!((copied.hscroll(), selected.hscroll()), (7, 0));
+    drop(copy);
+    interp.select_symbol_owner();
+    assert_eq!(interp.selected_window(), Some(selected));
+    assert_eq!(interp.minibuffer_selected_window(), Some(selected));
 }
 
 #[test]

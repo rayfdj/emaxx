@@ -17,6 +17,7 @@ The counts used for HANDOVER's tables:
 
     lex-rec:2000:6000 dyn-rec:2000:6000 looking-at:200000:600000
     string-match:200000:600000 make-symbol:200000:600000
+    intern-new:20000:60000 priv-intern:20000:60000 read-gensym:100000:300000
     mapatoms-bc:20:60 mapatoms-closure:20:60 maphash-bc:200:600
     mapc-bc:200:600 mapc-interp:200:600 interp-ignore:200000:600000
     princ-interp:50000:150000 windows:100000:300000 ucs-names:1:3
@@ -29,6 +30,7 @@ and for a subr called from native code, each at 100000:300000
     native-bare-symbol native-keywordp native-nth native-nth-var
     native-point native-plus native-max native-symbol-name native-delq
     native-assoc native-logand native-cons native-eqlsign native-geq
+    native-purecopy native-current-buffer
 """
 import concurrent.futures
 import os
