@@ -1,8 +1,61 @@
 //! frame.c/terminal.c ownership and term.c's external TTY device boundary.
 use super::{Interpreter, Value};
 use crate::lisp::types::LispError;
+use crate::lisp::types::symbols::KEYBOARD_VARIABLES;
 use crate::lisp::types::{Kind, TerminalRef};
+use std::cell::Cell;
+use std::rc::Rc;
 use std::sync::Arc;
+
+/// keyboard.h's struct kboard, its Lisp variables (DEFVAR_KBOARD): one
+/// field each, in struct kboard's order (`KEYBOARD_VARIABLES'), where the
+/// index is the variable's Lisp_Kboard_Objfwd offset.  A terminal has one
+/// (`t->kboard'); the selected frame's terminal's is `current_kboard',
+/// which the variables' symbols forward to (`SymbolCell::forward_to_kboard').
+#[derive(Debug)]
+pub(crate) struct Kboard([Cell<Value>; KEYBOARD_VARIABLES.len()]);
+
+impl Kboard {
+    /// keyboard.c:init_kboard's fields, every one nil (the terminal's
+    /// maker gives the two keymaps).
+    pub(crate) fn new() -> Self {
+        Self(std::array::from_fn(|_| Cell::new(Value::Nil)))
+    }
+
+    /// KVAR (kboard, field) for the field at OFFSET.
+    #[inline]
+    pub(crate) fn get(&self, offset: usize) -> Value {
+        self.0[offset].get()
+    }
+
+    /// kset_* of the field at OFFSET.
+    #[inline]
+    pub(crate) fn set(&self, offset: usize, value: Value) {
+        self.0[offset].set(value);
+    }
+
+    /// The field named NAME's offset.
+    pub(crate) fn offset(name: &str) -> usize {
+        KEYBOARD_VARIABLES
+            .iter()
+            .position(|variable| *variable == name)
+            .expect("a KBOARD variable")
+    }
+
+    /// Every field's value, for the mark phase.
+    pub(crate) fn values(&self) -> impl Iterator<Item = Value> + '_ {
+        self.0.iter().map(Cell::get)
+    }
+
+    /// A kboard of its own with COPY of each field's value, for the test
+    /// image copier.
+    #[cfg(test)]
+    pub(crate) fn copied(&self, mut copy: impl FnMut(&Value) -> Value) -> Self {
+        Self(std::array::from_fn(|offset| {
+            Cell::new(copy(&self.get(offset)))
+        }))
+    }
+}
 
 #[derive(Clone, Debug)]
 pub(crate) struct TerminalState {
@@ -27,12 +80,8 @@ pub(crate) struct TerminalState {
     /// every character with a charset is drawn.
     pub charset_list_coding: Option<String>,
     pub keyboard_coding: Option<String>,
-    /// The KBOARD's variables (DEFVAR_KBOARD), by their symbols.
-    pub keyboard: std::collections::HashMap<
-        crate::lisp::types::SymbolName,
-        Value,
-        crate::lisp::types::IdentityBuildHasher,
-    >,
+    /// terminal.h's `kboard': the terminal's KBOARD variables.
+    pub kboard: Rc<Kboard>,
     pub pending_input: Vec<u8>,
     pub top_frame: Option<crate::lisp::types::FrameRef>,
     pub device: Option<Arc<TtyDevice>>,
@@ -51,7 +100,7 @@ impl TerminalState {
             terminal_coding: None,
             charset_list_coding: None,
             keyboard_coding: Some("no-conversion".into()),
-            keyboard: Default::default(),
+            kboard: Rc::new(Kboard::new()),
             pending_input: Vec::new(),
             top_frame: None,
             device: None,
@@ -1026,18 +1075,9 @@ impl Interpreter {
         #[cfg(unix)]
         {
             let id = self.alloc_terminal_id();
-            let mut keyboard = std::collections::HashMap::<
-                crate::lisp::types::SymbolName,
-                Value,
-                crate::lisp::types::IdentityBuildHasher,
-            >::default();
-            // keyboard.c:init_kboard initializes these DEFVAR_KBOARD slots
-            // (all but the two keymaps made below) to nil.
-            for name in crate::lisp::types::symbols::KEYBOARD_VARIABLES {
-                if !matches!(name, "input-decode-map" | "local-function-key-map") {
-                    keyboard.insert(crate::lisp::types::SymbolName::intern_str(name), Value::Nil);
-                }
-            }
+            // keyboard.c:init_kboard makes the DEFVAR_KBOARD fields nil,
+            // but for the two keymaps made below.
+            let kboard = Kboard::new();
             use crate::lisp::primitives as p;
             let mut env = crate::lisp::types::Env::new();
             let decode = p::call(self, "make-sparse-keymap", &[], &mut env)?;
@@ -1051,8 +1091,8 @@ impl Interpreter {
                 .symbol_value_key(cached_symbol!("function-key-map"))
                 .unwrap_or(Value::Nil);
             p::call(self, "set-keymap-parent", &[local, parent], &mut env)?;
-            keyboard.insert(cached_symbol!("input-decode-map").symbol(), decode);
-            keyboard.insert(cached_symbol!("local-function-key-map").symbol(), local);
+            kboard.set(Kboard::offset("input-decode-map"), decode);
+            kboard.set(Kboard::offset("local-function-key-map"), local);
             let terminal = TerminalRef::new(
                 id,
                 TerminalState {
@@ -1066,7 +1106,7 @@ impl Interpreter {
                     terminal_coding: None,
                     charset_list_coding: None,
                     keyboard_coding: Some("no-conversion".into()),
-                    keyboard,
+                    kboard: Rc::new(kboard),
                     pending_input: Vec::new(),
                     top_frame: None,
                     device: Some(device),
@@ -1199,6 +1239,7 @@ impl Interpreter {
             // do_switch_frame's move_minibuffers_onto_frame:
             // `minibuf_window = f->minibuffer_window'.
             self.minibuf_window = id.borrow().minibuffer_window;
+            self.select_current_kboard();
         }
         let terminal = id.borrow().terminal.expect("live frame terminal");
         let mut state = terminal.borrow_mut();
@@ -1259,70 +1300,104 @@ impl Interpreter {
         state.live = false;
         state.top_frame = None;
         state.name.clear();
-        state.keyboard.clear();
+        // keyboard.c:delete_kboard: its variables hold nothing more, and
+        // current_kboard is another terminal's.
+        state.kboard = Rc::new(Kboard::new());
         state.pending_input = Vec::new();
         state.device = None;
+        drop(state);
+        self.select_current_kboard();
+    }
+
+    /// keyboard.c's current_kboard: the selected frame's terminal's
+    /// kboard, the initial terminal's while that terminal is not live.
+    pub(crate) fn select_current_kboard(&mut self) {
+        let terminal = self
+            .selected_frame_id
+            .borrow()
+            .terminal
+            .filter(|terminal| terminal.borrow().live)
+            .or_else(|| {
+                self.terminals
+                    .iter()
+                    .find(|terminal| terminal.id == 0)
+                    .copied()
+            });
+        if let Some(terminal) = terminal {
+            let kboard = Rc::clone(&terminal.borrow().kboard);
+            self.c_variables.set_current_kboard(kboard);
+        }
+    }
+
+    /// The DEFVAR_KBOARD variables' symbols forwarded to the current
+    /// kboard (keyboard.c's DEFVAR_KBOARD), each field taking the value
+    /// its symbol holds.  A symbol `makunbound' detached stays plain.
+    pub(crate) fn connect_kboard_variables(&mut self) {
+        let current = std::ptr::NonNull::from(self.c_variables.current_kboard_cell());
+        for (offset, name) in KEYBOARD_VARIABLES.iter().enumerate() {
+            let symbol = crate::lisp::types::SymbolName::intern_str(name);
+            let cell = symbol.cell();
+            if cell.is_kboard_forwarded()
+                || cell.alias().is_some()
+                || !cell.has_c_slot()
+                || self.forwarded_variable_detached(&symbol)
+            {
+                continue;
+            }
+            if let Some(value) = cell.value() {
+                self.c_variables.current_kboard().set(offset, value);
+            }
+            cell.forward_to_kboard(current, offset);
+        }
     }
 }
 
 impl Interpreter {
-    // eval.c:specbind remembers the KBOARD on which the let was made.
-    // Unwinding after a frame switch must restore that same keyboard.
     /// Whether SYMBOL is one of this editor's keyboard variable objects.
+    #[cfg(test)]
     pub(crate) fn is_keyboard_variable(symbol: &crate::lisp::types::SymbolName) -> bool {
         crate::lisp::types::symbols::is_keyboard_variable(symbol)
     }
 
+    /// SYMBOL's field in terminal ID's kboard, which eval.c's unbind of a
+    /// let made on that kboard reads: the symbol's value while that kboard
+    /// is current (or the symbol forwards to none).
     pub(crate) fn keyboard_binding_value_on(
         &self,
         id: u64,
         symbol: &crate::lisp::types::SymbolName,
     ) -> Option<Value> {
-        if id == 0 {
-            self.globals.value(symbol)
-        } else {
-            self.terminal_state(id)?.keyboard.get(symbol).cloned()
+        let terminal = self.terminal_state(id)?;
+        match symbol.cell().kboard_offset() {
+            Some(offset) if !self.c_variables.is_current_kboard(&terminal.kboard) => {
+                Some(terminal.kboard.get(offset))
+            }
+            _ => self.globals.value(symbol),
         }
     }
+
+    /// The store of `keyboard_binding_value_on' into a live terminal's
+    /// kboard.
     pub(crate) fn set_keyboard_binding_on(
         &mut self,
         id: u64,
         symbol: &crate::lisp::types::SymbolName,
         value: Value,
     ) {
-        if id == 0 {
-            self.globals.insert(symbol, value);
-        } else if let Some(mut terminal) = self.terminal_state_mut(id).filter(|state| state.live) {
-            terminal.keyboard.insert(*symbol, value);
-        }
-    }
-
-    pub(crate) fn terminal_keyboard_value(
-        &self,
-        symbol: &crate::lisp::types::SymbolName,
-    ) -> Option<Value> {
-        if self.selected_terminal_id() == 0 {
-            return None;
-        }
-        self.terminal_state(self.selected_terminal_id())?
-            .keyboard
-            .get(symbol)
-            .cloned()
-    }
-    pub(crate) fn set_terminal_keyboard_value(
-        &mut self,
-        symbol: &crate::lisp::types::SymbolName,
-        value: &Value,
-    ) -> bool {
-        let id = self.selected_terminal_id();
-        let Some(mut terminal) = self.terminal_state_mut(id) else {
-            return false;
+        let Some(terminal) = self
+            .terminal_state(id)
+            .filter(|state| state.live || id == 0)
+        else {
+            return;
         };
-        if let Some(slot) = terminal.keyboard.get_mut(symbol) {
-            *slot = *value;
-            true
-        } else {
-            false
+        match symbol.cell().kboard_offset() {
+            Some(offset) if !self.c_variables.is_current_kboard(&terminal.kboard) => {
+                terminal.kboard.set(offset, value);
+            }
+            _ => {
+                drop(terminal);
+                self.globals.insert(symbol, value);
+            }
         }
     }
 

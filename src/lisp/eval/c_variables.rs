@@ -14,7 +14,9 @@
 //! copies of them (`Clone').
 
 use super::super::types::Value;
-use std::cell::Cell;
+use super::terminal::Kboard;
+use std::cell::{Cell, RefCell};
+use std::ptr::NonNull;
 use std::rc::Rc;
 use std::sync::atomic::{AtomicBool, AtomicI64, Ordering};
 
@@ -42,6 +44,11 @@ pub(crate) struct CVariableCells {
     /// matcher and the scanners read them.
     pub(crate) case_fold_search: Cell<Value>,
     pub(crate) parse_sexp_lookup_properties: AtomicBool,
+    /// keyboard.c's current_kboard, which the KBOARD variables' symbols
+    /// forward to (Lisp_Kboard_Objfwd), and the kboard it names, which
+    /// its terminal shares; `set_current_kboard' sets both.
+    current_kboard: Cell<NonNull<Kboard>>,
+    current_kboard_owner: RefCell<Rc<Kboard>>,
 }
 
 /// An editor's `CVariableCells'.
@@ -50,8 +57,9 @@ pub(crate) struct CVariables(Rc<CVariableCells>);
 impl CVariables {
     /// The values the C initializers give: syms_of_eval's
     /// max_lisp_eval_depth of 1600, syms_of_buffer's Vcase_fold_search of
-    /// Qt, nil and false for the others.
-    pub(crate) fn new() -> Self {
+    /// Qt, nil and false for the others; KBOARD, the initial terminal's,
+    /// current.
+    pub(crate) fn new(kboard: Rc<Kboard>) -> Self {
         Self(Rc::new(CVariableCells {
             quit_flag: Cell::new(Value::Nil),
             inhibit_quit: Cell::new(Value::Nil),
@@ -63,7 +71,32 @@ impl CVariables {
             undo_inhibit_record_point: AtomicBool::new(false),
             case_fold_search: Cell::new(Value::T),
             parse_sexp_lookup_properties: AtomicBool::new(false),
+            current_kboard: Cell::new(NonNull::from(&*kboard)),
+            current_kboard_owner: RefCell::new(kboard),
         }))
+    }
+
+    /// current_kboard = KBOARD.
+    pub(crate) fn set_current_kboard(&self, kboard: Rc<Kboard>) {
+        self.current_kboard.set(NonNull::from(&*kboard));
+        *self.current_kboard_owner.borrow_mut() = kboard;
+    }
+
+    /// current_kboard.
+    pub(crate) fn current_kboard(&self) -> &Kboard {
+        // SAFETY: the pointer is the owner's, which lives while it is.
+        unsafe { self.current_kboard.get().as_ref() }
+    }
+
+    /// Whether KBOARD is current_kboard.
+    pub(crate) fn is_current_kboard(&self, kboard: &Rc<Kboard>) -> bool {
+        std::ptr::eq(self.current_kboard.get().as_ptr(), Rc::as_ptr(kboard))
+    }
+
+    /// The word holding current_kboard, which a KBOARD variable's forward
+    /// names.
+    pub(crate) fn current_kboard_cell(&self) -> &Cell<NonNull<Kboard>> {
+        &self.current_kboard
     }
 
     /// Whether ADDRESS is inside these variables' storage: a forward made
@@ -112,6 +145,8 @@ impl Clone for CVariables {
             undo_inhibit_record_point: load(&self.undo_inhibit_record_point),
             case_fold_search: self.case_fold_search.clone(),
             parse_sexp_lookup_properties: load(&self.parse_sexp_lookup_properties),
+            current_kboard: self.current_kboard.clone(),
+            current_kboard_owner: RefCell::new(Rc::clone(&self.current_kboard_owner.borrow())),
         }))
     }
 }

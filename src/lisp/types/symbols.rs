@@ -1435,9 +1435,10 @@ pub(crate) fn intern_all_keys() {
     }
 }
 
-/// Qsymbol references belong to each editor, like GNU's process references.
-/// The existing terminal forwarding adapter consumes these until keyboard
-/// bindings use an allocated Lisp_Fwd redirect. No symbol-id lookup is needed.
+/// Qsymbol references belong to each editor, like GNU's process references:
+/// whether SYMBOL is this editor's symbol of a KBOARD variable.  The
+/// evaluator knows one by its forward (`SymbolCell::is_kboard_forwarded').
+#[cfg(test)]
 pub(crate) fn is_keyboard_variable(symbol: &SymbolName) -> bool {
     const KEYS: [SymbolKey; KEYBOARD_VARIABLES.len()] = {
         let mut keys = [SymbolKey(0); KEYBOARD_VARIABLES.len()];
@@ -1451,7 +1452,9 @@ pub(crate) fn is_keyboard_variable(symbol: &SymbolName) -> bool {
     with_current(|symbols| KEYS.iter().any(|key| key.get(symbols) == *symbol))
 }
 
-/// The variables keyboard.h keeps in each terminal's KBOARD.
+/// The variables keyboard.h keeps in each terminal's KBOARD, in the order
+/// of struct kboard's fields (`terminal::Kboard', whose index of each is
+/// its Lisp_Kboard_Objfwd offset).
 pub(crate) const KEYBOARD_VARIABLES: [&str; 14] = [
     "overriding-terminal-local-map",
     "last-command",
@@ -1464,9 +1467,9 @@ pub(crate) const KEYBOARD_VARIABLES: [&str; 14] = [
     "last-kbd-macro",
     "system-key-alist",
     "window-system",
-    "default-minibuffer-frame",
-    "input-decode-map",
     "local-function-key-map",
+    "input-decode-map",
+    "default-minibuffer-frame",
 ];
 
 fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {

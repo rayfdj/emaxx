@@ -161,6 +161,11 @@ impl InterpreterState {
                 symbol.cell().unforward();
             }
         }
+        for name in crate::lisp::types::symbols::KEYBOARD_VARIABLES {
+            if let Some(symbol) = self.globals.find_initial_name(name) {
+                symbol.cell().unforward_kboard();
+            }
+        }
     }
 }
 
@@ -877,7 +882,7 @@ impl Interpreter {
             Redirect::BufferSlot
         } else if self.globals.has_flag(symbol, LOCALIZED) {
             Redirect::Localized
-        } else if cell.is_kboard_forwarded() && Self::is_keyboard_variable(symbol) {
+        } else if cell.is_kboard_forwarded() {
             Redirect::KeyboardSlot
         } else {
             Redirect::Forwarded
@@ -1524,9 +1529,10 @@ impl Interpreter {
                 .cell()
                 .forward_to(crate::lisp::alloc::LispFwd::Counter(counter));
         }
-        // The C variables the evaluator reads: each symbol's value is its
-        // variable's from here on.
+        // The C variables the evaluator reads and the KBOARD's: each
+        // symbol's value is its variable's from here on.
         self.connect_forwarded_eval_cells();
+        self.connect_kboard_variables();
     }
 
     /// data.c:set_internal storing Qunbound into a forwarded symbol:
@@ -1599,21 +1605,12 @@ impl Interpreter {
 
     #[cfg(test)]
     pub fn remove_global_binding(&mut self, name: &str) {
-        let symbol = SymbolName::intern_str(name);
-        for terminal in &mut self.terminals {
-            terminal.borrow_mut().keyboard.remove(&symbol);
-        }
-        self.globals.remove(&symbol);
+        self.globals.remove(&SymbolName::intern_str(name));
     }
 
-    /// `remove_global_binding' for a symbol in hand.
+    /// `remove_global_binding' for a symbol in hand: a KBOARD variable's
+    /// symbol is void on every terminal after it.
     pub(crate) fn remove_global_binding_symbol(&mut self, symbol: &SymbolName) {
-        // Only a KBOARD variable has terminal-local values.
-        if symbol.cell().is_kboard_forwarded() {
-            for terminal in &mut self.terminals {
-                terminal.borrow_mut().keyboard.remove(symbol);
-            }
-        }
         self.globals.remove(symbol);
     }
 
@@ -1907,13 +1904,9 @@ impl Interpreter {
         SymbolName::find(name).and_then(|symbol| self.global_binding_value_symbol(&symbol))
     }
 
+    /// The global value of NAME: a KBOARD variable's is its field of
+    /// current_kboard, which its symbol forwards to.
     pub(crate) fn global_binding_value_symbol(&self, name: &SymbolName) -> Option<Value> {
-        if name.cell().is_kboard_forwarded()
-            && Self::is_keyboard_variable(name)
-            && let Some(value) = self.terminal_keyboard_value(name)
-        {
-            return Some(value);
-        }
         self.globals.value(name)
     }
 
@@ -1977,9 +1970,6 @@ impl Interpreter {
                     buffer.text_conversion_style = value;
                 }
             }
-        }
-        if self.set_terminal_keyboard_value(symbol, &value) {
-            return;
         }
         if self
             .buffer_locals
@@ -2645,6 +2635,11 @@ impl Interpreter {
         let value = if self.globals.plain_store(symbol) {
             value
         } else {
+            // eval.c:specbind's let of a KBOARD variable records its
+            // kboard (`specbind_symbol_record').
+            if symbol.cell().is_kboard_forwarded() {
+                return false;
+            }
             match self.plain_c_slot_value(symbol, value) {
                 Some(value) => value,
                 None => return false,
@@ -2731,9 +2726,10 @@ impl Interpreter {
             };
             // eval.c:specbind's SYMBOL_FORWARDED KBOARD case remembers the
             // keyboard the binding was made on.
-            let keyboard = (resolved.cell().is_kboard_forwarded()
-                && Self::is_keyboard_variable(&resolved))
-            .then(|| self.selected_terminal_id());
+            let keyboard = resolved
+                .cell()
+                .is_kboard_forwarded()
+                .then(|| self.selected_terminal_id());
             SpecialBindingRestore::new(resolved, kind, previous, buffer_id, frame_depth)
                 .local_if_set(self.globals.has_flag(&resolved, LOCAL_IF_SET))
                 .keyboard(keyboard)
@@ -4957,6 +4953,183 @@ mod forwarded_eval_cell_tests {
             assert!(symbol.cell().forward().is_none(), "{name}");
             assert_eq!(symbol.cell().value(), Some(value), "{name}");
         }
+    }
+
+    /// A second terminal with a frame of its own, the initial frame's
+    /// state on it.
+    fn second_terminal(
+        interp: &mut Interpreter,
+    ) -> (
+        crate::lisp::types::TerminalRef,
+        crate::lisp::types::FrameRef,
+    ) {
+        let id = interp.alloc_terminal_id();
+        let terminal = crate::lisp::types::TerminalRef::new(
+            id,
+            crate::lisp::eval::terminal::TerminalState::initial(),
+        );
+        interp.terminals.push(terminal);
+        let mut state = interp.selected_frame_id.borrow().clone();
+        state.terminal = Some(terminal);
+        let frame = crate::lisp::types::FrameRef::new(Value::string("F-r2"), state);
+        (terminal, frame)
+    }
+
+    #[test]
+    fn the_kboard_variables_are_the_current_kboards_fields() {
+        // keyboard.c's DEFVAR_KBOARD: each symbol forwards to its field
+        // (Lisp_Kboard_Objfwd's offset, in struct kboard's order) of
+        // current_kboard, the selected frame's terminal's; a second
+        // terminal has its own, and a let made on one kboard is undone
+        // into it (specbind's where.kbd) whichever is current then.
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        for (offset, name) in crate::lisp::types::symbols::KEYBOARD_VARIABLES
+            .iter()
+            .enumerate()
+        {
+            let symbol = SymbolName::intern_str(name);
+            assert_eq!(symbol.cell().kboard_offset(), Some(offset), "{name}");
+            assert!(symbol.cell().forward().is_none(), "{name}");
+        }
+        let initial = interp.terminals[0];
+        assert_eq!(initial.id, 0);
+        assert!(
+            interp
+                .c_variables
+                .is_current_kboard(&initial.borrow().kboard)
+        );
+        let set = |interp: &mut Interpreter, env: &mut Env, value: &str| {
+            primitives::call(
+                interp,
+                "set",
+                &[Value::symbol("last-command"), Value::symbol(value)],
+                env,
+            )
+            .expect("a store of last-command");
+        };
+        let last_command = crate::lisp::eval::terminal::Kboard::offset("last-command");
+        set(&mut interp, &mut env, "r2-one");
+        assert_eq!(
+            initial.borrow().kboard.get(last_command),
+            Value::symbol("r2-one")
+        );
+        initial
+            .borrow()
+            .kboard
+            .set(last_command, Value::symbol("r2-c"));
+        assert_eq!(
+            interp.symbol_value("last-command"),
+            Some(Value::symbol("r2-c"))
+        );
+        let first = interp.selected_frame_id;
+        let (second, frame) = second_terminal(&mut interp);
+        interp.note_selected_frame(frame);
+        assert!(
+            interp
+                .c_variables
+                .is_current_kboard(&second.borrow().kboard)
+        );
+        assert_eq!(interp.symbol_value("last-command"), Some(Value::Nil));
+        set(&mut interp, &mut env, "r2-two");
+        let count = interp
+            .bind_special_dynamic("last-command", Value::symbol("r2-let"), &mut env)
+            .expect("a let of last-command");
+        interp.note_selected_frame(first);
+        assert_eq!(
+            interp.symbol_value("last-command"),
+            Some(Value::symbol("r2-c"))
+        );
+        interp
+            .restore_special_binding(count, &mut env)
+            .expect("the let undone");
+        assert_eq!(
+            interp.symbol_value("last-command"),
+            Some(Value::symbol("r2-c"))
+        );
+        assert_eq!(
+            second.borrow().kboard.get(last_command),
+            Value::symbol("r2-two")
+        );
+        interp.note_selected_frame(frame);
+        assert_eq!(
+            interp.symbol_value("last-command"),
+            Some(Value::symbol("r2-two"))
+        );
+        interp.note_selected_frame(first);
+    }
+
+    #[inline(never)]
+    fn hold_in_a_second_kboard(
+        interp: &mut Interpreter,
+        env: &mut Env,
+    ) -> crate::lisp::types::HashTableRef {
+        let table = primitives::call(
+            interp,
+            "make-hash-table",
+            &[
+                Value::symbol(":test"),
+                Value::symbol("eq"),
+                Value::symbol(":weakness"),
+                Value::symbol("key"),
+            ],
+            env,
+        )
+        .expect("a weak-key table");
+        let Kind::HashTable(table) = table.kind() else {
+            panic!("a hash table")
+        };
+        interp.set_global_binding("r2-weak-table", Value::HashTable(table));
+        let held = Value::cons(Value::Integer(2), Value::Nil);
+        let control = Value::cons(Value::Integer(0), Value::Nil);
+        for (key, value) in [(held, 1), (control, 0)] {
+            primitives::call(
+                interp,
+                "puthash",
+                &[key, Value::Integer(value), Value::HashTable(table)],
+                env,
+            )
+            .expect("a weak entry");
+        }
+        let first = interp.selected_frame_id;
+        let (_, frame) = second_terminal(interp);
+        interp.note_selected_frame(frame);
+        primitives::call(interp, "set", &[Value::symbol("prefix-arg"), held], env)
+            .expect("a store of prefix-arg");
+        interp.note_selected_frame(first);
+        table
+    }
+
+    #[test]
+    fn a_value_held_by_another_terminals_kboard_alone_is_a_root() {
+        // alloc.c's mark_terminals marks each terminal's kboard
+        // (mark_kboards): a value only a terminal's kboard holds, the
+        // terminal not current, is kept.
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let table = hold_in_a_second_kboard(&mut interp, &mut env);
+        crate::lisp::alloc::clobber_stack();
+        assert_eq!(kept(&interp, &env, table), [Value::Integer(1)]);
+    }
+
+    #[test]
+    fn a_dropped_editors_kboard_variables_keep_their_values() {
+        // As its C variables, its kboards go with an editor: each KBOARD
+        // variable's symbol keeps the value of its field.
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        primitives::call(
+            &mut interp,
+            "set",
+            &[Value::symbol("last-command"), Value::symbol("r2-dropped")],
+            &mut env,
+        )
+        .expect("a store");
+        let owner = interp.globals.symbol_owner();
+        drop(interp);
+        let symbol = owner.find_initial("last-command").expect("the symbol");
+        assert!(!symbol.cell().is_kboard_forwarded());
+        assert_eq!(symbol.cell().value(), Some(Value::symbol("r2-dropped")));
     }
 
     #[test]

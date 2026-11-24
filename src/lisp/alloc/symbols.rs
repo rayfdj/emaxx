@@ -216,9 +216,11 @@ const CONSTANT: u16 = 256;
 // Lisp_Boolfwd. Set together with VALUE_PRESENT; the payload is the
 // forward (`LispFwd'), whose kind the bits hold (`FWD_KIND_BITS').
 const FORWARD: u16 = 512;
-// lisp.h: redirect == SYMBOL_FORWARDED to a Lisp_Kboard_Objfwd. Set with
-// C_SLOT on the variables whose values live in each terminal's KBOARD, so
-// other forwarded variables are known not to be one without a name check.
+// lisp.h: redirect == SYMBOL_FORWARDED to a Lisp_Kboard_Objfwd: the
+// payload names the editor's current_kboard and the bits hold the field's
+// offset (`KBOARD_OFFSET_BITS'), set by `forward_to_kboard' on the
+// variables whose values live in each terminal's KBOARD.  VALUE_PRESENT
+// beside it says the symbol is bound (`makunbound' clears it).
 const KBOARD_FORWARD: u16 = 1024;
 // Set with C_SLOT on the C variables whose store also reaches interpreter
 // state beyond the variable (`STORE_EFFECT_VARIABLES'), and on a forwarded
@@ -279,6 +281,9 @@ const FWD_COUNTER: u8 = 0;
 const FWD_OBJ: u8 = 1 << FWD_KIND_SHIFT;
 const FWD_BOOL: u8 = 2 << FWD_KIND_SHIFT;
 const FWD_INT: u8 = 3 << FWD_KIND_SHIFT;
+/// Bits 3 to 6: a KBOARD_FORWARD symbol's field offset in struct kboard
+/// (Lisp_Kboard_Objfwd's `offset'), meaningless without KBOARD_FORWARD.
+const KBOARD_OFFSET_BITS: u8 = 15 << FWD_KIND_SHIFT;
 
 /// lisp.h's `union Lisp_Fwd' for the C variables a symbol forwards to:
 /// Lisp_Intfwd (one of alloc.c's process-wide counters, or an editor's
@@ -317,6 +322,9 @@ pub(crate) union SymbolPayload {
     objvar: NonNull<Cell<Value>>,
     /// `Lisp_Boolfwd.boolvar'.
     boolvar: NonNull<AtomicBool>,
+    /// keyboard.c's current_kboard, which a Lisp_Kboard_Objfwd's offset
+    /// is read in.
+    kboard: NonNull<Cell<NonNull<crate::lisp::eval::terminal::Kboard>>>,
 }
 
 /// data.c:store_symval_forwarding's Lisp_Fwd_Int case: the store has passed
@@ -388,19 +396,105 @@ impl SymbolCell {
     #[inline]
     pub(crate) fn value(&self) -> Option<Value> {
         let state = self.state.get();
-        if state & (VALUE_PRESENT | FORWARD) == VALUE_PRESENT {
-            // SAFETY: VALUE_PRESENT without FORWARD selects the value member.
+        if state & (VALUE_PRESENT | FORWARD | KBOARD_FORWARD) == VALUE_PRESENT {
+            // SAFETY: VALUE_PRESENT without FORWARD or KBOARD_FORWARD
+            // selects the value member.
             return Some(unsafe { self.payload.get().value });
         }
-        (state & FORWARD != 0).then(|| self.forwarded_value())
+        if state & FORWARD != 0 {
+            return Some(self.forwarded_value());
+        }
+        (state & (VALUE_PRESENT | KBOARD_FORWARD) == VALUE_PRESENT | KBOARD_FORWARD)
+            .then(|| self.kboard_value())
+    }
+
+    /// data.c:do_symval_forwarding of a Lisp_Kboard_Objfwd: the field at
+    /// the offset in current_kboard.
+    #[inline]
+    fn kboard_value(&self) -> Value {
+        // SAFETY: KBOARD_FORWARD is set only with the kboard member, which
+        // names the editor's current_kboard, a live kboard while the
+        // editor is (`forward_to_kboard').
+        unsafe {
+            self.payload
+                .get()
+                .kboard
+                .as_ref()
+                .get()
+                .as_ref()
+                .get(self.kboard_field())
+        }
+    }
+
+    fn kboard_field(&self) -> usize {
+        usize::from((self.bits.get() & KBOARD_OFFSET_BITS) >> FWD_KIND_SHIFT)
+    }
+
+    /// store_symval_forwarding of a Lisp_Kboard_Objfwd.
+    #[inline]
+    fn store_kboard(&self, value: Value) {
+        // SAFETY: as `kboard_value'.
+        unsafe {
+            self.payload
+                .get()
+                .kboard
+                .as_ref()
+                .get()
+                .as_ref()
+                .set(self.kboard_field(), value);
+        }
+    }
+
+    /// The offset in struct kboard of the field this symbol forwards to,
+    /// none for any other symbol.
+    pub(crate) fn kboard_offset(&self) -> Option<usize> {
+        self.is_kboard_forwarded().then(|| self.kboard_field())
+    }
+
+    /// keyboard.c's DEFVAR_KBOARD: the symbol's value is the field at
+    /// OFFSET in the kboard CURRENT names, current_kboard, which keeps
+    /// the value it holds.
+    pub(crate) fn forward_to_kboard(
+        &self,
+        current: NonNull<Cell<NonNull<crate::lisp::eval::terminal::Kboard>>>,
+        offset: usize,
+    ) {
+        assert!(
+            self.alias().is_none() && self.forward().is_none(),
+            "forwarding an alias or a forwarded symbol to a kboard"
+        );
+        let offset = u8::try_from(offset)
+            .ok()
+            .filter(|offset| *offset <= KBOARD_OFFSET_BITS >> FWD_KIND_SHIFT)
+            .expect("a kboard field");
+        self.payload.set(SymbolPayload { kboard: current });
+        self.bits
+            .set((self.bits.get() & !KBOARD_OFFSET_BITS) | (offset << FWD_KIND_SHIFT));
+        self.state
+            .set((self.state.get() & !PLAIN_STORE) | VALUE_PRESENT | KBOARD_FORWARD);
+    }
+
+    /// The symbol made plain with the value it reads, or void: data.c's
+    /// set_internal storing Qunbound into a KBOARD variable's symbol, or
+    /// one whose kboard goes away with its editor.
+    pub(crate) fn unforward_kboard(&self) {
+        if !self.is_kboard_forwarded() {
+            return;
+        }
+        let value = self.value();
+        self.state.set(self.state.get() & !KBOARD_FORWARD);
+        match value {
+            Some(value) => self.payload.set(SymbolPayload { value }),
+            None => self.payload.set(SymbolPayload::unbound()),
+        }
     }
 
     /// data.c:find_symbol_value of a bound symbol that is no alias and not
     /// localized in any buffer, whose value is the one its cell holds: a
     /// plain symbol, or a C variable whose value is its cell's; or one
-    /// forwarded to a DEFVAR_LISP or DEFVAR_BOOL, read through the forward
-    /// (do_symval_forwarding).  A KBOARD variable's, an integer's or a
-    /// buffer-held variable's value is read elsewhere.  Any other symbol,
+    /// forwarded to a DEFVAR_LISP, a DEFVAR_BOOL or a field of
+    /// current_kboard, read through the forward (do_symval_forwarding).
+    /// An integer's or a buffer-held variable's value is read elsewhere.  Any other symbol,
     /// or a void one, answers None.
     #[inline(always)]
     pub(crate) fn unlocalized_value(&self) -> Option<Value> {
@@ -413,6 +507,9 @@ impl SymbolCell {
         }
         if state == VALUE_PRESENT | FORWARD && self.flags.get() & LOCALIZED == 0 {
             return self.unlocalized_forwarded_value();
+        }
+        if state == VALUE_PRESENT | KBOARD_FORWARD {
+            return Some(self.kboard_value());
         }
         None
     }
@@ -434,12 +531,14 @@ impl SymbolCell {
 
     /// A bound C variable whose store changes nothing but its value
     /// (`set_global_binding_resolved's cell-only case): its value in its
-    /// cell, or in the DEFVAR_LISP or DEFVAR_BOOL it forwards to; no
-    /// alias, counter, KBOARD, store-effect or buffer-held slot, no value
+    /// cell, in the DEFVAR_LISP or DEFVAR_BOOL it forwards to, or in its
+    /// field of current_kboard; no alias, counter, store-effect or
+    /// buffer-held slot, no value
     /// conversion of its own, no watcher, not constant, and neither
     /// localized, local if set, per-buffer nor always local.
     /// eval.c:specbind's SYMBOL_FORWARDED let of it is SPECPDL_LET, a store
-    /// into the slot (after the slot kind's conversion) and its restore.
+    /// into the slot (after the slot kind's conversion) and its restore; a
+    /// KBOARD variable's records its kboard as well.
     #[inline(always)]
     pub(crate) fn is_plain_c_slot(&self) -> bool {
         use crate::lisp::eval::symbol_cell_flags::{
@@ -457,6 +556,7 @@ impl SymbolCell {
                 | BUFFER_SLOT
                 | STORE_CONVERTS);
         (state == VALUE_PRESENT | C_SLOT
+            || state == VALUE_PRESENT | C_SLOT | KBOARD_FORWARD
             || (state == VALUE_PRESENT | C_SLOT | FORWARD && self.forwards_object_or_bool()))
             && self.flags.get() & (LOCALIZED | LOCAL_IF_SET | PER_BUFFER | ALWAYS_LOCAL | FWD_INT)
                 == 0
@@ -648,11 +748,16 @@ impl SymbolCell {
 
     pub(crate) fn set_value(&self, value: Value) {
         assert!(self.alias().is_none(), "plain store into a symbol alias");
-        if self.state.get() & FORWARD != 0 {
+        let state = self.state.get();
+        if state & FORWARD != 0 {
             return self.store_forwarded(value);
         }
-        self.payload.set(SymbolPayload { value });
-        self.state.set(self.state.get() | VALUE_PRESENT);
+        if state & KBOARD_FORWARD != 0 {
+            self.store_kboard(value);
+        } else {
+            self.payload.set(SymbolPayload { value });
+        }
+        self.state.set(state | VALUE_PRESENT);
     }
 
     /// data.c:set_internal's SYMBOL_PLAINVAL, untrapped case: store VALUE
@@ -675,15 +780,24 @@ impl SymbolCell {
         }
         if state & FORWARD != 0 {
             self.store_forwarded(value);
+        } else if state & KBOARD_FORWARD != 0 {
+            self.store_kboard(value);
         } else {
             self.payload.set(SymbolPayload { value });
         }
         true
     }
 
+    /// The value, and the symbol void.  A KBOARD variable's symbol stays
+    /// forwarded to its field, which keeps its value, until it is detached
+    /// from it (`unforward_kboard').
     pub(crate) fn take_value(&self) -> Option<Value> {
         let value = self.value()?;
-        self.detach_forward();
+        if self.is_kboard_forwarded() {
+            self.state.set(self.state.get() & !VALUE_PRESENT);
+        } else {
+            self.detach_forward();
+        }
         Some(value)
     }
 
@@ -696,8 +810,9 @@ impl SymbolCell {
 
     pub(crate) fn set_alias(&self, target: SymbolName) {
         self.payload.set(SymbolPayload { alias: target });
-        self.state
-            .set((self.state.get() & !(VALUE_PRESENT | PLAIN_STORE | FORWARD)) | ALIAS);
+        self.state.set(
+            (self.state.get() & !(VALUE_PRESENT | PLAIN_STORE | FORWARD | KBOARD_FORWARD)) | ALIAS,
+        );
     }
 
     pub(crate) fn clear_alias(&self) -> bool {
@@ -726,8 +841,9 @@ impl SymbolCell {
         // A forwarded counter is an integer word, never an object to trace;
         // reading it here could allocate a bignum during collection.  A
         // DEFVAR_LISP's object is its own root (lread.c:defvar_lisp
-        // staticpro's the C variable), traced by its owner.
-        if self.is_forwarded() {
+        // staticpro's the C variable), traced by its owner, and a KBOARD
+        // field is its kboard's, traced with its terminal.
+        if self.is_forwarded() || self.is_kboard_forwarded() {
             return None;
         }
         self.value().or_else(|| self.alias().map(Value::Symbol))
@@ -741,11 +857,6 @@ impl SymbolCell {
         // A pending text, an uninterned symbol's, names none of the C
         // variables the tables list.
         let name = self.internal.get().unwrap_or("");
-        let kboard = if crate::lisp::types::symbols::KEYBOARD_VARIABLES.contains(&name) {
-            KBOARD_FORWARD
-        } else {
-            0
-        };
         let effect = if STORE_EFFECT_VARIABLES.contains(&name) {
             STORE_EFFECT
         } else {
@@ -761,11 +872,15 @@ impl SymbolCell {
         } else {
             0
         };
+        // A KBOARD variable's forward is `forward_to_kboard''s; losing the
+        // slot detaches it.
+        if !present {
+            self.unforward_kboard();
+        }
         self.state.set(if present {
-            (self.state.get() | C_SLOT | kboard | effect | buffer_slot | converts) & !PLAIN_STORE
+            (self.state.get() | C_SLOT | effect | buffer_slot | converts) & !PLAIN_STORE
         } else {
-            self.state.get()
-                & !(C_SLOT | KBOARD_FORWARD | STORE_EFFECT | BUFFER_SLOT | STORE_CONVERTS)
+            self.state.get() & !(C_SLOT | STORE_EFFECT | BUFFER_SLOT | STORE_CONVERTS)
         });
     }
 
@@ -785,11 +900,11 @@ impl SymbolCell {
         self.state.get() & KBOARD_FORWARD != 0
     }
 
-    /// Whether a store to this C variable does more than store its cell
-    /// (`STORE_EFFECT_VARIABLES') or reaches a terminal's KBOARD.
+    /// Whether a store to this C variable does more than store its value
+    /// (`STORE_EFFECT_VARIABLES').
     #[inline(always)]
     pub(crate) fn has_store_effect(&self) -> bool {
-        self.state.get() & (STORE_EFFECT | KBOARD_FORWARD) != 0
+        self.state.get() & STORE_EFFECT != 0
     }
 
     pub(crate) fn is_constant(&self) -> bool {

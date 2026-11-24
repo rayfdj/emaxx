@@ -1197,8 +1197,8 @@ impl TerminalRef {
             visit(&slot.get());
         }
         let state = self.borrow();
-        for value in state.keyboard.values() {
-            visit(value);
+        for value in state.kboard.values() {
+            visit(&value);
         }
         if let Some(frame) = state.top_frame {
             visit(&Value::Frame(frame));

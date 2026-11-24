@@ -4237,13 +4237,10 @@ impl ImageGraphCopier {
                     };
                     copied.borrow_mut().top_frame = Some(top);
                 }
-                // The KBOARD's variables are the copy's symbols.
-                let keyboard = std::mem::take(&mut copied.borrow_mut().keyboard);
-                let keyboard = keyboard
-                    .into_iter()
-                    .map(|(symbol, value)| (self.copy_symbol(symbol), self.copy(&value)))
-                    .collect();
-                copied.borrow_mut().keyboard = keyboard;
+                // The copy's KBOARD holds copies of the objects.
+                let kboard = std::rc::Rc::clone(&copied.borrow().kboard);
+                let kboard = kboard.copied(|value| self.copy(value));
+                copied.borrow_mut().kboard = std::rc::Rc::new(kboard);
                 value
             }
             Kind::Marker(marker) => {
@@ -5728,6 +5725,11 @@ impl Interpreter {
         for value in self.c_variables.objects() {
             mark(&value);
         }
+        // keyboard.c's mark_kboards: current_kboard's, which its terminal
+        // holds as well.
+        for value in self.c_variables.current_kboard().values() {
+            mark(&value);
+        }
         mark(&self.loads_in_progress);
         for feature in &self.require_nesting {
             mark(&Value::Symbol(*feature));
@@ -6538,8 +6540,11 @@ impl Interpreter {
         // A copied buffer starts with no windows counted; the copied
         // windows show the copies.
         clone.recount_buffer_windows();
-        // The copy's symbols forward to its own C variables.
+        // The copy's symbols forward to its own C variables and to the
+        // kboard of its selected frame's terminal.
+        clone.select_current_kboard();
         clone.connect_forwarded_eval_cells();
+        clone.connect_kboard_variables();
 
         drop(symbol_scope);
         clone.select_symbol_owner();
@@ -7607,7 +7612,9 @@ impl Interpreter {
                 ("standard-translation-table-for-encode".into(), Value::Nil),
                 ("translation-table-for-input".into(), Value::Nil),
             ]),
-            c_variables: c_variables::CVariables::new(),
+            c_variables: c_variables::CVariables::new(std::rc::Rc::clone(
+                &initial_terminal.borrow().kboard,
+            )),
             hooks_cleared: false,
             inhibit_sentinels: false,
             fd_thread_locks: std::collections::HashMap::new(),
