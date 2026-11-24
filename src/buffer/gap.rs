@@ -203,6 +203,28 @@ impl GapText {
     }
 }
 
+impl<'a> GapText<&'a [u8]> {
+    /// The bytes START..END of the text as looking_at_1 takes BEGV_ADDR,
+    /// GPT_BYTE and GAP_END_ADDR: the part before the gap and the part
+    /// after it, either empty when the range lies on one side of the gap.
+    /// The ends are character boundaries.
+    #[inline(always)]
+    pub(crate) fn parts_of(&self, start: usize, end: usize) -> (&'a [u8], &'a [u8]) {
+        let bytes = self.beg;
+        let gpt_byte = self.gpt_byte;
+        if end <= gpt_byte {
+            (&bytes[start..end], &[])
+        } else if start >= gpt_byte {
+            (&[], &bytes[start + self.gap_size..end + self.gap_size])
+        } else {
+            (
+                &bytes[start..gpt_byte],
+                &bytes[gpt_byte + self.gap_size..end + self.gap_size],
+            )
+        }
+    }
+}
+
 impl<B: GapBytes> GapText<B> {
     /// Z_BYTE - BEG_BYTE.
     #[inline]

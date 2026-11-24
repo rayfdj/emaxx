@@ -1316,7 +1316,8 @@ impl BufferRef {
     }
 
     /// The buffer's text, its halves before and after the gap with the
-    /// gap's and the end's positions, with no guard counted: for a
+    /// gap's and the end's positions, and BEGV, ZV and PT with their
+    /// bytes (`Buffer::match_view'), with no guard counted: for a
     /// matcher that reads it only while nothing runs that could change
     /// it, as `StringRef::bytes_unguarded' is for a string.
     ///
@@ -1326,13 +1327,13 @@ impl BufferRef {
     /// (`Buffer::share_text_bytes') taken before the first of them keeps
     /// them; a mutable guard of the state alive now panics.
     #[inline(always)]
-    pub(crate) unsafe fn text_halves_unguarded<'a>(&self) -> crate::buffer::ScanView<'a> {
+    pub(crate) unsafe fn text_halves_unguarded<'a>(&self) -> crate::buffer::MatchView<'a> {
         // SAFETY: as the caller's contract: no mutable guard aliases the
-        // state while the view is taken.
+        // state while its fields are read.
         let state =
             unsafe { self.state.try_borrow_unguarded() }.expect("buffer already mutably borrowed");
         // SAFETY: as the caller's contract.
-        unsafe { state.text_halves_unguarded() }
+        unsafe { state.match_view() }
     }
 
     /// BVAR (b, syntax_table), when the buffer holds one.

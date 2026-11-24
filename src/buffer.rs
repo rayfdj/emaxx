@@ -573,7 +573,9 @@ pub(crate) type TextPin = std::rc::Rc<Vec<u8>>;
 /// its text, the region's ends and point (1-based) with their offsets in
 /// the stored bytes (0-based), and what the matcher needs to know of the
 /// text.
-pub(crate) struct MatchView {
+pub(crate) struct MatchView<'a> {
+    /// The text in place (see `text_halves_unguarded').
+    pub(crate) text: ScanView<'a>,
     pub(crate) begv: usize,
     pub(crate) begv_byte: usize,
     pub(crate) zv: usize,
@@ -2403,10 +2405,16 @@ impl Buffer {
     /// looking_at_1 and search_buffer_re take BEGV, ZV, PT and their
     /// bytes: the fields, and of the text whether each character is one
     /// byte and whether characters beyond Unicode lie in the region.
-    #[inline]
-    pub(crate) fn match_view(&self) -> MatchView {
+    ///
+    /// # Safety
+    /// As `text_halves_unguarded's, for the view of the text.
+    #[inline(always)]
+    pub(crate) unsafe fn match_view<'a>(&self) -> MatchView<'a> {
         let (point_byte, begv_byte, zv_byte) = self.position_bytes_stored();
-        let text = self.text.get().borrow();
+        // SAFETY: as the caller's contract: no change of the text, which
+        // would take a mutable guard, while the view is used.
+        let text = unsafe { self.text.get().try_borrow_unguarded() }
+            .expect("buffer text already mutably borrowed");
         let (begv, zv, point) = (self.begv, self.zv, self.pt);
         let side = !text.extended_chars.is_empty() && {
             let first = text
@@ -2417,6 +2425,8 @@ impl Buffer {
                 .is_some_and(|(position, _)| *position < zv)
         };
         MatchView {
+            // SAFETY: as the caller's contract.
+            text: unsafe { text.text.view_unbounded() },
             begv,
             begv_byte: begv_byte - 1,
             zv,
@@ -2427,21 +2437,6 @@ impl Buffer {
             side,
             ascii: text.text.is_ascii(),
         }
-    }
-
-    /// The text's halves and positions read with no guard counted: see
-    /// `BufferValue::text_halves_unguarded'.
-    ///
-    /// # Safety
-    /// As `BufferValue::text_halves_unguarded's.
-    #[inline(always)]
-    pub(crate) unsafe fn text_halves_unguarded<'a>(&self) -> ScanView<'a> {
-        // SAFETY: as the caller's contract: no change of the text, which
-        // would take a mutable guard, while the view is used.
-        let text = unsafe { self.text.get().try_borrow_unguarded() }
-            .expect("buffer text already mutably borrowed");
-        // SAFETY: as the caller's contract.
-        unsafe { text.text.view_unbounded() }
     }
 
     /// A share of the text's bytes, which keeps a view of them

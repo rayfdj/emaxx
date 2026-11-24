@@ -259,7 +259,7 @@ pub(super) fn search_buffer_non_re(
 ) -> Result<i64, LispError> {
     // SAFETY: the search runs nothing but its quit checks, which keep the
     // bytes before they run what could change them.
-    let snapshot = unsafe { BufferSnapshot::take(interp, false) };
+    let snapshot = unsafe { BufferSnapshot::take(interp) };
     let multibyte = snapshot.multibyte;
     let (bytes, string_multibyte, _) = string_bytes(string)
         .ok_or_else(|| LispError::WrongTypeArgument("stringp".into(), *string))?;

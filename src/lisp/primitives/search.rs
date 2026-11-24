@@ -1042,6 +1042,9 @@ fn release_cell(cell: u8, entry: Option<Box<CacheEntry>>) {
 /// and the match goes on reading the bytes it started with.
 struct BufferSnapshot<'t> {
     text: crate::buffer::ScanView<'t>,
+    /// The accessible text's parts before the gap and after it, as
+    /// looking_at_1 takes BEGV_ADDR, GPT_BYTE and GAP_END_ADDR.
+    range: SnapshotRange<'t>,
     /// The buffer the text is of, and the share of its bytes once kept.
     buffer: crate::lisp::types::BufferRef,
     kept: std::cell::OnceCell<crate::buffer::TextPin>,
@@ -1107,8 +1110,9 @@ impl Drop for BufferSnapshot<'_> {
 }
 
 impl BufferSnapshot<'_> {
-    /// The current buffer's accessible text and positions, its bytes
-    /// shared at once when SHARE (the match can run Lisp).
+    /// The current buffer's accessible text and positions, read from its
+    /// fields: the caller shares the bytes at once (`keep_text') when the
+    /// match can run Lisp from its start.
     ///
     /// # Safety
     /// Until `keep_text' shares the bytes, nothing changes the buffer's
@@ -1116,13 +1120,18 @@ impl BufferSnapshot<'_> {
     /// change, and keeps the text before it lets the matcher run what
     /// could (`LispMatchEnv::keep_text').
     #[inline(always)]
-    unsafe fn take<'t>(interp: &Interpreter, share: bool) -> BufferSnapshot<'t> {
+    unsafe fn take<'t>(interp: &Interpreter) -> BufferSnapshot<'t> {
         let buffer = interp.buffer;
-        let view = buffer.borrow().match_view();
-        let snapshot = BufferSnapshot {
-            // SAFETY: as the caller's contract: no change of the text
-            // while it is read unshared.
-            text: unsafe { buffer.text_halves_unguarded() },
+        // SAFETY: as the caller's contract: no change of the text while it
+        // is read unshared.
+        let view = unsafe { buffer.text_halves_unguarded() };
+        let (first, second) = view.text.parts_of(view.begv_byte, view.zv_byte);
+        BufferSnapshot {
+            text: view.text,
+            range: SnapshotRange {
+                parts: crate::lisp::regex_emacs::GapRange::from_parts(first, second),
+                chars: view.zv - view.begv,
+            },
             buffer,
             kept: std::cell::OnceCell::new(),
             begv: view.begv,
@@ -1134,11 +1143,7 @@ impl BufferSnapshot<'_> {
             multibyte: view.multibyte,
             side: view.side,
             ascii: view.ascii,
-        };
-        if share {
-            snapshot.keep_text();
         }
-        snapshot
     }
 
     /// freeze_buffer_relocation's counterpart for a match about to run
@@ -1156,12 +1161,9 @@ impl BufferSnapshot<'_> {
     }
 
     /// The accessible text as the matcher reads it.
+    #[inline(always)]
     fn range(&self) -> SnapshotRange<'_> {
-        let (first, second) = self.text.range_halves(self.begv_byte..self.zv_byte);
-        SnapshotRange {
-            parts: crate::lisp::regex_emacs::GapRange::new(first, second),
-            chars: self.zv - self.begv,
-        }
+        self.range
     }
 
     /// The char and byte offsets the snapshot knows: point's and the
@@ -1231,8 +1233,9 @@ impl BufferSnapshot<'_> {
     /// gap's sizes and PT_BYTE once.
     #[inline]
     fn matcher_parts(&self) -> (Text<'_>, Object<'_>, usize) {
-        let range = self.range();
-        let point = self.offset(self.point);
+        let range = self.range;
+        // PT_BYTE - BEGV_BYTE.
+        let point = self.point_byte - self.begv_byte;
         let text = Text::from_gap(range.parts, self.multibyte, self.side)
             .with_latin1_bytes(!self.multibyte && !self.ascii);
         let object = Object::Buffer {
@@ -1409,10 +1412,12 @@ pub(super) fn looking_at_1(
         }
         // The text and positions read once the quit is done, as GNU
         // reads BEGV_ADDR and PT_BYTE.
-        let share = menv.interp.parse_sexp_lookup_properties;
         // SAFETY: nothing runs before the match, which keeps the bytes
         // before it runs what could change them (`LispMatchEnv::reads').
-        snapshot = unsafe { BufferSnapshot::take(menv.interp, share) };
+        snapshot = unsafe { BufferSnapshot::take(menv.interp) };
+        if menv.interp.parse_sexp_lookup_properties {
+            snapshot.keep_text();
+        }
         let (text, pos) = menv.reads(&snapshot);
         let mut registers = take_registers(menv.interp, modify_match_data);
         let result = rx::re_match(
@@ -1684,7 +1689,10 @@ fn search_buffer_re(
     let share = interp.parse_sexp_lookup_properties;
     // SAFETY: nothing runs before the match, which keeps the bytes before
     // it runs what could change them (`LispMatchEnv::reads').
-    let snapshot = unsafe { BufferSnapshot::take(interp, share) };
+    let snapshot = unsafe { BufferSnapshot::take(interp) };
+    if share {
+        snapshot.keep_text();
+    }
     // The environment ends with its block, dropped where it lies.
     let (entry, registers, found_any, outcome, pending) = {
         let mut menv = LispMatchEnv::new(interp, env, case_table);
@@ -2300,10 +2308,12 @@ pub(crate) fn fast_looking_at(
     string: &Value,
 ) -> Result<Option<usize>, LispError> {
     if string.is_nil() {
-        let share = interp.parse_sexp_lookup_properties;
         // SAFETY: nothing runs before the match, which keeps the bytes
         // before it runs what could change them (`LispMatchEnv::reads').
-        let snapshot = unsafe { BufferSnapshot::take(interp, share) };
+        let snapshot = unsafe { BufferSnapshot::take(interp) };
+        if interp.parse_sexp_lookup_properties {
+            snapshot.keep_text();
+        }
         let (entry, result) = {
             let mut menv = LispMatchEnv::new(interp, env, None);
             let (text, _) = menv.reads(&snapshot);
@@ -2401,7 +2411,7 @@ mod in_place_text_tests {
         .expect("set up the buffer and the debugger");
         // SAFETY: nothing runs before the quit check, which keeps the
         // bytes before the debugger runs.
-        let snapshot = unsafe { BufferSnapshot::take(&interp, false) };
+        let snapshot = unsafe { BufferSnapshot::take(&interp) };
         assert!(snapshot.kept.get().is_none(), "no Lisp can run yet");
         assert_eq!((snapshot.point, snapshot.point_byte), (3, 2));
         interp.set_symbol_value_key(cached_symbol!("quit-flag"), Value::T);

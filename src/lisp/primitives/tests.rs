@@ -1646,6 +1646,45 @@ fn the_matcher_calls_syntax_propertize_as_gnu() {
 }
 
 #[test]
+fn buffer_matches_read_the_text_s_halves_wherever_the_gap_stands_as_gnu() {
+    // looking_at_1, search_buffer_re and search_buffer_non_re read the
+    // accessible text as BEGV_ADDR to GPT_ADDR and GAP_END_ADDR to
+    // ZV_ADDR: with the gap at the start, inside a match, at its start,
+    // after it and at the end, in multibyte text and in a unibyte buffer
+    // with bytes above 0x7F, and in a narrowed buffer, each entry finds
+    // what GNU finds.  (posix-search-forward is left out: GNU 30.2's
+    // re_match_2_internal reaches its `default: abort ()' on it in this
+    // sequence.)
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil))
+          (dolist (unibyte '(nil t))
+            (dolist (gap '(1 6 7 9 12 nil))
+              (with-temp-buffer
+                (if unibyte
+                    (progn (set-buffer-multibyte nil) (insert "ab \351bar\351 zz q\n"))
+                  (insert "ab ébar中 zz q\n"))
+                ;; An insertion and its deletion leave the gap at GAP.
+                (when gap (goto-char gap) (insert "x") (delete-char -1))
+                (let ((searches
+                       (list (lambda () (goto-char 4) (looking-at ".bar\\(.\\) "))
+                             (lambda () (goto-char 4) (posix-looking-at "[^ ]+\\( \\|z\\)+"))
+                             (lambda () (goto-char 1) (re-search-forward "b\\(a\\)r.? +z" nil t))
+                             (lambda () (goto-char (point-max)) (re-search-backward "\\(.\\)bar" nil t))
+                             (lambda () (goto-char 1) (search-forward "r" nil t))
+                             (lambda () (goto-char (point-max)) (search-backward "bar" nil t))
+                             (lambda () (goto-char 8) (looking-back "\\(b\\|.\\)ar" 1))
+                             (lambda () (narrow-to-region 5 10) (goto-char 5)
+                               (prog1 (list (looking-at "ar.") (re-search-forward "r\\(.\\)" nil t))
+                                 (widen))))))
+                  (dolist (search searches)
+                    (push (list unibyte gap (funcall search) (match-data t) (point)) r))))))
+          (nreverse r))"#,
+        r##"((nil 1 t (4 10 8 9 #<killed buffer>) 4) (nil 1 t (4 13 12 13 #<killed buffer>) 4) (nil 1 11 (5 11 6 7 #<killed buffer>) 11) (nil 1 4 (4 8 4 5 #<killed buffer>) 4) (nil 1 8 (7 8 #<killed buffer>) 8) (nil 1 5 (5 8 #<killed buffer>) 5) (nil 1 t (5 8 5 6 #<killed buffer>) 8) (nil 1 (nil 9) (7 9 8 9 #<killed buffer>) 9) (nil 6 t (4 10 8 9 #<killed buffer>) 4) (nil 6 t (4 13 12 13 #<killed buffer>) 4) (nil 6 11 (5 11 6 7 #<killed buffer>) 11) (nil 6 4 (4 8 4 5 #<killed buffer>) 4) (nil 6 8 (7 8 #<killed buffer>) 8) (nil 6 5 (5 8 #<killed buffer>) 5) (nil 6 t (5 8 5 6 #<killed buffer>) 8) (nil 6 (nil 9) (7 9 8 9 #<killed buffer>) 9) (nil 7 t (4 10 8 9 #<killed buffer>) 4) (nil 7 t (4 13 12 13 #<killed buffer>) 4) (nil 7 11 (5 11 6 7 #<killed buffer>) 11) (nil 7 4 (4 8 4 5 #<killed buffer>) 4) (nil 7 8 (7 8 #<killed buffer>) 8) (nil 7 5 (5 8 #<killed buffer>) 5) (nil 7 t (5 8 5 6 #<killed buffer>) 8) (nil 7 (nil 9) (7 9 8 9 #<killed buffer>) 9) (nil 9 t (4 10 8 9 #<killed buffer>) 4) (nil 9 t (4 13 12 13 #<killed buffer>) 4) (nil 9 11 (5 11 6 7 #<killed buffer>) 11) (nil 9 4 (4 8 4 5 #<killed buffer>) 4) (nil 9 8 (7 8 #<killed buffer>) 8) (nil 9 5 (5 8 #<killed buffer>) 5) (nil 9 t (5 8 5 6 #<killed buffer>) 8) (nil 9 (nil 9) (7 9 8 9 #<killed buffer>) 9) (nil 12 t (4 10 8 9 #<killed buffer>) 4) (nil 12 t (4 13 12 13 #<killed buffer>) 4) (nil 12 11 (5 11 6 7 #<killed buffer>) 11) (nil 12 4 (4 8 4 5 #<killed buffer>) 4) (nil 12 8 (7 8 #<killed buffer>) 8) (nil 12 5 (5 8 #<killed buffer>) 5) (nil 12 t (5 8 5 6 #<killed buffer>) 8) (nil 12 (nil 9) (7 9 8 9 #<killed buffer>) 9) (nil nil t (4 10 8 9 #<killed buffer>) 4) (nil nil t (4 13 12 13 #<killed buffer>) 4) (nil nil 11 (5 11 6 7 #<killed buffer>) 11) (nil nil 4 (4 8 4 5 #<killed buffer>) 4) (nil nil 8 (7 8 #<killed buffer>) 8) (nil nil 5 (5 8 #<killed buffer>) 5) (nil nil t (5 8 5 6 #<killed buffer>) 8) (nil nil (nil 9) (7 9 8 9 #<killed buffer>) 9) (t 1 t (4 10 8 9 #<killed buffer>) 4) (t 1 t (4 13 12 13 #<killed buffer>) 4) (t 1 11 (5 11 6 7 #<killed buffer>) 11) (t 1 4 (4 8 4 5 #<killed buffer>) 4) (t 1 8 (7 8 #<killed buffer>) 8) (t 1 5 (5 8 #<killed buffer>) 5) (t 1 t (5 8 5 6 #<killed buffer>) 8) (t 1 (nil 9) (7 9 8 9 #<killed buffer>) 9) (t 6 t (4 10 8 9 #<killed buffer>) 4) (t 6 t (4 13 12 13 #<killed buffer>) 4) (t 6 11 (5 11 6 7 #<killed buffer>) 11) (t 6 4 (4 8 4 5 #<killed buffer>) 4) (t 6 8 (7 8 #<killed buffer>) 8) (t 6 5 (5 8 #<killed buffer>) 5) (t 6 t (5 8 5 6 #<killed buffer>) 8) (t 6 (nil 9) (7 9 8 9 #<killed buffer>) 9) (t 7 t (4 10 8 9 #<killed buffer>) 4) (t 7 t (4 13 12 13 #<killed buffer>) 4) (t 7 11 (5 11 6 7 #<killed buffer>) 11) (t 7 4 (4 8 4 5 #<killed buffer>) 4) (t 7 8 (7 8 #<killed buffer>) 8) (t 7 5 (5 8 #<killed buffer>) 5) (t 7 t (5 8 5 6 #<killed buffer>) 8) (t 7 (nil 9) (7 9 8 9 #<killed buffer>) 9) (t 9 t (4 10 8 9 #<killed buffer>) 4) (t 9 t (4 13 12 13 #<killed buffer>) 4) (t 9 11 (5 11 6 7 #<killed buffer>) 11) (t 9 4 (4 8 4 5 #<killed buffer>) 4) (t 9 8 (7 8 #<killed buffer>) 8) (t 9 5 (5 8 #<killed buffer>) 5) (t 9 t (5 8 5 6 #<killed buffer>) 8) (t 9 (nil 9) (7 9 8 9 #<killed buffer>) 9) (t 12 t (4 10 8 9 #<killed buffer>) 4) (t 12 t (4 13 12 13 #<killed buffer>) 4) (t 12 11 (5 11 6 7 #<killed buffer>) 11) (t 12 4 (4 8 4 5 #<killed buffer>) 4) (t 12 8 (7 8 #<killed buffer>) 8) (t 12 5 (5 8 #<killed buffer>) 5) (t 12 t (5 8 5 6 #<killed buffer>) 8) (t 12 (nil 9) (7 9 8 9 #<killed buffer>) 9) (t nil t (4 10 8 9 #<killed buffer>) 4) (t nil t (4 13 12 13 #<killed buffer>) 4) (t nil 11 (5 11 6 7 #<killed buffer>) 11) (t nil 4 (4 8 4 5 #<killed buffer>) 4) (t nil 8 (7 8 #<killed buffer>) 8) (t nil 5 (5 8 #<killed buffer>) 5) (t nil t (5 8 5 6 #<killed buffer>) 8) (t nil (nil 9) (7 9 8 9 #<killed buffer>) 9))"##,
+        "matches around the gap",
+    );
+}
+
+#[test]
 fn a_match_whose_syntax_propertize_edits_the_buffer_reads_the_text_it_started_with_as_gnu() {
     // A matcher entry that can run Lisp (`parse-sexp-lookup-properties'
     // set, a syntax-propertize-function past a syntax-table property)
