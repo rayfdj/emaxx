@@ -83,7 +83,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
 - **Not done by the baseline: D22.** Rebuilding `ucs-names` costs less
   than GNU's, but the first `char-from-name` still costs 106M more: the
   excess is in what the first call does once (the character-name
-  property table's load and decoding), not in the table's loop.
+  property table's load and decoding), not in the table's loop.  Round
+  380: `concat' copies a unibyte argument as str_to_multibyte does; the
+  first `char-from-name' is 1,052.5M instructions in all against GNU's
+  980.9M.
 - **What the three workloads nearest the bound are made of** (23
   November, the suite's own loops as probes `byte-calls', `conses' and
   `conses-nogc').  Byte-code calls: 463 instructions an iteration in the
@@ -20068,6 +20071,42 @@ setup_process_coding_systems's check now refuses). A 13-form
   assertion changed (the symbol cell's layout assert of byte 57, which
   holds the image bit and now the interned bits, renamed with the field)
   and 1,391 changed lines with ten tests and 56 assertions added.
+- **Round 380: `concat' copies a unibyte argument as str_to_multibyte
+  does (M2, part of D22; not closed).**  The first `char-from-name'
+  builds `ucs-names', and in that build `concat' cost twice GNU's
+  concat_to_string (46.6M instructions over 34,366 calls, about 1,356 a
+  call): a unibyte argument going into a multibyte result was copied a
+  byte at a time through the character encoder, a raw byte made its
+  character code and encoded again, and each character's bytes went
+  out through a call of memcpy.  It is now copied as character.c's
+  str_to_multibyte copies it: an ASCII byte as itself, any other byte B
+  as 0xc0 + ((B >> 6) & 1) and 0x80 + (B & 0x3f), the bytes the encoder
+  wrote for the raw-byte character before.  **Counts**: the new probe
+  `concat-uni-multi' (a unibyte name with two raw bytes joined to a
+  multibyte character, collections included) 3,352 instructions a call
+  before, 2,537 after, GNU 3,172; the first `char-from-name' 1,052.5
+  million instructions in all, 4.8 million fewer, against GNU's 980.9
+  million, so D22 stays open: the rest of its excess is the byte-code
+  calls and loop the D9 and D17 plans take down; building the table
+  again is 419.6 million against GNU's 463.0 million, as before.  A test
+  records GNU 30.2's answers for unibyte arguments with raw bytes in a
+  multibyte result, before and after one another and repeated, and for
+  a unibyte result.  The independent review checked the two formulas
+  against the encoder for every byte, the length the first pass
+  computes against what is written, and every byte 0 to 255 joined to
+  multibyte, ASCII-only multibyte and propertied strings through
+  `string-bytes', `aref', `string-as-unibyte', encoding, insertion,
+  `string-match' and printing: GNU, the build before and this one
+  byte-identical.  It found no cheat and nothing broken.
+  Validation of the round's commit (gate profile, one test thread a
+  process): the grouped gate 3,567 passed, 0 failed, 2 ignored (one
+  library test more); cli 30, cli_parity 175, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean (the probe's two raw bytes were added after the
+  validation; probes are not built or tested).  The round audit reports
+  no hard finding, 55 changed lines with one test and two assertions
+  added.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
