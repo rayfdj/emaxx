@@ -24167,6 +24167,18 @@ ert-tests as a whole 26,307 ms against 27,211.
   45416831904) passed: 3,633 library tests, the seven integration
   targets (230) and the binaries' tests (61), none failed.
 
+**On `cea1fb0`** (round 387): the frozen run (run 45437280138) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 71.3 s against 61.4 s (1.162), test bodies 273.8 s
+  against 258.1 s (1.061), in all 1.080 (GNU's suite took 319 s).  The
+  widest body gaps are tramp-tests (20.2 s against 17.2 s), comp-tests
+  (15.0 against 12.9), icalendar-tests (2.11 against 0.39; here the
+  builds of rounds 386 and 388 run it in 0.52 s and GNU in 0.43, so
+  the runner's), process-tests (2.93 against 1.82), mule-tests (2.55
+  against 1.73) and semantic-utest-ia (3.42 against 2.61).  The Rust
+  gate (run 45437271933) passed: 3,637 library tests, the seven
+  integration targets (230) and the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 388 and its review), within the
   plan's later stages.**  One line each: the build-time check that heap
