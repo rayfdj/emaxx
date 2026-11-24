@@ -1324,6 +1324,12 @@ impl BufferRef {
             .set(table.map_or(Value::Nil, Value::CharTable));
     }
 
+    /// BVAR (b, case_canon_table), when the buffer holds one.
+    #[inline]
+    pub(crate) fn case_canon_table(&self) -> Option<CharTableRef> {
+        char_table_slot(&self.case_canon_table)
+    }
+
     /// BVAR (b, downcase_table) and the three after it, when the buffer
     /// holds them.
     #[inline]
@@ -1378,12 +1384,9 @@ impl BufferRef {
 }
 
 /// The char-table a buffer's table word holds, None for nil.
-#[inline]
+#[inline(always)]
 fn char_table_slot(slot: &Cell<Value>) -> Option<CharTableRef> {
-    match slot.get().kind() {
-        Kind::CharTable(table) => Some(table),
-        _ => None,
-    }
+    slot.get().char_table_ref()
 }
 
 /// `Lisp_Object' for an ordinary vector: alloc.c's `struct Lisp_Vector'

@@ -859,7 +859,7 @@ fn match_regexps(
         if !regexp.is_string() {
             return Err(LispError::WrongTypeArgument("stringp".into(), regexp));
         }
-        let case_table = ignore_case.then(|| interp.current_case_tables().canon);
+        let case_table = ignore_case.then(|| interp.current_case_canon_table());
         if search::fast_string_match(interp, env, &regexp, string, case_table, true)?.is_none() {
             return Ok(false);
         }

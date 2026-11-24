@@ -1293,7 +1293,7 @@ pub(super) fn looking_at_1(
     let modify_match_data = modify_match_data_allowed(interp) && modify_data;
     let case_table = interp
         .case_fold_search_active()
-        .then(|| interp.current_case_tables().canon);
+        .then(|| interp.current_case_canon_table());
     let buffer_id = interp.current_buffer_id();
     let snapshot = BufferSnapshot::take(interp);
     // The environment ends with its block, dropped where it lies.
@@ -1372,7 +1372,7 @@ pub(super) fn string_match_1(
     };
     let case_table = interp
         .case_fold_search_active()
-        .then(|| interp.current_case_tables().canon);
+        .then(|| interp.current_case_canon_table());
     let string_text = StringText::new(string).expect("a string");
     let haystack = string_text.text();
     let ascii = haystack.len() == chars;
@@ -1574,7 +1574,7 @@ fn search_buffer_re(
     let buffer_id = interp.current_buffer_id();
     let case_table = interp
         .case_fold_search_active()
-        .then(|| interp.current_case_tables().canon);
+        .then(|| interp.current_case_canon_table());
     let snapshot = BufferSnapshot::take(interp);
     // The environment ends with its block, dropped where it lies.
     let (entry, registers, found_any, outcome, pending) = {
@@ -1669,7 +1669,7 @@ pub(super) fn describe_compiled(
 ) -> Result<Value, LispError> {
     let case_table = interp
         .case_fold_search_active()
-        .then(|| interp.current_case_tables().canon);
+        .then(|| interp.current_case_canon_table());
     let mut menv = LispMatchEnv::new(interp, env, case_table);
     let entry = compile_pattern(&mut menv, regexp, false)?;
     let bytes = entry.pattern.buffer.clone();

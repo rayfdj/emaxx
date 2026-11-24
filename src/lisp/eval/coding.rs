@@ -1275,6 +1275,16 @@ impl Interpreter {
         }
     }
 
+    /// BVAR (current_buffer, case_canon_table), which a case-folding
+    /// search reads alone.
+    #[inline]
+    pub(crate) fn current_case_canon_table(&mut self) -> CharTableRef {
+        match self.buffer.case_canon_table() {
+            Some(table) => table,
+            None => self.standard_case_tables().canon,
+        }
+    }
+
     /// The current buffer's four case tables, unless none exist yet.
     pub(crate) fn initialized_current_case_tables(&self) -> Option<CaseTables> {
         self.buffer.case_tables().or(self.standard_case_tables)

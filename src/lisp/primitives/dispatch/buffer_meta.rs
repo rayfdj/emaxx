@@ -92,7 +92,7 @@ fn compare_buffer_substrings(
 ) -> Result<Value, LispError> {
     let trt = interp
         .case_fold_search_active()
-        .then(|| interp.current_case_tables().canon);
+        .then(|| interp.current_case_canon_table());
     let (buffer1, begp1, endp1) = comparison_range(interp, &args[0], &args[1], &args[2])?;
     let (buffer2, begp2, endp2) = comparison_range(interp, &args[3], &args[4], &args[5])?;
     // char_table_translate: the entry when it is a character, else C.
