@@ -169,7 +169,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   instructions a switch against GNU's 515.0 (697.6 before),
   `buffer-name' 382.6 against 355.0 (407.6), `looking-at' 1,387.6
   against 1,147.0 (unchanged; the tables, the forwarded words and the
-  text as buffer_text take it down).
+  text as buffer_text take it down).  Round 382: the tables are the
+  buffer's words and `case-fold-search' and
+  `parse-sexp-lookup-properties' C variables; `looking-at' 1,291.6,
+  `string-match' 1,323.6 (GNU 1,148.0).
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -20211,6 +20214,67 @@ setup_process_coding_systems's check now refuses). A 13-form
   changed lines with 18 tests and 59 assertions added and 12
   assertions changed (the conversion of tests reading the current
   buffer's point through a borrow to reading it through the object).
+- **Round 382: a buffer's tables are its own words, and
+  `case-fold-search' and `parse-sexp-lookup-properties' are C variables
+  (M2, stages S3 and S4 of D13 and A3.6; neither closed).**  **The
+  tables**: a buffer's syntax, category and four case tables are six
+  words of the buffer object, as buffer.h's syntax_table,
+  category_table, downcase_table, upcase_table, case_canon_table and
+  case_eqv_table are, traced in the buffer's arm of the mark; the three
+  side tables keyed by buffer number, their root marks and their rows
+  in the image's list of fields not carried are gone.  A buffer gets
+  the standard tables when it is made, when it is killed and from
+  `kill-all-local-variables' (reset_buffer_local_variables), and
+  `set-standard-case-table' no longer puts the new tables into other
+  buffers that had none of their own (it changes only the standard
+  ones, and each buffer keeps the table it holds, as GNU's).  An image
+  writes the six words as the buffer's tables, the standard ones
+  included, where it wrote nil for a buffer without its own; the layout
+  is unchanged and a nil word still loads as the standard table.  **The
+  variables**: both are forwarded C variables, as buffer.c's
+  Vcase_fold_search and syntax.c's parse_sexp_lookup_properties are,
+  automatically buffer-local; the matcher and the syntax scanners read
+  the C word, where each search looked the binding up; a switch of
+  buffer refreshes the forwarded words when either buffer has a local
+  binding of one (set_buffer_internal_2's walk of the local variables
+  that forward into C), an image's load refills them from the current
+  buffer, and `makunbound' of a buffer-local binding detaches the
+  variable from its C word, as set_internal does.  Two smaller
+  commits: an insertion asks the current buffer's `indirections' count
+  whether it has a family, as insdel.c does, before any lookup (the 14
+  instructions round 381 added to `insert' are gone), and a
+  case-folding search reads the canonicalize table alone.  **Lisp sees
+  one change, GNU's**: after `makunbound' of `case-fold-search''s
+  buffer-local binding the C word keeps its last value, so in a buffer
+  whose own binding is t `(string-match "abc" "xABC")' answers nil, as
+  GNU's does (it answered 1).  **Counts** (before = round 381's build):
+  `looking-at' at a failing position 1,387.6 instructions, 1,291.6
+  after (GNU 1,147.0), the binding lookup's 68 gone and setup_syntax
+  43 to 32; `string-match' 1,374.6 to 1,323.6 (GNU 1,148.0);
+  `char-after' 466.6 to 445.6 (GNU 260.0); `insert' 2,093.7 to 2,080.7
+  (GNU 3,692.5); `set-buffer' 703.6 unchanged (GNU 515.0); the call
+  and interpreter guards unchanged.  The independent review (the one
+  question: does the round cheat or break something) ran the
+  implementer's probes and its own on GNU, the build before and this
+  one: fourteen search primitives under local, let-bound, killed,
+  default and indirect bindings and in a thread;
+  `parse-sexp-lookup-properties' across the scanners with syntax-table
+  properties; `make-local-variable', `set-default-toplevel-value',
+  killing a buffer with a local value and major-mode changes; a
+  natively compiled function binding and switching buffers; the tables
+  through `set-standard-case-table', `with-case-table',
+  `with-syntax-table' across a `set-buffer', category tables and
+  clones; tables only a buffer holds surviving collections and released
+  with it; and an image written and loaded by each build with own and
+  standard tables, a clone, a killed buffer and local values.  Every
+  answer was GNU's.  It found no cheat and nothing broken.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,593 passed, 0 failed, 2 ignored (nine
+  library tests more); cli 30, cli_parity 177, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 1,040
+  changed lines with 10 tests and 23 assertions added.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23583,6 +23647,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 382 and its review), outside the
+  round and in no milestone.**  One line each: `char-equal' reads
+  `case-fold-search''s Lisp binding, not the C word, which shows only
+  in GNU's detached state after `makunbound' inside a `let' (the other
+  thirteen search primitives read the word); after a buffer is killed
+  GNU keeps one more of its tables alive than Emaxx does (likely a C
+  root such as gl_state's last syntax table; unchanged by the round);
+  a buffer with a local binding of either variable makes each switch
+  into or out of it refresh all twelve forwarded words, where GNU
+  refreshes that buffer's own local forwarded variables (the mirrors
+  plan's first stages take the evaluator's copies away).
 - **Found after the scope lock (round 381, its review and the plan of
   the thread items made beside it), outside the round and in no
   milestone.**  One line each: `save-excursion' and `save-restriction'
