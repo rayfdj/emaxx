@@ -231,30 +231,32 @@ fn assert_string_list(value: Value, expected: &[&str]) {
 
 fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
     let permit = crate::test_support::acquire_host_test_permit();
-    thread::Builder::new()
+    let continuation = thread::Builder::new()
         .stack_size(128 * 1024 * 1024)
         .spawn(move || {
             let _permit = permit;
             crate::test_support::note_host_permit_moved_to_this_thread();
             test();
         })
-        .unwrap()
-        .join()
         .unwrap();
+    // The test goes on on the large stack: lend it this thread's runtime
+    // while waiting, as thread-join gives global_lock up.
+    crate::lisp::runtime::release_while(|| continuation.join()).unwrap();
 }
 
 fn run_large_stack_test(test_fn: fn()) {
     let permit = crate::test_support::acquire_host_test_permit();
-    thread::Builder::new()
+    let continuation = thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
             let _permit = permit;
             crate::test_support::note_host_permit_moved_to_this_thread();
             test_fn();
         })
-        .unwrap()
-        .join()
         .unwrap();
+    // The test goes on on the large stack: lend it this thread's runtime
+    // while waiting, as thread-join gives global_lock up.
+    crate::lisp::runtime::release_while(|| continuation.join()).unwrap();
 }
 
 fn run_exclusive_with_large_stack(test: impl FnOnce() + Send + 'static) {

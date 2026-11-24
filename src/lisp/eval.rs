@@ -6058,6 +6058,7 @@ impl Interpreter {
     /// cells have new identities; they repopulate on use.
     #[cfg(test)]
     pub fn deep_clone_image(&self) -> Interpreter {
+        crate::lisp::runtime::ensure_held();
         assert!(
             self.terminals
                 .iter()
@@ -6575,6 +6576,7 @@ impl Interpreter {
 impl Clone for Interpreter {
     /// A copy's state is a root set of its own from the moment it exists.
     fn clone(&self) -> Self {
+        crate::lisp::runtime::ensure_held();
         let clone = Self {
             state: self.state.clone(),
             continuations: self.continuations.clone(),
@@ -7296,6 +7298,10 @@ impl Interpreter {
     }
 
     fn construct(image: bool) -> Self {
+        // Only the OS thread that holds the runtime builds an editor: one
+        // that does not takes it here and keeps it until it exits, as
+        // run_thread takes global_lock before its thread's first Lisp.
+        crate::lisp::runtime::ensure_held();
         // Each editor owns the symbols whose fields it will initialize.
         // Select once before constructing any Lisp object; the public entry
         // scope restores its caller on exit. Lisp thread state transfers do

@@ -64,14 +64,11 @@ thread_local! {
     };
     /// Gives a tenure back when its OS thread exits, as run_thread's
     /// release_global_lock does once the thread's function has returned.
-    #[cfg(test)]
     static TENURE: Tenure = const { Tenure };
 }
 
-#[cfg(test)]
 struct Tenure;
 
-#[cfg(test)]
 impl Drop for Tenure {
     fn drop(&mut self) {
         let entered = ENTERED.get();
@@ -160,7 +157,6 @@ fn report_wait(line: &str) {
 }
 
 /// thread.c:in_current_thread: whether this OS thread holds the runtime.
-#[cfg(test)]
 #[inline]
 pub(crate) fn held() -> bool {
     let entered = ENTERED.get();
@@ -170,7 +166,6 @@ pub(crate) fn held() -> bool {
 /// Hold the runtime on this OS thread: at once if it already does, else
 /// once no other OS thread holds it, and then until this one exits, as
 /// run_thread acquires global_lock before its first Lisp.
-#[cfg(test)]
 #[inline]
 pub(crate) fn ensure_held() {
     if !held() {
@@ -178,20 +173,47 @@ pub(crate) fn ensure_held() {
     }
 }
 
-#[cfg(test)]
 #[cold]
 #[inline(never)]
 fn take_tenure() {
     // Its destructor gives the runtime back when the thread exits.
     TENURE.with(|_| ());
     // A tenure does not refuse a runtime a scoped entry's panic poisoned:
-    // production takes none, and one failed test must not fail every test
-    // after it.
+    // production never takes one, and one failed test must not fail every
+    // test after it.
     RUNTIME.acquire(PATIENCE, &mut report_wait);
     ENTERED.set(Entered {
         tenure: true,
         ..ENTERED.get()
     });
+}
+
+/// Give the runtime up while WAIT waits for another OS thread, and hold it
+/// again after, as thread.c's thread_join_callback waits on the joined
+/// thread's condition variable (sys_cond_wait gives global_lock up) and
+/// then post_acquire_global_lock.  The test harness waits so for the
+/// thread it continues a test on.  GNU's collector scans every thread's
+/// stack (mark_threads) and ours scans only its own OS thread's, so the
+/// waiting thread must not count on its stack alone to keep an object.
+#[cfg(test)]
+pub(crate) fn release_while<R>(wait: impl FnOnce() -> R) -> R {
+    struct Retake(Entered);
+    impl Drop for Retake {
+        fn drop(&mut self) {
+            RUNTIME.acquire(PATIENCE, &mut report_wait);
+            ENTERED.set(self.0);
+        }
+    }
+    if !held() {
+        return wait();
+    }
+    let entered = ENTERED.replace(Entered {
+        tenure: false,
+        boundary: false,
+    });
+    RUNTIME.release(false);
+    let _retake = Retake(entered);
+    wait()
 }
 
 /// The outermost scoped entry on an OS thread. It holds the runtime for
@@ -271,7 +293,7 @@ pub(crate) fn with_runtime<R: Send>(body: impl FnOnce() -> R) -> R {
 
 #[cfg(test)]
 mod tests {
-    use super::{RUNTIME, ensure_held, held, with_runtime};
+    use super::{RUNTIME, ensure_held, held, release_while, with_runtime};
     use crate::lisp::eval::continuations::current_stack_base;
     use std::sync::{
         Arc, Barrier,
@@ -419,5 +441,93 @@ mod tests {
         std::thread::spawn(|| with_runtime(|| assert!(held())))
             .join()
             .expect("a scoped entry still enters");
+    }
+
+    /// Evaluate SOURCE in INTERP and answer the fixnum it returns.
+    fn fixnum(interp: &mut crate::lisp::eval::Interpreter, source: &str) -> i64 {
+        let value =
+            crate::test_support::eval_lisp(interp, &mut crate::lisp::types::Env::new(), source)
+                .unwrap_or_else(|error| panic!("{source}: {error:?}"));
+        match value.kind() {
+            crate::lisp::types::Kind::Integer(number) => number,
+            _ => panic!("{source}: not a fixnum"),
+        }
+    }
+
+    #[test]
+    fn editors_on_two_os_threads_take_the_runtime_in_turn() {
+        // An OS thread that builds an editor holds the runtime until it
+        // exits, so a second thread's editor is not built while the first
+        // lives; each evaluates and collects with the heap to itself.
+        let (built_tx, built_rx) = mpsc::channel();
+        let (finish_tx, finish_rx) = mpsc::channel::<()>();
+        let first = std::thread::spawn(move || {
+            let mut interp = crate::lisp::eval::Interpreter::new();
+            assert!(held());
+            let before = fixnum(
+                &mut interp,
+                "(progn (setq kept (make-list 1000 'first)) (garbage-collect) (length kept))",
+            );
+            built_tx.send(()).expect("announce the editor");
+            finish_rx.recv().expect("wait to finish");
+            let after = fixnum(
+                &mut interp,
+                "(progn (garbage-collect) (+ (length kept) (length (make-list 10 nil))))",
+            );
+            (before, after)
+        });
+        built_rx.recv().expect("the first editor is built");
+        let (second_tx, second_rx) = mpsc::channel();
+        let second = std::thread::spawn(move || {
+            let mut interp = crate::lisp::eval::Interpreter::new();
+            second_tx.send(()).expect("announce the second editor");
+            fixnum(
+                &mut interp,
+                "(progn (setq kept (make-list 2000 'second)) (garbage-collect) (length kept))",
+            )
+        });
+        assert!(
+            second_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the second editor waits while the first one's thread lives"
+        );
+        finish_tx.send(()).expect("let the first editor finish");
+        assert_eq!(
+            first.join().expect("the first editor's thread"),
+            (1000, 1010)
+        );
+        second_rx
+            .recv_timeout(Duration::from_secs(60))
+            .expect("the second editor is built once the first thread has exited");
+        assert_eq!(second.join().expect("the second editor's thread"), 2000);
+    }
+
+    #[test]
+    fn a_waiting_holder_lends_the_runtime_to_the_thread_it_waits_for() {
+        // thread.c's thread-join gives global_lock up while it waits: the
+        // waiting thread's tenure, or its scoped entry, is lent to the
+        // thread it joins and taken back after.
+        std::thread::spawn(|| {
+            ensure_held();
+            let lent = std::thread::spawn(|| with_runtime(held));
+            assert!(release_while(|| lent.join()).expect("the joined thread enters"));
+            assert!(held(), "the tenure is taken back");
+            with_runtime(|| {
+                let base = current_stack_base();
+                let lent = std::thread::spawn(|| {
+                    ensure_held();
+                    held()
+                });
+                assert!(release_while(|| lent.join()).expect("the joined thread holds it"));
+                assert!(held());
+                assert_eq!(current_stack_base(), base, "the boundary stays as it was");
+            });
+            assert!(held());
+        })
+        .join()
+        .expect("the lending thread completes");
+        // Without a hold there is nothing to lend.
+        assert!(!held());
+        assert_eq!(release_while(|| 7), 7);
+        assert!(!held());
     }
 }

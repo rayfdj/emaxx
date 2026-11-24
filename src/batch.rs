@@ -1654,15 +1654,17 @@ mod tests {
 
     fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
         let permit = crate::test_support::acquire_host_test_permit();
-        thread::Builder::new()
+        let continuation = thread::Builder::new()
             .stack_size(128 * 1024 * 1024)
             .spawn(move || {
                 let _permit = permit;
                 crate::test_support::note_host_permit_moved_to_this_thread();
                 test();
             })
-            .expect("spawn large-stack test thread")
-            .join()
+            .expect("spawn large-stack test thread");
+        // The test goes on on the large stack: lend it this thread's
+        // runtime while waiting, as thread-join gives global_lock up.
+        crate::lisp::runtime::release_while(|| continuation.join())
             .expect("join large-stack test thread");
     }
 
