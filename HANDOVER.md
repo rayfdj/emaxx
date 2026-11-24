@@ -175,6 +175,12 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   `string-match' 1,323.6 (GNU 1,148.0).  Round 384: the text is
   buffer_text and point and the bounds keep their bytes; `looking-at'
   1,237.6, `char-after' 368.6 (GNU 260.0).
+- **In progress: A2.3, A3.4 and A3.8** (mirrors, registries and the
+  image; the plan: docs/plans/mirrors-registries.md, stages R0 to R18).
+  Round 385: its first three stages; the evaluator's twelve C variables
+  and the kboard's fourteen are their symbols' values alone.
+  `(setq inhibit-quit X)' costs 171.6 instructions against GNU's 248.0
+  (931.6 before), `(setq last-command X)' 149.6 against 257.0 (1,020.6).
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -20433,6 +20439,85 @@ setup_process_coding_systems's check now refuses). A 13-form
   (the same checks reading the text's caches through the new path);
   its two notes of new state are the character cache, moved into the
   text's boxed caches, and the match's slot for the shared bytes.
+- **Round 385: the evaluator's C variables and the kboard's are their
+  symbols' values alone (M2, the first stages of A2.3, A3.4 and A3.8;
+  none closed).**  The first three stages of the plan of mirrors,
+  registries and the image (docs/plans/mirrors-registries.md), with
+  the review's fix.  **The tests first**: GNU 30.2's answers for the
+  twelve C variables the evaluator reads and the fourteen KBOARD
+  variables under `setq', `let', a buffer-local binding and a switch,
+  `kill-local-variable', `makunbound' and the C effect after it, a
+  watcher, a thread's binding and an image; for nil and t; for the
+  host objects' censuses, types and printing; for `mapatoms' while its
+  callback interns; and for `garbage-collect''s shape.  **The C
+  variables**: `inhibit-quit', `quit-flag', `throw-on-input',
+  `max-lisp-eval-depth', `debug-on-next-call', `load-path',
+  `symbols-with-pos-enabled', `overriding-plist-environment',
+  `undo-inhibit-record-point', `attempt-orderly-shutdown-on-fatal-signal',
+  `case-fold-search' and `parse-sexp-lookup-properties' were each kept
+  twice, in a field of the evaluator and in the symbol, a store to one
+  copied into the other; each is now one C variable in a block the
+  interpreter owns, its symbol forwarding to it as DEFVAR_LISP's,
+  DEFVAR_INT's and DEFVAR_BOOL's do (the block is a separate
+  allocation, since a forward into the interpreter's own state would
+  alias every exclusive borrow of it; it lives as long as the
+  interpreter and never moves).  **The kboard**: the fourteen KBOARD
+  variables were a map of the terminal's; they are the fields of the
+  current terminal's kboard, a `let' of one undone into the kboard it
+  was made on, as specbind's SPECPDL_LET on a Kboard_Objfwd is.  A
+  symbol's flags are read as one word, so that a plain value and a
+  DEFVAR_LISP forward are told apart by one compare, and byte code's
+  variable reference reads such a forward in line.  **The review's
+  fix**: a C variable's symbol that `makunbound' had detached and a
+  later `setq' had given a value was forwarded again when an image was
+  loaded (the evaluator would not start after a dump with
+  `debug-on-next-call' so set, lost `inhibit-quit''s value, or took
+  the recursion limit from the symbol); a symbol the image records as
+  not forwarded is now installed plain, as pdumper's redirect is, and
+  its C variable keeps the dumped C value.  **Lisp sees these changes,
+  each now GNU's, all after a dump and a load**: a detached or void
+  `max-lisp-eval-depth' leaves the C limit (the nesting error comes
+  at 87 frames as GNU's, at 1,587 before); a detached
+  `case-fold-search' leaves searches folding; a detached
+  `parse-sexp-lookup-properties' and a detached `cons-cells-consed' or
+  `strings-consed' keep their plain values.  **Counts** (callgrind, the
+  release build; before = round 384's build): `(setq inhibit-quit X)'
+  in a byte-compiled loop 931.6 instructions, 171.6 after (GNU 248.0);
+  a `let' of it 1,312.6 to 360.6 (630.0); its reference 134.6 to 132.6
+  (251.0); `(setq last-command X)' 1,020.6 to 149.6 (257.0), a `let' of
+  it 1,338.6 to 1,029.6 (583.0), its reference 285.6 to 225.6 (265.0);
+  a `let' of `case-fold-search' 1,830.6 to 1,790.6 (1,291.0).  The
+  guards: the interpreted loop 2,753.0 to 2,760.0 and the lexical
+  recursion 358.1 to 359.1, six and one of them alignment padding (the
+  executed instructions 2,707.0 to 2,708.0 and unchanged); the dynamic
+  recursion 634.0 to 636.1 (GNU 636.2), 1.2 of it register moves in the
+  loop's return; `looking-at' 1,237.6 to 1,241.6, one load more for
+  `case-fold-search' through the block and register moves;
+  `set-buffer' 705.6 to 704.6, the byte-code calls 446.9 to 443.6, the
+  window accessors 318.4 to 319.9 (padding).  The independent review
+  (the one question: does the round cheat or break something) read the
+  block's lifetime, the forwards, the kboard's ownership and tracing,
+  the image's install and the fast read, and ran probes on GNU, the
+  build before and this one: every operation on the twelve and the
+  fourteen variables interpreted and byte-compiled, in threads, with
+  watchers and across buffers; each C effect (the recursion limit,
+  quits held and taken, from timers, process filters and C-g through a
+  terminal, the debugger at the next call, `load-path' searches,
+  folding and the syntax scanners, the command loop's variables in a
+  keyboard macro); values held only in a C variable or a kboard across
+  collections; a second terminal's kboard; and images.  It found no
+  cheat and one break, the image case above, which its second reading
+  found fixed with nothing else changed.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,622 passed, 0 failed, 2 ignored
+  (eighteen library tests more); cli 30, cli_parity 187 (three more),
+  ert_runner 3, native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 2,869
+  changed lines with 21 tests and 68 assertions added and 4 changed
+  (the image tests' field reads of `parse-sexp-lookup-properties',
+  now the C variable's accessor); its note of new state is the
+  accessor of the existing fatal-signal flag, now built on every host.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23848,6 +23933,20 @@ ert-tests as a whole 26,307 ms against 27,211.
   targets (227) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 385, its tests and its review),
+  outside the round and in no milestone.**  One line each, each older
+  than the round: `set-default' of a localized DEFVAR_BOOL keeps t
+  where GNU keeps the value given (7); a watcher on `inhibit-quit'
+  does not hear `kill-buffer''s window code bind it (GNU notifies it
+  twelve times); `makunbound' of `last-command' does not detach it
+  from the command loop's stores; the KBOARD variables are written to
+  an image, where GNU writes none; a pipe process read from an image
+  makes `process-status' signal where GNU's is nil; `mapatoms' and
+  `all-completions' do not meet symbols their callback interns (the
+  mirrors plan's inventory item I1, in no stage); a weak table keeps a
+  variable's old value after a `setq' and a collection when run from
+  `--eval'; an image refusal names the object's kind where GNU prints
+  "pseudovector type N".
 - **Found after the scope lock (round 384 and its review), outside the
   round and in no milestone.**  One line each: an indirect buffer made
   of a dying base after the kill's walk of its indirect buffers (by an
