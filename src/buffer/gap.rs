@@ -17,15 +17,25 @@ const GAP_BYTES_DFL: usize = 2000;
 /// buffer.c:Fget_buffer_create's BUF_GAP_SIZE of a new buffer.
 const NEW_BUFFER_GAP: usize = 20;
 
-/// A buffer's text: the bytes before the gap, the gap, the bytes after,
-/// with the character counts of the whole and of the part before the gap
-/// (Z and GPT beside Z_BYTE and GPT_BYTE).
+/// A buffer's text, buffer.h's struct buffer_text's beg, gpt, z,
+/// gpt_byte, z_byte and gap_size: the bytes before the gap, the gap and
+/// the bytes after it in one allocation, which a scan shares (GNU's
+/// `inhibit_shrinking' keeps its own from moving), and the positions,
+/// counted from BEG, of the gap and the end.
 #[derive(Clone, Default)]
 pub struct GapText {
-    data: Rc<GapData>,
-    /// The text's newlines, once its scans for them since its last
-    /// change have cost what finding them all costs.
-    newlines: NewlineIndex,
+    /// BEG_ADDR's bytes, the gap included.
+    beg: Rc<Vec<u8>>,
+    /// GPT - BEG: the characters before the gap.
+    gpt: usize,
+    /// GPT_BYTE - BEG_BYTE: where the gap starts.
+    gpt_byte: usize,
+    /// Z - BEG.
+    z: usize,
+    /// Z_BYTE - BEG_BYTE.
+    z_byte: usize,
+    /// GAP_SIZE.
+    gap_size: usize,
 }
 
 /// The byte offsets of a text's newlines, kept until the text changes.
@@ -34,90 +44,37 @@ pub struct GapText {
 /// about lines are answered from the record.  A text that changes
 /// between each question never has one made.
 #[derive(Clone, Default)]
-struct NewlineIndex {
+pub(crate) struct NewlineIndex {
     scanned: std::cell::Cell<usize>,
     offsets: std::cell::OnceCell<Rc<[u32]>>,
 }
 
-#[derive(Clone, Default)]
-struct GapData {
-    bytes: Vec<u8>,
-    /// GPT_BYTE - BEG_BYTE: where the gap starts.
-    gap_start: usize,
-    /// Where the text after the gap starts.
-    gap_end: usize,
-    /// GPT - BEG: the characters before the gap.
-    gap_char: usize,
-    /// Z - BEG.
-    chars: usize,
-}
+impl NewlineIndex {
+    /// The byte offsets of TEXT's newlines when they are recorded,
+    /// recording them first once the scans since the last change have
+    /// read as many bytes as the text holds; None while scanning is the
+    /// cheaper answer.
+    pub(crate) fn offsets(&self, text: &GapText) -> Option<&[u32]> {
+        if let Some(offsets) = self.offsets.get() {
+            return Some(offsets);
+        }
+        let len = text.len();
+        if self.scanned.get() < len || u32::try_from(len).is_err() {
+            return None;
+        }
+        let (first, second) = text.halves();
+        let offsets = memchr::memchr_iter(b'\n', first.as_bytes())
+            .chain(memchr::memchr_iter(b'\n', second.as_bytes()).map(|at| at + first.len()))
+            .map(|at| at as u32)
+            .collect();
+        Some(self.offsets.get_or_init(|| offsets))
+    }
 
-impl GapData {
+    /// Count BYTES read by a scan for newlines toward recording them.
     #[inline]
-    fn len(&self) -> usize {
-        self.bytes.len() - (self.gap_end - self.gap_start)
-    }
-
-    /// gap_left and gap_right: the gap moved to byte AT of the text, the
-    /// character AT_CHAR.
-    fn move_gap(&mut self, at: usize, at_char: usize) {
-        if at < self.gap_start {
-            let count = self.gap_start - at;
-            self.bytes
-                .copy_within(at..self.gap_start, self.gap_end - count);
-            self.gap_start = at;
-            self.gap_end -= count;
-        } else if at > self.gap_start {
-            let count = at - self.gap_start;
-            self.bytes
-                .copy_within(self.gap_end..self.gap_end + count, self.gap_start);
-            self.gap_start = at;
-            self.gap_end += count;
-        }
-        self.gap_char = at_char;
-    }
-
-    /// make_gap_larger's enlarge_buffer_text for a gap of NEEDED bytes:
-    /// the room reserved, or, when xrealloc would fail, the text's new
-    /// size, which memory_full receives.
-    fn try_make_gap(&mut self, needed: usize) -> Result<(), usize> {
-        let gap = self.gap_end - self.gap_start;
-        if gap >= needed {
-            return Ok(());
-        }
-        let added = needed - gap + GAP_BYTES_DFL;
-        let new_nbytes = self
-            .bytes
-            .len()
-            .checked_add(added)
-            .and_then(|bytes| bytes.checked_add(1))
-            .ok_or(usize::MAX)?;
-        self.bytes.try_reserve(added).map_err(|_| new_nbytes)
-    }
-
-    /// make_gap_larger: a gap of at least NEEDED bytes, grown by what the
-    /// insertion needs and GAP_BYTES_DFL (the vector's own growth keeps
-    /// the reallocations few, as GNU leaves them to realloc).
-    fn make_gap(&mut self, needed: usize) {
-        let gap = self.gap_end - self.gap_start;
-        if gap >= needed {
-            return;
-        }
-        let added = needed - gap + GAP_BYTES_DFL;
-        if self.bytes.is_empty() && self.bytes.capacity() < added {
-            // A fresh allocation, which reads as zeros without being
-            // filled.
-            self.bytes = vec![0; added];
-            self.gap_end = added;
-            return;
-        }
-        let after = self.bytes.len() - self.gap_end;
-        self.bytes.resize(self.bytes.len() + added, 0);
-        // The text after the gap moves to the end of the larger space.
-        let new_end = self.gap_end + added;
-        self.bytes
-            .copy_within(self.gap_end..self.gap_end + after, new_end);
-        self.gap_end = new_end;
+    pub(crate) fn note_scan(&self, bytes: usize) {
+        let scanned = &self.scanned;
+        scanned.set(scanned.get().saturating_add(bytes));
     }
 }
 
@@ -166,64 +123,68 @@ impl GapText {
         bytes.resize(len + gap, 0);
         let chars = count_chars(text.as_bytes());
         GapText {
-            data: Rc::new(GapData {
-                bytes,
-                gap_start: len,
-                gap_end: len + gap,
-                gap_char: chars,
-                chars,
-            }),
-            newlines: NewlineIndex::default(),
+            beg: Rc::new(bytes),
+            gpt: chars,
+            gpt_byte: len,
+            z: chars,
+            z_byte: len,
+            gap_size: gap,
         }
     }
 
     /// Z_BYTE - BEG_BYTE.
     #[inline]
     pub(crate) fn len(&self) -> usize {
-        self.data.len()
+        self.z_byte
     }
 
     /// Z - BEG.
     #[inline]
     pub(crate) fn chars(&self) -> usize {
-        self.data.chars
+        self.z
     }
 
-    /// Whether each character is one byte.
+    /// Whether each character is one byte (Z == Z_BYTE).
     #[inline]
     pub(crate) fn is_ascii(&self) -> bool {
-        self.data.chars == self.data.len()
+        self.z == self.z_byte
     }
 
     /// GPT_BYTE - BEG_BYTE.
     #[inline]
     pub(crate) fn gap_byte(&self) -> usize {
-        self.data.gap_start
+        self.gpt_byte
     }
 
     /// GPT - BEG.
     #[inline]
     pub(crate) fn gap_char(&self) -> usize {
-        self.data.gap_char
+        self.gpt
     }
 
     /// GAP_SIZE.
     #[inline]
     pub(crate) fn gap_size(&self) -> usize {
-        self.data.gap_end - self.data.gap_start
+        self.gap_size
+    }
+
+    /// GAP_END_ADDR's offset: where the text after the gap starts.
+    #[inline]
+    fn gap_end(&self) -> usize {
+        self.gpt_byte + self.gap_size
     }
 
     /// The text before the gap and the text after it.
     #[inline]
     pub(crate) fn halves(&self) -> (&str, &str) {
-        let data = &*self.data;
+        let bytes = &self.beg[..];
         // SAFETY: each half holds whole characters of the valid UTF-8 the
         // text was made and changed with: the gap only ever stands at a
         // character boundary.
         unsafe {
             (
-                std::str::from_utf8_unchecked(&data.bytes[..data.gap_start]),
-                std::str::from_utf8_unchecked(&data.bytes[data.gap_end..]),
+                std::str::from_utf8_unchecked(&bytes[..self.gpt_byte]),
+                std::str::from_utf8_unchecked(&bytes[self.gap_end()..]),
             )
         }
     }
@@ -231,11 +192,10 @@ impl GapText {
     /// The byte at AT.
     #[inline]
     pub(crate) fn byte(&self, at: usize) -> u8 {
-        let data = &*self.data;
-        if at < data.gap_start {
-            data.bytes[at]
+        if at < self.gpt_byte {
+            self.beg[at]
         } else {
-            data.bytes[at + (data.gap_end - data.gap_start)]
+            self.beg[at + self.gap_size]
         }
     }
 
@@ -247,7 +207,7 @@ impl GapText {
         if at < before.len() || after.is_empty() {
             (before, 0, 0)
         } else {
-            (after, before.len(), self.data.gap_char)
+            (after, before.len(), self.gpt)
         }
     }
 
@@ -255,10 +215,10 @@ impl GapText {
     #[inline]
     pub(crate) fn chunk_at_char(&self, index: usize) -> (&str, usize, usize) {
         let (before, after) = self.halves();
-        if index < self.data.gap_char || after.is_empty() {
+        if index < self.gpt || after.is_empty() {
             (before, 0, 0)
         } else {
-            (after, before.len(), self.data.gap_char)
+            (after, before.len(), self.gpt)
         }
     }
 
@@ -266,14 +226,14 @@ impl GapText {
     /// ends are character boundaries.
     #[inline]
     pub(crate) fn range_parts(&self, range: std::ops::Range<usize>) -> (&[u8], &[u8]) {
-        let data = &*self.data;
-        let split = data.gap_start;
-        let first = &data.bytes[range.start.min(split)..range.end.min(split)];
-        let second = &data.bytes[data.gap_end + (range.start.max(split) - split)
-            ..data.gap_end + (range.end.max(split) - split)];
+        let bytes = &self.beg[..];
+        let split = self.gpt_byte;
+        let gap_end = self.gap_end();
+        let first = &bytes[range.start.min(split)..range.end.min(split)];
+        let second = &bytes
+            [gap_end + (range.start.max(split) - split)..gap_end + (range.end.max(split) - split)];
         (first, second)
     }
-
     /// `range_parts' as text.
     #[inline]
     pub(crate) fn range_halves(&self, range: std::ops::Range<usize>) -> (&str, &str) {
@@ -316,12 +276,7 @@ impl GapText {
     /// gap and the end (marker.c's BEG, GPT and Z).
     #[inline]
     fn known(&self) -> [(usize, usize); 3] {
-        let data = &*self.data;
-        [
-            (0, 0),
-            (data.gap_char, data.gap_start),
-            (data.chars, data.len()),
-        ]
+        [(0, 0), (self.gpt, self.gpt_byte), (self.z, self.z_byte)]
     }
 
     /// buf_charpos_to_bytepos: the byte offset of char INDEX, counted from
@@ -348,7 +303,7 @@ impl GapText {
             return (index, 0);
         }
         let mut below = (0, 0);
-        let mut above = (self.data.chars, self.data.len());
+        let mut above = (self.z, self.z_byte);
         for (char, byte) in self.known().into_iter().chain(more) {
             if char == index {
                 return (byte, 0);
@@ -380,25 +335,25 @@ impl GapText {
     /// The byte offset of char INDEX, counted from FROM, a known pair of
     /// a character and its byte offset.
     fn char_to_byte_from(&self, (mut from, mut from_byte): (usize, usize), index: usize) -> usize {
-        let data = &*self.data;
+        let (gpt, gpt_byte) = (self.gpt, self.gpt_byte);
         let (before, after) = self.halves();
         let (before, after) = (before.as_bytes(), after.as_bytes());
         if index >= from {
-            if from_byte < data.gap_start {
-                if index - from <= data.gap_char - from {
+            if from_byte < gpt_byte {
+                if index - from <= gpt - from {
                     return from_byte + forward_bytes(&before[from_byte..], index - from);
                 }
-                (from, from_byte) = (data.gap_char, data.gap_start);
+                (from, from_byte) = (gpt, gpt_byte);
             }
-            let at = from_byte - data.gap_start;
+            let at = from_byte - gpt_byte;
             from_byte + forward_bytes(&after[at..], index - from)
         } else {
-            if from_byte > data.gap_start {
-                if index >= data.gap_char {
-                    let at = from_byte - data.gap_start;
-                    return data.gap_start + backward_bytes(after, at, from - index);
+            if from_byte > gpt_byte {
+                if index >= gpt {
+                    let at = from_byte - gpt_byte;
+                    return gpt_byte + backward_bytes(after, at, from - index);
                 }
-                (from, from_byte) = (data.gap_char, data.gap_start);
+                (from, from_byte) = (gpt, gpt_byte);
             }
             backward_bytes(before, from_byte, from - index)
         }
@@ -426,7 +381,7 @@ impl GapText {
             return (byte, 0);
         }
         let mut below = (0, 0);
-        let mut above = (self.data.chars, self.data.len());
+        let mut above = (self.z, self.z_byte);
         for (char, at) in self.known().into_iter().chain(more) {
             if at == byte {
                 return (char, 0);
@@ -462,46 +417,71 @@ impl GapText {
 
     /// The bytes, for a change: copied first while a scan shares them.
     #[inline]
-    fn data_mut(&mut self) -> &mut GapData {
-        self.newlines = NewlineIndex::default();
-        Rc::make_mut(&mut self.data)
+    fn bytes_mut(&mut self) -> &mut Vec<u8> {
+        Rc::make_mut(&mut self.beg)
     }
 
-    /// The byte offsets of the text's newlines when they are recorded,
-    /// recording them first once the scans since the last change have
-    /// read as many bytes as the text holds; None while scanning is the
-    /// cheaper answer.
-    pub(crate) fn newline_offsets(&self) -> Option<&[u32]> {
-        if let Some(offsets) = self.newlines.offsets.get() {
-            return Some(offsets);
+    /// gap_left and gap_right: the gap moved to byte AT of the text, the
+    /// character AT_CHAR.
+    fn move_gap(&mut self, at: usize, at_char: usize) {
+        let (gpt_byte, gap_end) = (self.gpt_byte, self.gap_end());
+        if at < gpt_byte {
+            self.bytes_mut()
+                .copy_within(at..gpt_byte, gap_end - (gpt_byte - at));
+        } else if at > gpt_byte {
+            self.bytes_mut()
+                .copy_within(gap_end..gap_end + (at - gpt_byte), gpt_byte);
         }
-        let len = self.len();
-        if self.newlines.scanned.get() < len || u32::try_from(len).is_err() {
-            return None;
-        }
-        let (first, second) = self.halves();
-        let offsets = memchr::memchr_iter(b'\n', first.as_bytes())
-            .chain(memchr::memchr_iter(b'\n', second.as_bytes()).map(|at| at + first.len()))
-            .map(|at| at as u32)
-            .collect();
-        Some(self.newlines.offsets.get_or_init(|| offsets))
+        self.gpt_byte = at;
+        self.gpt = at_char;
     }
 
-    /// Count BYTES read by a scan for newlines toward recording them.
-    #[inline]
-    pub(crate) fn note_newline_scan(&self, bytes: usize) {
-        let scanned = &self.newlines.scanned;
-        scanned.set(scanned.get().saturating_add(bytes));
+    /// make_gap_larger's enlarge_buffer_text for a gap of NEEDED bytes:
+    /// the room reserved, or, when xrealloc would fail, the text's new
+    /// size, which memory_full receives.
+    fn try_make_gap(&mut self, needed: usize) -> Result<(), usize> {
+        if self.gap_size >= needed {
+            return Ok(());
+        }
+        let added = needed - self.gap_size + GAP_BYTES_DFL;
+        let new_nbytes = self
+            .beg
+            .len()
+            .checked_add(added)
+            .and_then(|bytes| bytes.checked_add(1))
+            .ok_or(usize::MAX)?;
+        self.bytes_mut().try_reserve(added).map_err(|_| new_nbytes)
+    }
+
+    /// make_gap_larger: a gap of at least NEEDED bytes, grown by what the
+    /// insertion needs and GAP_BYTES_DFL (the vector's own growth keeps
+    /// the reallocations few, as GNU leaves them to realloc).
+    fn make_gap(&mut self, needed: usize) {
+        if self.gap_size >= needed {
+            return;
+        }
+        let added = needed - self.gap_size + GAP_BYTES_DFL;
+        let gap_end = self.gap_end();
+        let bytes = Rc::make_mut(&mut self.beg);
+        if bytes.is_empty() && bytes.capacity() < added {
+            // A fresh allocation, which reads as zeros without being
+            // filled.
+            *bytes = vec![0; added];
+            self.gap_size = added;
+            return;
+        }
+        let after = bytes.len() - gap_end;
+        bytes.resize(bytes.len() + added, 0);
+        // The text after the gap moves to the end of the larger space.
+        bytes.copy_within(gap_end..gap_end + after, gap_end + added);
+        self.gap_size += added;
     }
 
     /// insert_1_both's make_gap for an insertion of NEEDED bytes, without
     /// aborting: Err with the text's new size when the room cannot be
     /// had, as enlarge_buffer_text hands it to memory_full.
     pub(crate) fn try_reserve_gap(&mut self, needed: usize) -> Result<(), usize> {
-        if self.data.gap_end - self.data.gap_start >= needed {
-            return Ok(());
-        }
-        self.data_mut().try_make_gap(needed)
+        self.try_make_gap(needed)
     }
 
     /// insert_1_both's move of the gap and copy: TEXT, of CHARS
@@ -526,38 +506,42 @@ impl GapText {
             return;
         }
         debug_assert!(at <= self.len() && at_char <= self.chars());
-        let data = self.data_mut();
-        data.move_gap(at, at_char);
-        data.make_gap(len);
-        write(&mut data.bytes[data.gap_start..data.gap_start + len]);
-        data.gap_start += len;
-        data.gap_char += chars;
-        data.chars += chars;
+        self.move_gap(at, at_char);
+        self.make_gap(len);
+        let start = self.gpt_byte;
+        write(&mut self.bytes_mut()[start..start + len]);
+        self.gpt_byte += len;
+        self.gap_size -= len;
+        self.gpt += chars;
+        self.z += chars;
+        self.z_byte += len;
     }
 
     /// del_range_2's widening of the gap over byte RANGE, the characters
     /// CHARS: the gap moved next to the range or inside it, then over it.
+    /// The bytes stay where they are: a scan sharing them reads its own
+    /// gap.
     pub(crate) fn delete(&mut self, range: std::ops::Range<usize>, chars: std::ops::Range<usize>) {
         if range.is_empty() {
             return;
         }
         debug_assert!(range.end <= self.len() && chars.end <= self.chars());
-        let data = self.data_mut();
-        if data.gap_start < range.start {
-            data.move_gap(range.start, chars.start);
-        } else if data.gap_start > range.end {
-            data.move_gap(range.end, chars.end);
+        if self.gpt_byte < range.start {
+            self.move_gap(range.start, chars.start);
+        } else if self.gpt_byte > range.end {
+            self.move_gap(range.end, chars.end);
         }
-        data.gap_end += range.end - data.gap_start;
-        data.gap_start = range.start;
-        data.gap_char = chars.start;
-        data.chars -= chars.len();
+        self.gap_size += range.len();
+        self.gpt_byte = range.start;
+        self.gpt = chars.start;
+        self.z -= chars.len();
+        self.z_byte -= range.len();
     }
 
     /// Whether a scan shares the bytes.
     #[cfg(test)]
     fn shared(&self) -> bool {
-        Rc::strong_count(&self.data) > 1
+        Rc::strong_count(&self.beg) > 1
     }
 }
 

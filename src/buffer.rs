@@ -326,28 +326,9 @@ pub(crate) struct BufferText {
     /// form is a byte longer than GNU's: a marker's byte position needs
     /// their count before it only when there are any.
     raw_markers: usize,
-    /// The count of the raw-byte markers before a byte offset, as the
-    /// last count found it: the next count scans from there, from the
-    /// start or from the end, whichever is nearest, as
-    /// buf_charpos_to_bytepos starts from the nearest known position.
-    /// Edits after it leave it; one before it moves it.
-    raw_anchor: Cell<(usize, usize)>,
-    /// Recent char/byte conversions of a text whose characters are not
-    /// all one byte.
-    positions: Cell<PositionCache>,
-    /// The conversions found far from every known position, in order:
-    /// buf_charpos_to_bytepos keeps one as a marker until the next GC
-    /// when it scanned more than 5000 characters for it, so a pass over
-    /// positions all through the text (sort-lines comparing its lines)
-    /// scans from the nearest of them.  Moved by an edit before them,
-    /// dropped by one over them.
-    checkpoints: RefCell<Vec<(usize, usize)>>,
-
-    /// Derived character view of the text around the last character read.
-    /// Syntax and motion code commonly scan adjacent characters through
-    /// `char_at`; retaining a decoded window avoids a conversion per
-    /// character while keeping the text the sole authority.
-    char_cache: RefCell<RopeCharCache>,
+    /// The text's caches, in their own allocation as GNU's region caches
+    /// are xmalloc'd outside the buffer.
+    caches: Box<TextCaches>,
 
     /// Bumped on every modification.
     modiff: ModCount,
@@ -418,6 +399,35 @@ pub(crate) struct BufferText {
     /// position; this typed sidecar is runtime representation, never a Lisp
     /// text property.
     extended_chars: Vec<(usize, u32)>,
+}
+
+/// What the text's readers keep of it to find positions and lines
+/// again, each kept or moved by an edit as it says.
+#[derive(Clone, Default)]
+struct TextCaches {
+    /// The count of the raw-byte markers before a byte offset, as the
+    /// last count found it: the next count scans from there, from the
+    /// start or from the end, whichever is nearest, as
+    /// buf_charpos_to_bytepos starts from the nearest known position.
+    /// Edits after it leave it; one before it moves it.
+    raw_anchor: Cell<(usize, usize)>,
+    /// Recent char/byte conversions of a text whose characters are not
+    /// all one byte.
+    positions: Cell<PositionCache>,
+    /// The conversions found far from every known position, in order:
+    /// buf_charpos_to_bytepos keeps one as a marker until the next GC
+    /// when it scanned more than 5000 characters for it, so a pass over
+    /// positions all through the text (sort-lines comparing its lines)
+    /// scans from the nearest of them.  Moved by an edit before them,
+    /// dropped by one over them.
+    checkpoints: RefCell<Vec<(usize, usize)>>,
+    /// Derived character view of the text around the last character read.
+    /// Syntax and motion code commonly scan adjacent characters through
+    /// `char_at`; retaining a decoded window avoids a conversion per
+    /// character while keeping the text the sole authority.
+    char_cache: RefCell<RopeCharCache>,
+    /// The newlines of the text, emptied by each change of its characters.
+    newlines: gap::NewlineIndex,
 }
 
 /// buf_charpos_to_bytepos's distance past which a conversion is kept.
@@ -589,10 +599,7 @@ impl BufferText {
         Self {
             text: GapText::from_str(text),
             raw_markers: count_raw_markers(text.as_bytes()),
-            raw_anchor: Cell::default(),
-            positions: Cell::default(),
-            checkpoints: RefCell::default(),
-            char_cache: RefCell::default(),
+            caches: Box::default(),
             modiff: 1,
             chars_modiff: 1,
             edit_serial: 0,
@@ -619,10 +626,7 @@ impl BufferText {
         let fresh = Self::from_str(text);
         self.text = fresh.text;
         self.raw_markers = fresh.raw_markers;
-        self.raw_anchor = fresh.raw_anchor;
-        self.positions = fresh.positions;
-        self.checkpoints = fresh.checkpoints;
-        self.char_cache = fresh.char_cache;
+        self.caches = fresh.caches;
     }
 
     /// The raw-byte markers in the first BYTES bytes of the text, counted
@@ -631,7 +635,7 @@ impl BufferText {
         if self.raw_markers == 0 {
             return 0;
         }
-        let (at, count) = self.raw_anchor.get();
+        let (at, count) = self.caches.raw_anchor.get();
         let to_end = self.text.len() - bytes;
         let count = if bytes.abs_diff(at) <= bytes.min(to_end) {
             if bytes >= at {
@@ -644,7 +648,7 @@ impl BufferText {
         } else {
             self.raw_markers - self.raw_markers_between(bytes, self.text.len())
         };
-        self.raw_anchor.set((bytes, count));
+        self.caches.raw_anchor.set((bytes, count));
         count
     }
 
@@ -717,10 +721,10 @@ impl BufferText {
         if self.text.is_ascii() {
             return;
         }
-        let mut positions = self.positions.get();
+        let mut positions = self.caches.positions.get();
         if positions.by_char(index).is_none() {
             positions.record(index, byte);
-            self.positions.set(positions);
+            self.caches.positions.set(positions);
         }
     }
 
@@ -733,11 +737,11 @@ impl BufferText {
         if index == self.text.chars() {
             return self.text.len();
         }
-        let mut positions = self.positions.get();
+        let mut positions = self.caches.positions.get();
         if let Some(byte) = positions.by_char(index) {
             return byte;
         }
-        let checkpoints = self.checkpoints.borrow();
+        let checkpoints = self.caches.checkpoints.borrow();
         let at = checkpoints.partition_point(|&(char, _)| char < index);
         let near = &checkpoints[at.saturating_sub(1)..(at + 1).min(checkpoints.len())];
         let (byte, counted) = self
@@ -748,13 +752,13 @@ impl BufferText {
             self.keep_checkpoint(at, index, byte);
         }
         positions.record(index, byte);
-        self.positions.set(positions);
+        self.caches.positions.set(positions);
         byte
     }
 
     /// Char INDEX at byte BYTE kept as the AT'th checkpoint.
     fn keep_checkpoint(&self, at: usize, index: usize, byte: usize) {
-        let mut checkpoints = self.checkpoints.borrow_mut();
+        let mut checkpoints = self.caches.checkpoints.borrow_mut();
         if checkpoints.len() >= CHECKPOINT_LIMIT {
             checkpoints.clear();
             checkpoints.push((index, byte));
@@ -780,7 +784,7 @@ impl BufferText {
         if byte == self.text.len() {
             return self.text.chars();
         }
-        let mut positions = self.positions.get();
+        let mut positions = self.caches.positions.get();
         if let Some(index) = positions.by_byte(byte) {
             return index;
         }
@@ -789,7 +793,7 @@ impl BufferText {
         while start > 0 && start < self.text.len() && self.text.byte(start) & 0xC0 == 0x80 {
             start -= 1;
         }
-        let checkpoints = self.checkpoints.borrow();
+        let checkpoints = self.caches.checkpoints.borrow();
         let at = checkpoints.partition_point(|&(_, at)| at < start);
         let near = &checkpoints[at.saturating_sub(1)..(at + 1).min(checkpoints.len())];
         let (index, counted) = self
@@ -804,7 +808,7 @@ impl BufferText {
                 self.keep_checkpoint(at, index, byte);
             }
             positions.record(index, byte);
-            self.positions.set(positions);
+            self.caches.positions.set(positions);
         }
         index
     }
@@ -825,11 +829,11 @@ impl BufferText {
 
     /// The newlines in byte RANGE.
     fn newlines_in(&self, range: std::ops::Range<usize>) -> usize {
-        if let Some(offsets) = self.text.newline_offsets() {
+        if let Some(offsets) = self.caches.newlines.offsets(&self.text) {
             let before = |byte: usize| offsets.partition_point(|&at| (at as usize) < byte);
             return before(range.end) - before(range.start);
         }
-        self.text.note_newline_scan(range.len());
+        self.caches.newlines.note_scan(range.len());
         let (first, second) = self.text.range_halves(range);
         memchr::memchr_iter(b'\n', first.as_bytes()).count()
             + memchr::memchr_iter(b'\n', second.as_bytes()).count()
@@ -846,7 +850,7 @@ impl BufferText {
         if index == 0 {
             return 0;
         }
-        if let Some(offsets) = self.text.newline_offsets() {
+        if let Some(offsets) = self.caches.newlines.offsets(&self.text) {
             return offsets
                 .get(index - 1)
                 .map_or(self.text.chars(), |&at| self.byte_to_char(at as usize + 1));
@@ -857,12 +861,12 @@ impl BufferText {
             for at in memchr::memchr_iter(b'\n', half.as_bytes()) {
                 left -= 1;
                 if left == 0 {
-                    self.text.note_newline_scan(start + at + 1);
+                    self.caches.newlines.note_scan(start + at + 1);
                     return self.byte_to_char(start + at + 1);
                 }
             }
         }
-        self.text.note_newline_scan(self.text.len());
+        self.caches.newlines.note_scan(self.text.len());
         self.text.chars()
     }
 
@@ -951,16 +955,22 @@ impl BufferText {
         len: usize,
         raw_markers: usize,
     ) {
-        self.positions.get_mut().inserted(char_index, added, len);
-        let checkpoints = self.checkpoints.get_mut();
+        if len != 0 {
+            self.caches.newlines = gap::NewlineIndex::default();
+        }
+        self.caches
+            .positions
+            .get_mut()
+            .inserted(char_index, added, len);
+        let checkpoints = self.caches.checkpoints.get_mut();
         let after = checkpoints.partition_point(|&(char, _)| char <= char_index);
         for entry in &mut checkpoints[after..] {
             *entry = (entry.0 + added, entry.1 + len);
         }
         self.raw_markers += raw_markers;
-        let (at, count) = self.raw_anchor.get();
+        let (at, count) = self.caches.raw_anchor.get();
         if at > byte {
-            self.raw_anchor.set((at + len, count + raw_markers));
+            self.caches.raw_anchor.set((at + len, count + raw_markers));
         }
         self.check_counts();
     }
@@ -1009,8 +1019,14 @@ impl BufferText {
             }
         }
         self.text.delete(start..start + bytes, range.clone());
-        self.positions.get_mut().removed(range.clone(), bytes);
-        let checkpoints = self.checkpoints.get_mut();
+        if bytes != 0 {
+            self.caches.newlines = gap::NewlineIndex::default();
+        }
+        self.caches
+            .positions
+            .get_mut()
+            .removed(range.clone(), bytes);
+        let checkpoints = self.caches.checkpoints.get_mut();
         let first = checkpoints.partition_point(|&(char, _)| char <= range.start);
         // One at the deletion's end would land on one at its start.
         let last = checkpoints.partition_point(|&(char, _)| char <= range.end);
@@ -1019,11 +1035,11 @@ impl BufferText {
             *entry = (entry.0 - range.len(), entry.1 - bytes);
         }
         self.raw_markers -= markers;
-        let (at, count) = self.raw_anchor.get();
+        let (at, count) = self.caches.raw_anchor.get();
         if at >= start + bytes {
-            self.raw_anchor.set((at - bytes, count - markers));
+            self.caches.raw_anchor.set((at - bytes, count - markers));
         } else if at > start {
-            self.raw_anchor.set((0, 0));
+            self.caches.raw_anchor.set((0, 0));
         }
         self.check_counts();
     }
@@ -1044,7 +1060,7 @@ impl BufferText {
                 self.raw_markers,
                 count_raw_markers(before.as_bytes()) + count_raw_markers(after.as_bytes())
             );
-            let (at, count) = self.raw_anchor.get();
+            let (at, count) = self.caches.raw_anchor.get();
             assert_eq!(count, self.raw_markers_between(0, at));
         }
     }
@@ -3137,7 +3153,13 @@ impl Buffer {
     }
 
     fn invalidate_char_cache(&mut self) {
-        self.text.get().borrow_mut().char_cache.get_mut().valid = false;
+        self.text
+            .get()
+            .borrow_mut()
+            .caches
+            .char_cache
+            .get_mut()
+            .valid = false;
     }
 
     /// Character at position (1-based). None if out of range.
@@ -3165,13 +3187,13 @@ impl Buffer {
         if text.len_chars() == text.len_bytes() {
             return Some(char::from(text.text.byte(index)));
         }
-        if let Some(ch) = text.char_cache.borrow().character(index) {
+        if let Some(ch) = text.caches.char_cache.borrow().character(index) {
             return Some(ch);
         }
         // A read away from the last one (`following-char' at each line's
         // start) decodes its character where it stands, as FETCH_CHAR does.
         {
-            let mut cache = text.char_cache.borrow_mut();
+            let mut cache = text.caches.char_cache.borrow_mut();
             let scanning = cache
                 .last_single
                 .is_some_and(|last| last.abs_diff(index) <= 1);
@@ -3188,7 +3210,7 @@ impl Buffer {
         let (_, _, chunk_start) = text.chunk_at_char(index);
         let first = index.saturating_sub(CHAR_CACHE_BEHIND).max(chunk_start);
         let byte = text.char_to_byte(first);
-        let mut cache = text.char_cache.borrow_mut();
+        let mut cache = text.caches.char_cache.borrow_mut();
         cache.start = first;
         cache.chars.clear();
         cache
@@ -5109,7 +5131,7 @@ mod tests {
                     "round {round}"
                 );
             }
-            let checkpoints = buf.text.get().borrow().checkpoints.borrow().clone();
+            let checkpoints = buf.text.get().borrow().caches.checkpoints.borrow().clone();
             assert!(checkpoints.windows(2).all(|pair| pair[0].0 < pair[1].0));
             for (index, byte) in checkpoints {
                 assert_eq!(offsets[index], byte, "round {round}");
@@ -5127,7 +5149,15 @@ mod tests {
                 _ => {}
             }
         }
-        assert!(!buf.text.get().borrow().checkpoints.borrow().is_empty());
+        assert!(
+            !buf.text
+                .get()
+                .borrow()
+                .caches
+                .checkpoints
+                .borrow()
+                .is_empty()
+        );
     }
 
     #[test]
@@ -5298,22 +5328,22 @@ mod tests {
         // A read alone decodes its character where it stands; the next
         // one beside it scans, filling the window.
         assert_eq!(buf.char_at(1500), Some('a'));
-        assert!(!buf.text.get().borrow().char_cache.borrow().valid);
+        assert!(!buf.text.get().borrow().caches.char_cache.borrow().valid);
         assert_eq!(buf.char_at(1501), Some('λ'));
-        assert!(buf.text.get().borrow().char_cache.borrow().valid);
+        assert!(buf.text.get().borrow().caches.char_cache.borrow().valid);
         assert_eq!(buf.char_at(3001), Some('b'));
         assert_eq!(
-            buf.text.get().borrow().char_cache.borrow().start,
+            buf.text.get().borrow().caches.char_cache.borrow().start,
             1500 - CHAR_CACHE_BEHIND
         );
 
         buf.goto_char(1);
         buf.insert("z");
-        assert!(!buf.text.get().borrow().char_cache.borrow().valid);
+        assert!(!buf.text.get().borrow().caches.char_cache.borrow().valid);
         assert_eq!(buf.char_at(1502), Some('λ'));
 
         buf.replace_region_in_place(1502, 1503, "Ω", &[], false);
-        assert!(!buf.text.get().borrow().char_cache.borrow().valid);
+        assert!(!buf.text.get().borrow().caches.char_cache.borrow().valid);
         assert_eq!(buf.char_at(1502), Some('Ω'));
 
         assert_eq!(buf.delete_region(1, 2), Ok("z".into()));
@@ -5444,18 +5474,22 @@ mod tests {
         let text: String = (0..60)
             .map(|line| format!("{}λ{line}\n", "x".repeat(line % 9)))
             .collect();
+        let recorded = |buf: &Buffer| {
+            let text = buf.text.get().borrow();
+            text.caches.newlines.offsets(&text.text).is_some()
+        };
         let mut buf = Buffer::from_text("lines", &text);
         let scanned = answers(&buf);
-        assert!(buf.text.get().borrow().text.newline_offsets().is_some());
+        assert!(recorded(&buf));
         assert_eq!(answers(&buf), scanned);
         buf.goto_char(40);
         buf.insert("ab\ncd\n");
-        assert!(buf.text.get().borrow().text.newline_offsets().is_none());
+        assert!(!recorded(&buf));
         let reference = Buffer::from_text("reference", &buf.full_buffer_string());
         let edited = answers(&reference);
         assert_eq!(answers(&buf), edited);
         assert_eq!(answers(&buf), edited);
-        assert!(buf.text.get().borrow().text.newline_offsets().is_some());
+        assert!(recorded(&buf));
         assert_eq!(buf.delete_region(40, 46).as_deref(), Ok("ab\ncd\n"));
         assert_eq!(answers(&buf), {
             let reference = Buffer::from_text("reference", &buf.full_buffer_string());
