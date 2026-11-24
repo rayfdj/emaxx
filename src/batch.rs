@@ -1697,32 +1697,21 @@ mod tests {
     fn embedder_eval_evaluates_its_first_form_as_command_line_1_does() {
         // startup.el's command-line-1: `(read-from-string STR)', then
         // `(eval EXPR t)'; its check of the text after the form is a
-        // search that always matches.  GNU prints 1 for each of the first
-        // two, and an empty --eval is end-of-file, which batch's
-        // top-level error handler ends with (kill-emacs -1), status 255.
-        // Each run collects what `princ' prints through `standard-output'.
-        let gnu = crate::compat::project_root().join("../emacs/src/emacs");
+        // search that always matches.  GNU 30.2's answers, recorded from
+        //   emacs -Q --batch --eval "$COLLECT" --eval "$EXPRESSION" \
+        //     --eval '(let ((standard-output t))
+        //               (princ (concat (nreverse zz-eval-out))))'
+        // with COLLECT the first action below: "1" and exit 0 for each of
+        // the first two, and for an empty --eval nothing and exit 255,
+        // the end-of-file error that batch's top-level handler ends with
+        // (kill-emacs -1).  What `princ' prints is collected through
+        // `standard-output'.
         let collect = "(setq zz-eval-out nil standard-output (lambda (c) (push c zz-eval-out)))";
-        let report = "(let ((standard-output t)) (princ (concat (nreverse zz-eval-out))))";
-        for (expression, printed, status) in [
+        for (expression, printed, exit_code) in [
             ("(princ 1) (princ 2)", "1", 0),
             ("(princ 1)  \t\n ", "1", 0),
-            ("", "", 255),
+            ("", "", -1),
         ] {
-            crate::test_support::mark_process_test();
-            let output = std::process::Command::new(&gnu)
-                .args(["-Q", "--batch", "--eval", collect, "--eval", expression])
-                .args(["--eval", report])
-                .output()
-                .expect("run GNU Emacs");
-            assert_eq!(
-                (
-                    String::from_utf8_lossy(&output.stdout).into_owned(),
-                    output.status.code()
-                ),
-                (printed.to_string(), Some(status)),
-                "GNU for {expression:?}"
-            );
             let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
             let actions = vec![
                 BatchAction::Eval(collect.into()),
@@ -1731,7 +1720,7 @@ mod tests {
             assert_eq!(
                 run_initialized_batch(&mut interpreter, &BatchRunOptions::default(), &actions)
                     .expect("the actions run"),
-                BatchRunOutcome::Exit(if status == 0 { 0 } else { -1 }),
+                BatchRunOutcome::Exit(exit_code),
                 "the embedder for {expression:?}"
             );
             let collected = interpreter
