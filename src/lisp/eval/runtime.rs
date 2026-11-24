@@ -715,7 +715,7 @@ impl Interpreter {
         buffer.enter_position_markers();
         // The C variable record_point reads, which a buffer made since its
         // last store has yet to hold.
-        buffer.set_undo_inhibit_record_point(self.undo_inhibit_record_point);
+        buffer.set_undo_inhibit_record_point(self.undo_inhibit_record_point());
         drop(buffer);
         // A localized GNU forwarding symbol loads the newly current
         // buffer's cell into its C variable during a buffer switch.

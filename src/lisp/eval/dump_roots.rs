@@ -22,10 +22,6 @@ use crate::lisp::types::Kind;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
-        "case_fold_search",
-        "search.c's staticpro'd Vcase_fold_search, the forwarded C slot of case-fold-search, which install_image refills from the loaded current buffer's binding",
-    ),
-    (
         "require_nesting",
         "fns.c's staticpro'd require_nesting_list holds the features of the running `require' loads, none once the dump's own load ends; a session starts with none",
     ),
@@ -216,10 +212,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "the test harness's template ownership, not process state",
     ),
     (
-        "max_lisp_eval_depth",
-        "the forwarded C slot of max-lisp-eval-depth, refilled from the symbol's value on install",
-    ),
-    (
         "call_depth_gate",
         "a word derived from the quit flag, the pending termination and max-lisp-eval-depth, refreshed as each is installed",
     ),
@@ -236,10 +228,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "keyboard.c's return_to_command_loop, set by the running command loops; the new process has none until it enters its own",
     ),
     (
-        "debug_on_next_call",
-        "the forwarded C slot of debug-on-next-call, refilled likewise",
-    ),
-    (
         "hooks_cleared",
         "eval.c's Vrun_hooks cleared by shut_down_emacs, which a dumping process has not run",
     ),
@@ -250,14 +238,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "fd_thread_locks",
         "process.c's fd_callback_info thread locks, of descriptors a dumped image does not carry",
-    ),
-    (
-        "undo_inhibit_record_point",
-        "the forwarded C slot of undo-inhibit-record-point, refilled likewise with the buffers' copies",
-    ),
-    (
-        "parse_sexp_lookup_properties",
-        "the forwarded C slot of parse-sexp-lookup-properties, refilled likewise from the current buffer's binding (install_image)",
     ),
     (
         "executing_kbd_macro",

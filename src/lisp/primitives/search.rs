@@ -686,7 +686,7 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
             // gl_state too.
             Object::String { .. } | Object::None => return,
         };
-        if !self.interp.parse_sexp_lookup_properties {
+        if !self.interp.parse_sexp_lookup_properties() {
             return;
         }
         self.keep_text();
@@ -1415,7 +1415,7 @@ pub(super) fn looking_at_1(
         // SAFETY: nothing runs before the match, which keeps the bytes
         // before it runs what could change them (`LispMatchEnv::reads').
         snapshot = unsafe { BufferSnapshot::take(menv.interp) };
-        if menv.interp.parse_sexp_lookup_properties {
+        if menv.interp.parse_sexp_lookup_properties() {
             snapshot.keep_text();
         }
         let (text, pos) = menv.reads(&snapshot);
@@ -1686,7 +1686,7 @@ fn search_buffer_re(
     let case_table = interp
         .case_fold_search_active()
         .then(|| interp.current_case_canon_table());
-    let share = interp.parse_sexp_lookup_properties;
+    let share = interp.parse_sexp_lookup_properties();
     // SAFETY: nothing runs before the match, which keeps the bytes before
     // it runs what could change them (`LispMatchEnv::reads').
     let snapshot = unsafe { BufferSnapshot::take(interp) };
@@ -2311,7 +2311,7 @@ pub(crate) fn fast_looking_at(
         // SAFETY: nothing runs before the match, which keeps the bytes
         // before it runs what could change them (`LispMatchEnv::reads').
         let snapshot = unsafe { BufferSnapshot::take(interp) };
-        if interp.parse_sexp_lookup_properties {
+        if interp.parse_sexp_lookup_properties() {
             snapshot.keep_text();
         }
         let (entry, result) = {

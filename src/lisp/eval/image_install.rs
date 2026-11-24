@@ -326,15 +326,15 @@ impl Interpreter {
     fn install_root_slot(&mut self, slot: RootSlot, value: &Value) {
         match slot {
             RootSlot::QuitFlag => {
-                self.quit_flag = *value;
+                self.c_variables.quit_flag.set(*value);
                 self.refresh_call_depth_gate();
             }
-            RootSlot::InhibitQuit => self.inhibit_quit = *value,
-            RootSlot::ThrowOnInput => self.throw_on_input = *value,
+            RootSlot::InhibitQuit => self.c_variables.inhibit_quit.set(*value),
+            RootSlot::ThrowOnInput => self.c_variables.throw_on_input.set(*value),
             RootSlot::OverridingPlistEnvironment => {
-                self.overriding_plist_environment = *value;
+                self.c_variables.overriding_plist_environment.set(*value);
             }
-            RootSlot::LoadPath => self.load_path = *value,
+            RootSlot::LoadPath => self.c_variables.load_path.set(*value),
             RootSlot::LoadsInProgress => self.loads_in_progress = *value,
             RootSlot::LocalTimeZoneRule => self.local_time_zone_rule = *value,
             RootSlot::FrameAndBufferState => self.frame_and_buffer_state = *value,

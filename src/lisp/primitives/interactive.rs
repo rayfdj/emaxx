@@ -91,30 +91,22 @@ static PENDING_FATAL_SIGNAL: std::sync::atomic::AtomicI32 = std::sync::atomic::A
 static FATAL_ERROR_IN_PROGRESS: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(false);
 
-/// keyboard.c's DEFVAR_BOOL attempt_orderly_shutdown_on_fatal_signal, as
-/// the interpreter last stored it (`set_attempt_orderly_shutdown'), for a
-/// fault's handler, which has no interpreter to read it from.
-#[cfg(unix)]
+/// keyboard.c's DEFVAR_BOOL attempt_orderly_shutdown_on_fatal_signal, the
+/// C variable its symbol forwards to (`attempt_orderly_shutdown_variable'),
+/// which a fault's handler reads, having no interpreter.
 static ATTEMPT_ORDERLY_SHUTDOWN: std::sync::atomic::AtomicBool =
     std::sync::atomic::AtomicBool::new(true);
 
-/// The store of `attempt-orderly-shutdown-on-fatal-signal' into its C
-/// variable.
-pub(crate) fn set_attempt_orderly_shutdown(attempt: bool) {
-    #[cfg(unix)]
-    ATTEMPT_ORDERLY_SHUTDOWN.store(attempt, UserSignalOrdering::Relaxed);
-    #[cfg(not(unix))]
-    let _ = attempt;
+/// The C variable `attempt-orderly-shutdown-on-fatal-signal' forwards to,
+/// for its symbol's Lisp_Boolfwd.
+pub(crate) fn attempt_orderly_shutdown_variable() -> &'static std::sync::atomic::AtomicBool {
+    &ATTEMPT_ORDERLY_SHUTDOWN
 }
 
-/// The C variable `attempt-orderly-shutdown-on-fatal-signal' forwards to.
+/// The value of the C variable `attempt-orderly-shutdown-on-fatal-signal'
+/// forwards to.
 pub(crate) fn attempt_orderly_shutdown() -> bool {
-    #[cfg(unix)]
-    {
-        ATTEMPT_ORDERLY_SHUTDOWN.load(UserSignalOrdering::Relaxed)
-    }
-    #[cfg(not(unix))]
-    true
+    ATTEMPT_ORDERLY_SHUTDOWN.load(UserSignalOrdering::Relaxed)
 }
 
 /// The signals sysdep.c:init_signals gives process_fatal_action beyond the

@@ -24,6 +24,7 @@ mod bindings;
 pub(crate) use bindings::module_suffix_values;
 mod bootstrap;
 mod buffers;
+mod c_variables;
 pub(crate) mod coding;
 pub(crate) mod continuations;
 mod control_forms;
@@ -4120,10 +4121,13 @@ impl ImageGraphCopier {
         copied.install_copied_name(self.copy(&symbol.lisp_name()));
         if let Some(alias) = symbol.cell().alias() {
             copied.cell().set_alias(self.copy_symbol(alias));
-        } else if let Some(counter) = symbol.cell().forwarded_counter() {
+        } else if let Some(fwd @ crate::lisp::alloc::LispFwd::Counter(_)) = symbol.cell().forward()
+        {
             // The copy forwards to the same process-wide word; copying its
             // current integer would freeze the counter in the new editor.
-            copied.cell().forward_to_counter(counter);
+            // An editor's own C variables are the copy's: its forwards are
+            // made with them (`connect_forwarded_eval_cells').
+            copied.cell().forward_to(fwd);
         } else if let Some(value) = symbol.cell().value() {
             copied.cell().set_value(self.copy(&value));
         }
@@ -5168,14 +5172,17 @@ impl Interpreter {
     ) -> Vec<(crate::lisp::primitives::pdumper::image::RootSlot, Value)> {
         use crate::lisp::primitives::pdumper::image::RootSlot;
         let mut roots = vec![
-            (RootSlot::QuitFlag, self.quit_flag),
-            (RootSlot::InhibitQuit, self.inhibit_quit),
-            (RootSlot::ThrowOnInput, self.throw_on_input),
+            (RootSlot::QuitFlag, self.c_variables.quit_flag.get()),
+            (RootSlot::InhibitQuit, self.c_variables.inhibit_quit.get()),
+            (
+                RootSlot::ThrowOnInput,
+                self.c_variables.throw_on_input.get(),
+            ),
             (
                 RootSlot::OverridingPlistEnvironment,
-                self.overriding_plist_environment,
+                self.c_variables.overriding_plist_environment.get(),
             ),
-            (RootSlot::LoadPath, self.load_path),
+            (RootSlot::LoadPath, self.c_variables.load_path.get()),
             (RootSlot::LoadsInProgress, self.loads_in_progress),
             (RootSlot::LocalTimeZoneRule, self.local_time_zone_rule),
             (RootSlot::FrameAndBufferState, self.frame_and_buffer_state),
@@ -5715,14 +5722,12 @@ impl Interpreter {
                 mark(&Value::Symbol(*symbol));
             }
         }
-        // lread.c:defvar_lisp static-protects the C slot, independently of
-        // the symbol's current redirect or plain value after makunbound.
-        mark(&self.quit_flag);
-        mark(&self.inhibit_quit);
-        mark(&self.throw_on_input);
-        mark(&self.case_fold_search);
-        mark(&self.overriding_plist_environment);
-        mark(&self.load_path);
+        // lread.c:defvar_lisp static-protects the C variable, which holds
+        // the value of a symbol forwarded to it, and which keeps its own
+        // after makunbound has made the symbol plain.
+        for value in self.c_variables.objects() {
+            mark(&value);
+        }
         mark(&self.loads_in_progress);
         for feature in &self.require_nesting {
             mark(&Value::Symbol(*feature));
@@ -6128,9 +6133,10 @@ impl Interpreter {
         );
         let symbol_owner = crate::lisp::types::symbols::SymbolOwner::fresh();
         // The copy's own C flag, as the image holds the variable's value.
-        symbol_owner
-            .symbols_with_pos_enabled()
-            .set(self.symbols_with_positions_enabled());
+        symbol_owner.symbols_with_pos_enabled().store(
+            self.symbols_with_positions_enabled(),
+            std::sync::atomic::Ordering::Relaxed,
+        );
         let symbol_scope = symbol_owner.enter();
         let mut clone = self.clone();
         clone.finalizers = crate::lisp::alloc::FinalizerList::default();
@@ -6189,15 +6195,24 @@ impl Interpreter {
                 };
                 clone.doomed_finalizers.append(copied);
             }
-            // Copy the actual C-side fields. The graph copier preserves
-            // aliasing with Lisp cells while forwarded, but makunbound may
-            // already have made the two independent.
-            clone.quit_flag = c.copy(&self.quit_flag);
-            clone.inhibit_quit = c.copy(&self.inhibit_quit);
-            clone.throw_on_input = c.copy(&self.throw_on_input);
-            clone.case_fold_search = c.copy(&self.case_fold_search);
-            clone.overriding_plist_environment = c.copy(&self.overriding_plist_environment);
-            clone.load_path = c.copy(&self.load_path);
+            // The copy's own C variables hold copies of the objects (a
+            // symbol forwarded to one is copied as a plain value, which
+            // `connect_forwarded_eval_cells' below makes a forward again;
+            // makunbound may have made the two independent).
+            let (from, to) = (&self.c_variables, &clone.c_variables);
+            for (source, target) in [
+                (&from.quit_flag, &to.quit_flag),
+                (&from.inhibit_quit, &to.inhibit_quit),
+                (&from.throw_on_input, &to.throw_on_input),
+                (&from.case_fold_search, &to.case_fold_search),
+                (
+                    &from.overriding_plist_environment,
+                    &to.overriding_plist_environment,
+                ),
+                (&from.load_path, &to.load_path),
+            ] {
+                target.set(c.copy(&source.get()));
+            }
             clone.loads_in_progress = c.copy(&self.loads_in_progress);
             for feature in &mut clone.require_nesting {
                 *feature = c.copy_symbol(*feature);
@@ -6523,6 +6538,8 @@ impl Interpreter {
         // A copied buffer starts with no windows counted; the copied
         // windows show the copies.
         clone.recount_buffer_windows();
+        // The copy's symbols forward to its own C variables.
+        clone.connect_forwarded_eval_cells();
 
         drop(symbol_scope);
         clone.select_symbol_owner();
@@ -6645,6 +6662,9 @@ impl Clone for Interpreter {
 
 impl Drop for InterpreterState {
     fn drop(&mut self) {
+        // Its C variables go with it; a symbol forwarded to one, which a
+        // later reader can still name, keeps the value in its cell.
+        self.disconnect_forwarded_eval_cells();
         crate::lisp::alloc::unregister_state(std::ptr::from_mut::<InterpreterState>(self) as usize);
     }
 }
@@ -6702,22 +6722,12 @@ pub struct InterpreterState {
     /// `Lisp_Symbol' fields, per interpreter).  Bound values enumerate in
     /// first-binding order.
     globals: SymbolCells,
-    /// Directly forwarded Lisp_Object cells read by the C implementation.
-    /// GNU reads these globals without doing symbol-table work; keep the same
-    /// direct state while ordinary Lisp access remains visible through the
-    /// canonical global value cells below.
-    quit_flag: Value,
-    inhibit_quit: Value,
-    throw_on_input: Value,
-    /// undo.c's DEFVAR_BOOL `undo_inhibit_record_point', which the buffers
-    /// hold as well (`set_undo_inhibit_record_point').
-    undo_inhibit_record_point: bool,
-    /// search.c's Vcase_fold_search and syntax.c's DEFVAR_BOOL
-    /// parse_sexp_lookup_properties, both made buffer-local when set:
-    /// the current buffer's values, which set_buffer_internal_2 loads, as
-    /// the matcher and the scanners read them.
-    pub(crate) case_fold_search: Value,
-    pub(crate) parse_sexp_lookup_properties: bool,
+    /// The C variables the evaluator reads (globals.h's emacs_globals),
+    /// which their symbols forward to: each one's value is there alone
+    /// while its symbol is neither localized nor detached by `makunbound'.
+    /// The image carries them as root slots (the DEFVAR_LISPs) and through
+    /// their symbols' values (the rest), which install_image stores back.
+    pub(crate) c_variables: c_variables::CVariables,
     /// eval.c's Vrun_hooks cleared: shut_down_emacs has begun, and no hook
     /// runs from then on.
     pub(crate) hooks_cleared: bool,
@@ -6728,8 +6738,6 @@ pub struct InterpreterState {
     /// `set-process-thread' locked to a thread, which no other thread's
     /// wait selects on; a descriptor keeps its lock until the thread dies.
     pub(crate) fd_thread_locks: std::collections::HashMap<i32, u64>,
-    overriding_plist_environment: Value,
-    max_lisp_eval_depth: i64,
     /// Ffuncall's depth bound for a call that does nothing else on its way
     /// in (`plain_bcall_entry'): MAX_LISP_EVAL_DEPTH, or below every depth
     /// while a quit or a termination is pending, calls are profiled or
@@ -6737,7 +6745,6 @@ pub struct InterpreterState {
     /// which the full entries' do_debug_on_call answers).  Every store of
     /// those refreshes it (`refresh_call_depth_gate').
     call_depth_gate: i64,
-    debug_on_next_call: bool,
     /// eval.c's Vsignaling_function: the function signal_or_quit found
     /// below `signal''s frame (and `error''s), for cmd_error to report.
     pub(crate) signaling_function: Value,
@@ -7210,9 +7217,6 @@ pub struct InterpreterState {
     /// font_style_to_value registers a style name it lacked.
     pub(crate) font_style_table: Value,
     standard_syntax_table_id: CharTableRef,
-    // lread.c:Vload_path is a rooted Lisp_Objfwd slot, not a host-side
-    // directory vector from which reads reconstruct new Lisp objects.
-    load_path: Value,
     /// lread.c's static-protected Vloads_in_progress, not a Lisp variable.
     pub(crate) loads_in_progress: Value,
     /// Features whose `require' loads are active, innermost last.  This is
@@ -7603,19 +7607,11 @@ impl Interpreter {
                 ("standard-translation-table-for-encode".into(), Value::Nil),
                 ("translation-table-for-input".into(), Value::Nil),
             ]),
-            quit_flag: Value::Nil,
-            inhibit_quit: Value::Nil,
-            throw_on_input: Value::Nil,
-            undo_inhibit_record_point: false,
-            case_fold_search: Value::T,
-            parse_sexp_lookup_properties: false,
+            c_variables: c_variables::CVariables::new(),
             hooks_cleared: false,
             inhibit_sentinels: false,
             fd_thread_locks: std::collections::HashMap::new(),
-            overriding_plist_environment: Value::Nil,
-            max_lisp_eval_depth: 1600,
             call_depth_gate: if core::profiling() { i64::MIN } else { 1600 },
-            debug_on_next_call: false,
             signaling_function: Value::Nil,
             autoload_queue: Value::Nil,
             will_dump_reported: false,
@@ -7889,7 +7885,6 @@ impl Interpreter {
             menu: Default::default(),
             font_style_table: Value::Nil,
             standard_syntax_table_id,
-            load_path: Value::Nil,
             loads_in_progress: Value::Nil,
             require_nesting: Vec::new(),
             lambda_capture_overrides: Vec::new(),
@@ -9357,7 +9352,7 @@ impl Interpreter {
     }
 
     pub(crate) fn set_load_path_value(&mut self, value: Value) {
-        self.load_path = value;
+        self.c_variables.load_path.set(value);
         // init_lread writes the C slot. After makunbound that slot is
         // independent of the now-plain Lisp symbol (data.c:set_internal).
         if !self.forwarded_variable_detached(&cached_symbol!("load-path").symbol()) {
@@ -9368,7 +9363,9 @@ impl Interpreter {
     pub(crate) fn configured_load_path(&self) -> Vec<PathBuf> {
         // Host path consumers project the current Lisp object on demand;
         // this vector is never stored or used as a second source of truth.
-        self.load_path
+        self.c_variables
+            .load_path
+            .get()
             .to_vec()
             .unwrap_or_default()
             .iter()

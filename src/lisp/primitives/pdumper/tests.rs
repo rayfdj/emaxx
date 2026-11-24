@@ -3260,7 +3260,7 @@ fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
                (set-buffer (get-buffer-create "cv-folding"))
                (set (make-local-variable 'case-fold-search) t)))"#,
     );
-    assert!(!source.case_fold_search_active() && source.parse_sexp_lookup_properties);
+    assert!(!source.case_fold_search_active() && source.parse_sexp_lookup_properties());
     let mut ctx = DumpContext::new(false, source.main_thread_record_id());
     if let Err(error) = write_image(&mut ctx, &source, RootSource::Interpreter) {
         match error {
@@ -3273,7 +3273,7 @@ fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
     let bytes = ctx.buffer().to_vec();
     let mut target = Interpreter::for_image();
     // The loading process's own words hold the C initial values.
-    assert!(target.case_fold_search_active() && !target.parse_sexp_lookup_properties);
+    assert!(target.case_fold_search_active() && !target.parse_sexp_lookup_properties());
     let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     target
         .install_image(
@@ -3289,7 +3289,7 @@ fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
         .init_after_pdump_load()
         .expect("initialize the loaded process");
     assert!(!target.case_fold_search_active());
-    assert!(target.parse_sexp_lookup_properties);
+    assert!(target.parse_sexp_lookup_properties());
     let answer = eval(
         &mut target,
         r#"(list (string-match "abc" "ABC")
@@ -3300,5 +3300,5 @@ fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
         answer,
         Value::list([Value::Nil, Value::Integer(0), Value::Nil])
     );
-    assert!(target.parse_sexp_lookup_properties);
+    assert!(target.parse_sexp_lookup_properties());
 }

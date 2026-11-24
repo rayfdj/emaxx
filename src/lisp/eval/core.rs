@@ -351,7 +351,7 @@ impl Interpreter {
         state.lisp_eval_depth += 1;
         // The depth counts frames on this stack, far below i64::MAX: the
         // compare is GNU's intmax_t one without a saturating conversion.
-        if state.lisp_eval_depth as i64 > state.max_lisp_eval_depth
+        if state.lisp_eval_depth as i64 > state.max_lisp_eval_depth_value()
             && self.lisp_eval_depth_exceeded()
         {
             return Err(self.excessive_lisp_nesting(env));
@@ -387,8 +387,8 @@ impl Interpreter {
         crate::lisp::native_comp::maybe_gc(self, env);
         let state: &mut InterpreterState = self;
         state.lisp_eval_depth += 1;
-        let deeper =
-            i64::try_from(state.lisp_eval_depth).unwrap_or(i64::MAX) > state.max_lisp_eval_depth;
+        let deeper = i64::try_from(state.lisp_eval_depth).unwrap_or(i64::MAX)
+            > state.max_lisp_eval_depth_value();
         // eval.c:2504-2509.  GNU increments separately in `eval_sub' and
         // `Ffuncall'; this is the eval_sub half.  Public
         // `call_function_value' below owns the Ffuncall half, while direct
@@ -435,8 +435,7 @@ impl Interpreter {
     fn lisp_eval_depth_exceeded_slow(&mut self, depth: i64) -> bool {
         if self.max_lisp_eval_depth_value() < 100 {
             if self.forwarded_variable_detached(&cached_symbol!("max-lisp-eval-depth").symbol()) {
-                self.max_lisp_eval_depth = 100;
-                self.refresh_call_depth_gate();
+                self.set_max_lisp_eval_depth_in_place(100);
             } else {
                 self.set_symbol_value_cell("max-lisp-eval-depth", Value::Integer(100));
             }
@@ -1748,8 +1747,7 @@ impl Interpreter {
     /// core's assignments do.
     fn store_stack_limits(&mut self, depth: i64, reserve: i64) {
         if self.forwarded_variable_detached(&cached_symbol!("max-lisp-eval-depth").symbol()) {
-            self.max_lisp_eval_depth = depth;
-            self.refresh_call_depth_gate();
+            self.set_max_lisp_eval_depth_in_place(depth);
         } else {
             self.set_symbol_value_cell("max-lisp-eval-depth", Value::Integer(depth));
         }
@@ -1911,7 +1909,7 @@ impl Interpreter {
     /// binding with the same name.
     pub(crate) fn clear_quit_flag_in_place(&mut self) {
         if self.forwarded_variable_detached(&cached_symbol!("quit-flag").symbol()) {
-            self.quit_flag = Value::Nil;
+            self.c_variables.quit_flag.set(Value::Nil);
             self.refresh_call_depth_gate();
         } else {
             self.set_symbol_value_cell("quit-flag", Value::Nil);
@@ -2707,14 +2705,15 @@ impl InterpreterState {
         self.c_stack_safe_depth = self
             .c_stack_safe_depth
             .min(continuations::c_stack_safe_depth());
-        self.call_depth_gate = if !self.quit_flag.is_nil()
+        self.call_depth_gate = if !self.quit_flag_is_nil()
             || self.pending_termination.is_some()
-            || self.debug_on_next_call
+            || self.debug_on_next_call()
             || profiling()
         {
             i64::MIN
         } else {
-            self.max_lisp_eval_depth.min(self.c_stack_safe_depth)
+            self.max_lisp_eval_depth_value()
+                .min(self.c_stack_safe_depth)
         };
     }
 
@@ -2877,7 +2876,7 @@ mod eval_value_buffer_tests {
             .expect("bind forwarded load-path");
         assert!(primitives::values_eq_in_env(
             &interpreter,
-            &interpreter.load_path,
+            &interpreter.c_variables.load_path.get(),
             &temporary,
             &env
         ));
@@ -2886,7 +2885,7 @@ mod eval_value_buffer_tests {
             .expect("restore forwarded load-path");
         assert!(primitives::values_eq_in_env(
             &interpreter,
-            &interpreter.load_path,
+            &interpreter.c_variables.load_path.get(),
             &original,
             &env
         ));
@@ -2900,7 +2899,7 @@ mod eval_value_buffer_tests {
         );
         assert!(primitives::values_eq_in_env(
             &interpreter,
-            &interpreter.load_path,
+            &interpreter.c_variables.load_path.get(),
             &temporary,
             &env
         ));
@@ -2909,7 +2908,7 @@ mod eval_value_buffer_tests {
             .expect("select default-path buffer");
         assert!(primitives::values_eq_in_env(
             &interpreter,
-            &interpreter.load_path,
+            &interpreter.c_variables.load_path.get(),
             &original,
             &env
         ));
@@ -2918,14 +2917,14 @@ mod eval_value_buffer_tests {
             .expect("select local-path buffer");
         assert!(primitives::values_eq_in_env(
             &interpreter,
-            &interpreter.load_path,
+            &interpreter.c_variables.load_path.get(),
             &temporary,
             &env
         ));
         interpreter.remove_buffer_local_value(first_buffer, "load-path");
         assert!(primitives::values_eq_in_env(
             &interpreter,
-            &interpreter.load_path,
+            &interpreter.c_variables.load_path.get(),
             &original,
             &env
         ));
@@ -2985,7 +2984,7 @@ mod eval_value_buffer_tests {
             interpreter.set_symbol_value_cell("load-path", plain);
             assert!(primitives::values_eq_in_env(
                 interpreter,
-                &interpreter.load_path,
+                &interpreter.c_variables.load_path.get(),
                 &original,
                 &env
             ));
@@ -3065,7 +3064,7 @@ mod eval_value_buffer_tests {
         assert!(primitives::values_eq_in_env(
             &copied,
             &copied_path,
-            &copied.load_path,
+            &copied.c_variables.load_path.get(),
             &Env::new()
         ));
         assert!(primitives::values_eq_in_env(
@@ -3570,7 +3569,7 @@ mod eval_value_buffer_tests {
 
         // Once C clears the quit slot, no detachment snapshot may keep its
         // former object alive. The other seven independently rooted keys stay.
-        interpreter.quit_flag = Value::Nil;
+        interpreter.c_variables.quit_flag.set(Value::Nil);
         interpreter.refresh_call_depth_gate();
         crate::lisp::alloc::clobber_stack();
         check(&interpreter, &env, table_id, false);
@@ -3605,7 +3604,7 @@ mod eval_value_buffer_tests {
         ));
         assert_eq!(copied_c, c_value);
         for child in [
-            copied.inhibit_quit,
+            copied.c_variables.inhibit_quit.get(),
             copied
                 .symbol_value_cell("inhibit-quit")
                 .expect("still forwarded"),

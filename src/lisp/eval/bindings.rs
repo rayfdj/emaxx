@@ -59,7 +59,7 @@ impl InterpreterState {
     ) -> Option<Result<Value, LispError>> {
         if let Some(environment) = current_environment(env) {
             // Fassq's EQ, with this editor's flag read once.
-            let found = if self.globals.symbols_with_pos_enabled().get() {
+            let found = if self.symbols_with_positions_enabled() {
                 crate::lisp::types::assq_binding_with_pos(environment, name)
             } else {
                 crate::lisp::types::assq_binding_bare(environment, name)
@@ -731,7 +731,7 @@ impl Interpreter {
             "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),
             "overwrite-mode" => Some(Value::Nil),
-            "load-path" => Some(self.load_path),
+            "load-path" => Some(self.c_variables.load_path.get()),
             "installation-directory" => Some(
                 primitives::compat_installation_directory()
                     .map(|value| Value::String(value.into()))

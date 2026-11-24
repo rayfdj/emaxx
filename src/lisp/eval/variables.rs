@@ -6,8 +6,11 @@ use super::*;
 use crate::lisp::types::Kind;
 use crate::lisp::types::LispErrorKind;
 use crate::lisp::types::SymbolName;
+use std::sync::atomic::Ordering;
 
-/// The variables forwarded to evaluator cells (`update_forwarded_eval_cell').
+/// The C variables the evaluator reads, each in `c_variables' (or the
+/// symbol table's or the fault handler's), which its symbol forwards to
+/// (`connect_forwarded_eval_cells').
 const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 12] = [
     cached_symbol!("quit-flag"),
     cached_symbol!("inhibit-quit"),
@@ -23,8 +26,8 @@ const FORWARDED_EVAL_CELLS: [crate::lisp::types::symbols::SymbolKey; 12] = [
     cached_symbol!("parse-sexp-lookup-properties"),
 ];
 
-/// Whether SYMBOL is one of the variables whose evaluator cells hold the
-/// current buffer's value.
+/// Whether SYMBOL is one of the variables whose C variables the evaluator
+/// reads, which hold the current buffer's binding.
 pub(super) fn is_forwarded_eval_cell(symbol: &SymbolName) -> bool {
     // The names first, by length and text: a symbol named like none of
     // them is none of them, and the editor's key table is read only for
@@ -114,6 +117,52 @@ pub(crate) const FIXED_SLOT_NAMES: [&str; FIXED_SLOTS] = [
     "buffer-display-count",
     "buffer-display-time",
 ];
+
+impl InterpreterState {
+    /// data.c's C variable symbols_with_pos_enabled: the one this editor's
+    /// symbol table holds, which lisp.h's EQ reads where no interpreter is
+    /// at hand (`types::eq').
+    #[inline]
+    pub(crate) fn symbols_with_positions_enabled(&self) -> bool {
+        self.globals
+            .symbols_with_pos_enabled()
+            .load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn quit_flag_is_nil(&self) -> bool {
+        self.c_variables.quit_flag.get().is_nil()
+    }
+
+    #[inline]
+    pub(crate) fn max_lisp_eval_depth_value(&self) -> i64 {
+        self.c_variables.max_lisp_eval_depth.load(Ordering::Relaxed)
+    }
+
+    pub(crate) fn debug_on_next_call(&self) -> bool {
+        self.c_variables.debug_on_next_call.load(Ordering::Relaxed)
+    }
+
+    /// The forwards of this editor's symbols into its own C variables
+    /// undone, each symbol keeping the value it reads
+    /// (`SymbolCell::unforward'), for a state going away: its symbols can
+    /// outlive it, held by the table selected last.
+    pub(super) fn disconnect_forwarded_eval_cells(&self) {
+        for key in FORWARDED_EVAL_CELLS {
+            let Some(symbol) = self.globals.find_initial_name(key.name()) else {
+                continue;
+            };
+            let address = match symbol.cell().forward() {
+                Some(crate::lisp::alloc::LispFwd::Obj(variable)) => variable.as_ptr() as usize,
+                Some(crate::lisp::alloc::LispFwd::Int(variable)) => variable.as_ptr() as usize,
+                Some(crate::lisp::alloc::LispFwd::Bool(variable)) => variable.as_ptr() as usize,
+                _ => continue,
+            };
+            if self.c_variables.holds(address) {
+                symbol.cell().unforward();
+            }
+        }
+    }
+}
 
 impl Interpreter {
     pub(crate) fn begin_minibuffer_runtime(
@@ -968,7 +1017,7 @@ impl Interpreter {
         let (mut power, mut steps) = (2usize, 0usize);
         // EQ: a key that is a symbol with position stands for its symbol
         // while `symbols-with-pos-enabled' is set.
-        let with_pos = self.globals.symbols_with_pos_enabled().get();
+        let with_pos = self.symbols_with_positions_enabled();
         let is_property = |key: Value| match key.kind() {
             Kind::Symbol(key) => key == *property,
             Kind::Nil => property.is_named("nil"),
@@ -1473,8 +1522,11 @@ impl Interpreter {
         for (name, counter) in &crate::lisp::alloc::counters::FORWARDED_COUNTERS {
             SymbolName::intern_str(name)
                 .cell()
-                .forward_to_counter(counter);
+                .forward_to(crate::lisp::alloc::LispFwd::Counter(counter));
         }
+        // The C variables the evaluator reads: each symbol's value is its
+        // variable's from here on.
+        self.connect_forwarded_eval_cells();
     }
 
     /// data.c:set_internal storing Qunbound into a forwarded symbol:
@@ -1588,8 +1640,66 @@ impl Interpreter {
         value
     }
 
-    /// The evaluator's own copy of SYMBOL's C slot, stored: the variables
-    /// of `FORWARDED_EVAL_CELLS'.
+    /// The forward of the INDEXth variable of `FORWARDED_EVAL_CELLS':
+    /// lisp.h's Lisp_Objfwd, Lisp_Intfwd or Lisp_Boolfwd of its C
+    /// variable.
+    fn forwarded_eval_cell_fwd(&self, index: usize) -> crate::lisp::alloc::LispFwd {
+        use crate::lisp::alloc::LispFwd;
+        use std::ptr::NonNull;
+        let c = &self.c_variables;
+        // In FORWARDED_EVAL_CELLS' order.
+        match index {
+            0 => LispFwd::Obj(NonNull::from(&c.quit_flag)),
+            1 => LispFwd::Obj(NonNull::from(&c.inhibit_quit)),
+            2 => LispFwd::Obj(NonNull::from(&c.throw_on_input)),
+            3 => LispFwd::Obj(NonNull::from(&c.overriding_plist_environment)),
+            4 => LispFwd::Obj(NonNull::from(&c.load_path)),
+            5 => LispFwd::Int(NonNull::from(&c.max_lisp_eval_depth)),
+            6 => LispFwd::Bool(NonNull::from(&c.debug_on_next_call)),
+            7 => LispFwd::Bool(NonNull::from(self.globals.symbols_with_pos_enabled())),
+            8 => LispFwd::Bool(NonNull::from(&c.undo_inhibit_record_point)),
+            9 => LispFwd::Bool(NonNull::from(
+                crate::lisp::primitives::attempt_orderly_shutdown_variable(),
+            )),
+            10 => LispFwd::Obj(NonNull::from(&c.case_fold_search)),
+            11 => LispFwd::Bool(NonNull::from(&c.parse_sexp_lookup_properties)),
+            _ => unreachable!("FORWARDED_EVAL_CELLS has twelve entries"),
+        }
+    }
+
+    /// lread.c's defvar_lisp, defvar_int and defvar_bool of the variables
+    /// of `FORWARDED_EVAL_CELLS': each symbol forwards to its C variable,
+    /// which takes the value the symbol holds.  A symbol made local in a
+    /// buffer keeps its default in its cell (data.c's make_blv), and one
+    /// `makunbound' detached stays plain; the C variables of those hold
+    /// the binding the current buffer sees (`refresh_forwarded_eval_cells').
+    pub(crate) fn connect_forwarded_eval_cells(&mut self) {
+        for (index, key) in FORWARDED_EVAL_CELLS.iter().enumerate() {
+            let symbol = key.symbol();
+            let cell = symbol.cell();
+            if cell.forward().is_some()
+                || cell.alias().is_some()
+                || !cell.has_c_slot()
+                || self.globals.has_flag(&symbol, LOCALIZED)
+                || self.forwarded_variable_detached(&symbol)
+            {
+                continue;
+            }
+            if let Some(value) = cell.value() {
+                self.update_forwarded_eval_cell(&symbol, &value);
+            }
+            cell.forward_to(self.forwarded_eval_cell_fwd(index));
+        }
+    }
+
+    /// The store into the C variable of SYMBOL's binding loaded for the
+    /// current buffer, as data.c:store_symval_forwarding makes it, with
+    /// the store's own effect: Ffuncall's depth gate for quit-flag,
+    /// max-lisp-eval-depth and debug-on-next-call, the buffers' copies of
+    /// undo-inhibit-record-point.  A symbol forwarded to its C variable has
+    /// stored it already; a localized one keeps the binding in its cell or
+    /// the buffer's too (`SymbolCell::localize_forward').  The variables of
+    /// `FORWARDED_EVAL_CELLS'.
     pub(super) fn update_forwarded_eval_cell(&mut self, symbol: &SymbolName, value: &Value) {
         // data.c:set_internal turns a voided forwarded symbol into a plain
         // symbol. Later stores cannot reconnect it to the C variable.
@@ -1602,88 +1712,65 @@ impl Interpreter {
         else {
             return;
         };
+        let truth = value.is_truthy();
+        let c = &self.c_variables;
         // In FORWARDED_EVAL_CELLS' order.
         match index {
-            // quit-flag
-            0 => {
-                self.quit_flag = *value;
-                self.refresh_call_depth_gate();
-            }
-            // inhibit-quit, throw-on-input, overriding-plist-environment,
-            // load-path
-            1 => self.inhibit_quit = *value,
-            2 => self.throw_on_input = *value,
-            3 => self.overriding_plist_environment = *value,
-            4 => self.load_path = *value,
-            // max-lisp-eval-depth
+            0 => c.quit_flag.set(*value),
+            1 => c.inhibit_quit.set(*value),
+            2 => c.throw_on_input.set(*value),
+            3 => c.overriding_plist_environment.set(*value),
+            4 => c.load_path.set(*value),
             5 => {
                 if let Ok(depth) = value.as_integer() {
-                    self.max_lisp_eval_depth = depth;
-                    self.refresh_call_depth_gate();
+                    c.max_lisp_eval_depth.store(depth, Ordering::Relaxed);
                 }
             }
-            // debug-on-next-call
-            6 => {
-                self.debug_on_next_call = value.is_truthy();
-                self.refresh_call_depth_gate();
-            }
-            // symbols-with-pos-enabled
-            7 => {
-                self.globals
-                    .symbols_with_pos_enabled()
-                    .set(value.is_truthy());
-            }
-            // undo-inhibit-record-point
-            8 => self.set_undo_inhibit_record_point(value.is_truthy()),
-            // attempt-orderly-shutdown-on-fatal-signal
-            9 => {
-                crate::lisp::primitives::set_attempt_orderly_shutdown(value.is_truthy());
-            }
-            // case-fold-search, parse-sexp-lookup-properties
-            10 => self.case_fold_search = *value,
-            11 => self.parse_sexp_lookup_properties = value.is_truthy(),
+            6 => c.debug_on_next_call.store(truth, Ordering::Relaxed),
+            7 => self
+                .globals
+                .symbols_with_pos_enabled()
+                .store(truth, Ordering::Relaxed),
+            8 => self.set_undo_inhibit_record_point(truth),
+            9 => crate::lisp::primitives::attempt_orderly_shutdown_variable()
+                .store(truth, Ordering::Relaxed),
+            10 => c.case_fold_search.set(*value),
+            11 => c
+                .parse_sexp_lookup_properties
+                .store(truth, Ordering::Relaxed),
             _ => unreachable!("FORWARDED_EVAL_CELLS has twelve entries"),
+        }
+        if matches!(index, 0 | 5 | 6) {
+            self.refresh_call_depth_gate();
         }
     }
 
     pub(crate) fn forwarded_eval_cell_value(&self, name: &str) -> Option<Value> {
-        match name {
-            "quit-flag" => Some(self.quit_flag),
-            "inhibit-quit" => Some(self.inhibit_quit),
-            "throw-on-input" => Some(self.throw_on_input),
-            "overriding-plist-environment" => Some(self.overriding_plist_environment),
-            "load-path" => Some(self.load_path),
-            "max-lisp-eval-depth" => Some(crate::lisp::primitives::normalize_integer_value(
-                self.max_lisp_eval_depth,
-            )),
-            "debug-on-next-call" => Some(if self.debug_on_next_call {
+        let truth = |flag: &std::sync::atomic::AtomicBool| {
+            if flag.load(Ordering::Relaxed) {
                 Value::T
             } else {
                 Value::Nil
-            }),
-            "symbols-with-pos-enabled" => Some(if self.symbols_with_positions_enabled() {
-                Value::T
-            } else {
-                Value::Nil
-            }),
-            "undo-inhibit-record-point" => Some(if self.undo_inhibit_record_point {
-                Value::T
-            } else {
-                Value::Nil
-            }),
-            "attempt-orderly-shutdown-on-fatal-signal" => {
-                Some(if crate::lisp::primitives::attempt_orderly_shutdown() {
-                    Value::T
-                } else {
-                    Value::Nil
-                })
             }
-            "case-fold-search" => Some(self.case_fold_search),
-            "parse-sexp-lookup-properties" => Some(if self.parse_sexp_lookup_properties {
-                Value::T
-            } else {
-                Value::Nil
-            }),
+        };
+        let c = &self.c_variables;
+        match name {
+            "quit-flag" => Some(c.quit_flag.get()),
+            "inhibit-quit" => Some(c.inhibit_quit.get()),
+            "throw-on-input" => Some(c.throw_on_input.get()),
+            "overriding-plist-environment" => Some(c.overriding_plist_environment.get()),
+            "load-path" => Some(c.load_path.get()),
+            "max-lisp-eval-depth" => Some(crate::lisp::primitives::normalize_integer_value(
+                self.max_lisp_eval_depth_value(),
+            )),
+            "debug-on-next-call" => Some(truth(&c.debug_on_next_call)),
+            "symbols-with-pos-enabled" => Some(truth(self.globals.symbols_with_pos_enabled())),
+            "undo-inhibit-record-point" => Some(truth(&c.undo_inhibit_record_point)),
+            "attempt-orderly-shutdown-on-fatal-signal" => Some(truth(
+                crate::lisp::primitives::attempt_orderly_shutdown_variable(),
+            )),
+            "case-fold-search" => Some(c.case_fold_search.get()),
+            "parse-sexp-lookup-properties" => Some(truth(&c.parse_sexp_lookup_properties)),
             _ => None,
         }
     }
@@ -1708,15 +1795,33 @@ impl Interpreter {
             .is_some_and(super::local_cells::LocalCells::has_forwarded_eval_binding)
     }
 
-    /// The cells after the current buffer changed from PREVIOUS. Without a
-    /// local binding in either buffer each cell holds the global value
-    /// before and after (set_buffer_internal_2 swaps only the buffers'
-    /// local bindings), so only such a binding calls for a refresh.
+    /// set_buffer_internal_2's walk of the new buffer's local_var_alist,
+    /// then of the one PREVIOUS has, for the bindings of variables whose
+    /// binding forwards into C: each such variable's C variable loads the
+    /// binding the current buffer now sees (swap_in_symval_forwarding),
+    /// its own or the default.  A variable bound in neither buffer holds
+    /// the same binding before and after.
     pub(super) fn refresh_forwarded_eval_cells_after_switch(&mut self, previous: u64) {
-        if self.has_forwarded_eval_local(previous)
-            || self.has_forwarded_eval_local(self.current_buffer_id())
-        {
-            self.refresh_forwarded_eval_cells();
+        let current = self.current_buffer_id();
+        if !self.has_forwarded_eval_local(previous) && !self.has_forwarded_eval_local(current) {
+            return;
+        }
+        let bound = |locals: Option<&super::LocalCells>, symbol: &SymbolName| {
+            locals.is_some_and(|locals| locals.binding_cell(symbol).is_some())
+        };
+        for key in FORWARDED_EVAL_CELLS {
+            let symbol = key.symbol();
+            if !bound(self.buffer_locals.get(&current), &symbol)
+                && !bound(self.buffer_locals.get(&previous), &symbol)
+            {
+                continue;
+            }
+            if let Some(value) = self
+                .buffer_local_value_symbol(current, &symbol)
+                .or_else(|| self.global_binding_value_symbol(&symbol))
+            {
+                self.update_forwarded_eval_cell(&symbol, &value);
+            }
         }
     }
 
@@ -1725,7 +1830,9 @@ impl Interpreter {
     /// value, the current one again at each switch (a buffer made since
     /// the last store learns it there).
     fn set_undo_inhibit_record_point(&mut self, inhibit: bool) {
-        self.undo_inhibit_record_point = inhibit;
+        self.c_variables
+            .undo_inhibit_record_point
+            .store(inhibit, Ordering::Relaxed);
         for buffer in std::iter::once(self.buffer)
             .chain(self.inactive_buffers.iter().map(|(_, buffer)| *buffer))
         {
@@ -1733,12 +1840,11 @@ impl Interpreter {
         }
     }
 
-    /// data.c's C variable symbols_with_pos_enabled: the one this editor's
-    /// symbol table holds, which lisp.h's EQ reads where no interpreter is
-    /// at hand (`types::eq').
-    #[inline]
-    pub(crate) fn symbols_with_positions_enabled(&self) -> bool {
-        self.globals.symbols_with_pos_enabled().get()
+    /// undo.c's undo_inhibit_record_point, as record_point reads it.
+    pub(crate) fn undo_inhibit_record_point(&self) -> bool {
+        self.c_variables
+            .undo_inhibit_record_point
+            .load(Ordering::Relaxed)
     }
 
     /// comp.c connects loaded code directly to the same bool that
@@ -1747,38 +1853,35 @@ impl Interpreter {
         self.globals.symbols_with_pos_enabled().as_ptr()
     }
 
-    pub(crate) fn quit_flag_is_nil(&self) -> bool {
-        self.quit_flag.is_nil()
-    }
-
     pub(crate) fn quit_flag_value(&self) -> Value {
-        self.quit_flag
+        self.c_variables.quit_flag.get()
     }
 
     pub(crate) fn inhibit_quit_is_truthy(&self) -> bool {
-        self.inhibit_quit.is_truthy()
+        self.c_variables.inhibit_quit.get().is_truthy()
     }
 
     pub(crate) fn throw_on_input_value(&self) -> Value {
-        self.throw_on_input
+        self.c_variables.throw_on_input.get()
     }
 
     pub(crate) fn overriding_plist_environment_value(&self) -> Value {
-        self.overriding_plist_environment
+        self.c_variables.overriding_plist_environment.get()
     }
 
     /// fns.c:Fget's `NILP (Voverriding_plist_environment)' read.
     #[inline]
     pub(crate) fn overriding_plist_environment_is_nil(&self) -> bool {
-        self.overriding_plist_environment.is_nil()
+        self.c_variables.overriding_plist_environment.get().is_nil()
     }
 
-    pub(crate) fn max_lisp_eval_depth_value(&self) -> i64 {
-        self.max_lisp_eval_depth
-    }
-
-    pub(crate) fn debug_on_next_call(&self) -> bool {
-        self.debug_on_next_call
+    /// `max_lisp_eval_depth = DEPTH' in C: the C variable, whichever
+    /// binding of the symbol is in place, and the depth gate.
+    pub(crate) fn set_max_lisp_eval_depth_in_place(&mut self, depth: i64) {
+        self.c_variables
+            .max_lisp_eval_depth
+            .store(depth, Ordering::Relaxed);
+        self.refresh_call_depth_gate();
     }
 
     /// eval.c:call_debugger clears the forwarded C flag before invoking the
@@ -1787,11 +1890,13 @@ impl Interpreter {
         // The C variable is the Lisp value: the store goes through the
         // symbol's current binding, as process_quit_flag's of quit-flag,
         // unless the symbol was detached from it.
-        if !self.debug_on_next_call {
+        if !self.debug_on_next_call() {
             return;
         }
         if self.forwarded_variable_detached(&cached_symbol!("debug-on-next-call").symbol()) {
-            self.debug_on_next_call = false;
+            self.c_variables
+                .debug_on_next_call
+                .store(false, Ordering::Relaxed);
             self.refresh_call_depth_gate();
         } else {
             self.set_symbol_value_cell("debug-on-next-call", Value::Nil);
@@ -2307,7 +2412,15 @@ impl Interpreter {
     /// with the current buffer's binding.
     #[inline]
     pub(crate) fn case_fold_search_active(&self) -> bool {
-        self.case_fold_search.is_truthy()
+        self.c_variables.case_fold_search.get().is_truthy()
+    }
+
+    /// syntax.c's parse_sexp_lookup_properties, as the scanners read it.
+    #[inline]
+    pub(crate) fn parse_sexp_lookup_properties(&self) -> bool {
+        self.c_variables
+            .parse_sexp_lookup_properties
+            .load(Ordering::Relaxed)
     }
 
     /// Learn whether SYMBOL's assignments are a plain store (data.c's
@@ -4579,7 +4692,272 @@ pub(crate) fn handler_search_order(
 #[cfg(test)]
 mod forwarded_eval_cell_tests {
     use super::{FORWARDED_EVAL_CELLS, is_forwarded_eval_cell};
-    use crate::lisp::types::SymbolName;
+    use crate::lisp::alloc::LispFwd;
+    use crate::lisp::eval::Interpreter;
+    use crate::lisp::primitives;
+    use crate::lisp::types::{Env, Kind, SymbolName, Value};
+
+    /// The address of the C variable FWD names.
+    fn address(fwd: LispFwd) -> usize {
+        match fwd {
+            LispFwd::Counter(counter) => std::ptr::from_ref(counter) as usize,
+            LispFwd::Int(variable) => variable.as_ptr() as usize,
+            LispFwd::Obj(variable) => variable.as_ptr() as usize,
+            LispFwd::Bool(variable) => variable.as_ptr() as usize,
+        }
+    }
+
+    #[test]
+    fn the_evaluators_c_variables_hold_their_symbols_values_alone() {
+        // lread.c's defvar_lisp, defvar_int and defvar_bool: each symbol
+        // forwards to its C variable, so a Lisp store is the variable's
+        // and a C store is what Lisp reads; case-fold-search, made local
+        // when set (Fmake_variable_buffer_local), keeps its default in its
+        // cell and its C variable holds the current buffer's binding.
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        for key in FORWARDED_EVAL_CELLS {
+            let symbol = key.symbol();
+            let localized = interp
+                .globals
+                .has_flag(&symbol, crate::lisp::eval::symbol_cell_flags::LOCALIZED);
+            match symbol.cell().forward() {
+                Some(fwd) => {
+                    assert!(!localized, "{}", key.name());
+                    let address = address(fwd);
+                    assert!(
+                        interp.c_variables.holds(address)
+                            || address
+                                == std::ptr::from_ref(interp.globals.symbols_with_pos_enabled())
+                                    as usize
+                            || address
+                                == std::ptr::from_ref(
+                                    primitives::attempt_orderly_shutdown_variable(),
+                                ) as usize,
+                        "{} forwards to its editor's C variable",
+                        key.name()
+                    );
+                }
+                None => assert!(localized, "{} forwards to its C variable", key.name()),
+            }
+        }
+        assert!(
+            cached_symbol!("case-fold-search")
+                .symbol()
+                .cell()
+                .forward()
+                .is_none()
+        );
+        let set = |interp: &mut Interpreter, env: &mut Env, name: &str, value: Value| {
+            primitives::call(interp, "set", &[Value::symbol(name), value], env)
+                .expect("a store of the C variable");
+        };
+        set(
+            &mut interp,
+            &mut env,
+            "inhibit-quit",
+            Value::symbol("r1-lisp"),
+        );
+        assert_eq!(
+            interp.c_variables.inhibit_quit.get(),
+            Value::symbol("r1-lisp")
+        );
+        interp.c_variables.inhibit_quit.set(Value::Integer(7));
+        assert_eq!(interp.symbol_value("inhibit-quit"), Some(Value::Integer(7)));
+        set(
+            &mut interp,
+            &mut env,
+            "max-lisp-eval-depth",
+            Value::Integer(1234),
+        );
+        assert_eq!(interp.max_lisp_eval_depth_value(), 1234);
+        set(
+            &mut interp,
+            &mut env,
+            "undo-inhibit-record-point",
+            Value::symbol("yes"),
+        );
+        assert!(interp.undo_inhibit_record_point());
+        assert_eq!(
+            interp.symbol_value("undo-inhibit-record-point"),
+            Some(Value::T)
+        );
+        set(&mut interp, &mut env, "case-fold-search", Value::Nil);
+        assert!(!interp.case_fold_search_active());
+        set(&mut interp, &mut env, "inhibit-quit", Value::Nil);
+    }
+
+    #[inline(never)]
+    fn hold_a_load_path(
+        interp: &mut Interpreter,
+        env: &mut Env,
+    ) -> crate::lisp::types::HashTableRef {
+        let table = primitives::call(
+            interp,
+            "make-hash-table",
+            &[
+                Value::symbol(":test"),
+                Value::symbol("eq"),
+                Value::symbol(":weakness"),
+                Value::symbol("key"),
+            ],
+            env,
+        )
+        .expect("a weak-key table");
+        let Kind::HashTable(table) = table.kind() else {
+            panic!("a hash table")
+        };
+        interp.set_global_binding("r1-weak-table", Value::HashTable(table));
+        let path = Value::list([Value::string("/r1-held"), Value::string("qqq")]);
+        let control = Value::cons(Value::Integer(0), Value::Nil);
+        for (key, value) in [(path, 1), (control, 0)] {
+            primitives::call(
+                interp,
+                "puthash",
+                &[key, Value::Integer(value), Value::HashTable(table)],
+                env,
+            )
+            .expect("a weak entry");
+        }
+        primitives::call(interp, "set", &[Value::symbol("load-path"), path], env)
+            .expect("a store of load-path");
+        table
+    }
+
+    /// The values of TABLE's entries a collection keeps.
+    #[inline(never)]
+    fn kept(
+        interp: &Interpreter,
+        env: &Env,
+        table: crate::lisp::types::HashTableRef,
+    ) -> Vec<Value> {
+        let marked = interp.weak_hash_reachability(env, &[]);
+        let (_, remove) = marked
+            .tables
+            .iter()
+            .find(|(id, _)| *id == table)
+            .expect("the weak table is marked");
+        table
+            .entries()
+            .filter(|(slot, _, _)| !remove.contains(slot))
+            .map(|(_, _, value)| value)
+            .collect()
+    }
+
+    #[test]
+    fn a_load_path_held_by_its_c_variable_alone_is_a_root() {
+        // lread.c:defvar_lisp staticpro's Vload_path: the list the
+        // variable holds, which its symbol's cell does not (the cell
+        // forwards to the variable), survives collections, and is
+        // reclaimed once another list replaces it.
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let table = hold_a_load_path(&mut interp, &mut env);
+        assert!(matches!(
+            cached_symbol!("load-path").symbol().cell().forward(),
+            Some(LispFwd::Obj(variable))
+                if std::ptr::eq(variable.as_ptr(), &interp.c_variables.load_path)
+        ));
+        crate::lisp::alloc::clobber_stack();
+        assert_eq!(kept(&interp, &env, table), [Value::Integer(1)]);
+        for _ in 0..3 {
+            primitives::call(&mut interp, "garbage-collect", &[], &mut env).expect("a collection");
+        }
+        let held = interp.c_variables.load_path.get();
+        let texts = held
+            .to_vec()
+            .expect("a list")
+            .iter()
+            .map(|entry| primitives::string_text(entry).expect("a string"))
+            .collect::<Vec<_>>();
+        assert_eq!(texts, ["/r1-held", "qqq"]);
+        assert_eq!(table.entries().count(), 1);
+        primitives::call(
+            &mut interp,
+            "set",
+            &[
+                Value::symbol("load-path"),
+                Value::list([Value::string("/r1-new")]),
+            ],
+            &mut env,
+        )
+        .expect("a store of load-path");
+        crate::lisp::alloc::clobber_stack();
+        assert_eq!(kept(&interp, &env, table), Vec::<Value>::new());
+    }
+
+    #[test]
+    fn an_image_copy_forwards_to_its_own_c_variables() {
+        // A copy of an editor has C variables of its own, which its own
+        // symbols forward to: a store in either is that editor's alone.
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        primitives::call(
+            &mut interp,
+            "set",
+            &[
+                Value::symbol("throw-on-input"),
+                Value::symbol("r1-template"),
+            ],
+            &mut env,
+        )
+        .expect("a store");
+        let mut copy = interp.deep_clone_image();
+        let symbol = cached_symbol!("throw-on-input").symbol();
+        assert!(matches!(
+            symbol.cell().forward(),
+            Some(LispFwd::Obj(variable))
+                if std::ptr::eq(variable.as_ptr(), &copy.c_variables.throw_on_input)
+        ));
+        assert_eq!(
+            copy.symbol_value("throw-on-input"),
+            Some(Value::symbol("r1-template"))
+        );
+        primitives::call(
+            &mut copy,
+            "set",
+            &[Value::symbol("throw-on-input"), Value::symbol("r1-copy")],
+            &mut env,
+        )
+        .expect("a store in the copy");
+        drop(copy);
+        interp.select_symbol_owner();
+        assert_eq!(
+            interp.c_variables.throw_on_input.get(),
+            Value::symbol("r1-template")
+        );
+        assert_eq!(
+            interp.symbol_value("throw-on-input"),
+            Some(Value::symbol("r1-template"))
+        );
+    }
+
+    #[test]
+    fn a_dropped_editors_symbols_keep_the_values_of_its_c_variables() {
+        // The symbols of an editor can outlive it (the symbol table
+        // selected last holds them): with its C variables gone, each
+        // forwarded symbol holds the value its variable had.
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        primitives::call(
+            &mut interp,
+            "set",
+            &[Value::symbol("overriding-plist-environment"), Value::Nil],
+            &mut env,
+        )
+        .expect("a store");
+        interp.c_variables.inhibit_quit.set(Value::T);
+        let owner = interp.globals.symbol_owner();
+        drop(interp);
+        for (name, value) in [
+            ("inhibit-quit", Value::T),
+            ("max-lisp-eval-depth", Value::Integer(1600)),
+        ] {
+            let symbol = owner.find_initial(name).expect("the symbol");
+            assert!(symbol.cell().forward().is_none(), "{name}");
+            assert_eq!(symbol.cell().value(), Some(value), "{name}");
+        }
+    }
 
     #[test]
     fn every_forwarded_eval_cell_is_recognized_by_name_and_object() {

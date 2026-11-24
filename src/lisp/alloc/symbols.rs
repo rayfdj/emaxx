@@ -19,7 +19,7 @@ use super::super::types::{MarkBit, SymbolName, Value};
 use super::{BlockKind, FREE_MARK, SYMBOLS_PER_BLOCK, new_block, release_block, sweep_blocks_of};
 use std::cell::Cell;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicI64, AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicI64, AtomicPtr, AtomicUsize, Ordering};
 
 /// The host text a symbol keeps beside its Lisp name, written once and
 /// never changed after: a box the cell owns and frees with it, text of
@@ -185,7 +185,8 @@ pub struct SymbolCell {
     pub(crate) flags: Cell<u8>,
     /// Bit 0 (`IMAGE_CELL'): allocated while an image loaded (see
     /// `ImageCells'), set by `allocate_symbol'.  Bits 1 and 2: lisp.h's
-    /// `interned' (`SymbolInterned'), in GNU's encoding.
+    /// `interned' (`SymbolInterned'), in GNU's encoding.  Bits 3 and 4: a
+    /// forward's kind (`FWD_KIND_BITS').
     pub(crate) bits: Cell<u8>,
     pub(crate) state: Cell<u16>,
     pub(crate) mark: MarkBit,
@@ -211,16 +212,19 @@ const BUILTIN_T: u16 = 128;
 // lisp.h: trapped_write == SYMBOL_NOWRITE. This remains on the object
 // after uninterning and is copied/restored with its other header state.
 const CONSTANT: u16 = 256;
-// lisp.h: redirect == SYMBOL_FORWARDED to a Lisp_Intfwd. Set together with
-// VALUE_PRESENT; the payload is the forwarded counter word.
-const INT_FORWARD: u16 = 512;
+// lisp.h: redirect == SYMBOL_FORWARDED to a Lisp_Intfwd, Lisp_Objfwd or
+// Lisp_Boolfwd. Set together with VALUE_PRESENT; the payload is the
+// forward (`LispFwd'), whose kind the bits hold (`FWD_KIND_BITS').
+const FORWARD: u16 = 512;
 // lisp.h: redirect == SYMBOL_FORWARDED to a Lisp_Kboard_Objfwd. Set with
 // C_SLOT on the variables whose values live in each terminal's KBOARD, so
 // other forwarded variables are known not to be one without a name check.
 const KBOARD_FORWARD: u16 = 1024;
 // Set with C_SLOT on the C variables whose store also reaches interpreter
-// state beyond the cell (`STORE_EFFECT_VARIABLES'), so a store to any other
-// forwarded variable is known to be the cell's alone without a name check.
+// state beyond the variable (`STORE_EFFECT_VARIABLES'), and on a forwarded
+// variable made local (`localize_forward'), so a store to any other
+// forwarded variable is known to be the variable's alone without a name
+// check.
 const STORE_EFFECT: u16 = 2048;
 // lisp.h: trapped_write == SYMBOL_TRAPPED_WRITE: a variable watcher is
 // registered under this object (its `watchers' property holds them), so a
@@ -248,20 +252,18 @@ pub(crate) const BUFFER_SLOT_VARIABLES: [&str; 2] = ["buffer-undo-list", "text-c
 pub(crate) const STORE_CONVERTING_VARIABLES: [&str; 1] = ["display-hourglass"];
 
 /// The forwarded variables `Interpreter::set_global_binding_resolved' does
-/// more for than store the cell: the evaluator's own C cells and the
-/// buffers' text conversion style.
-pub(crate) const STORE_EFFECT_VARIABLES: [&str; 13] = [
+/// more for than store the variable: the three Ffuncall's depth gate
+/// reads, undo-inhibit-record-point (which every buffer holds),
+/// case-fold-search and parse-sexp-lookup-properties, local in the buffers
+/// from the first (a store of the binding loaded for the current buffer
+/// reaches their C variables), and the buffers' text conversion style.  A forwarded variable made local
+/// later gets the bit then (`SymbolCell::localize_forward').
+pub(crate) const STORE_EFFECT_VARIABLES: [&str; 7] = [
     "quit-flag",
-    "inhibit-quit",
-    "throw-on-input",
-    "overriding-plist-environment",
-    "load-path",
     "max-lisp-eval-depth",
     "debug-on-next-call",
-    "symbols-with-pos-enabled",
     "text-conversion-style",
     "undo-inhibit-record-point",
-    "attempt-orderly-shutdown-on-fatal-signal",
     "case-fold-search",
     "parse-sexp-lookup-properties",
 ];
@@ -269,6 +271,29 @@ pub(crate) const STORE_EFFECT_VARIABLES: [&str; 13] = [
 const IMAGE_CELL: u8 = 1;
 const INTERNED_SHIFT: u32 = 1;
 const INTERNED_BITS: u8 = 3 << INTERNED_SHIFT;
+/// Bits 3 and 4: the kind of a FORWARD symbol's forward (lisp.h's
+/// `enum Lisp_Fwd_Type'), meaningless without FORWARD.
+const FWD_KIND_SHIFT: u32 = 3;
+const FWD_KIND_BITS: u8 = 3 << FWD_KIND_SHIFT;
+const FWD_COUNTER: u8 = 0;
+const FWD_OBJ: u8 = 1 << FWD_KIND_SHIFT;
+const FWD_BOOL: u8 = 2 << FWD_KIND_SHIFT;
+const FWD_INT: u8 = 3 << FWD_KIND_SHIFT;
+
+/// lisp.h's `union Lisp_Fwd' for the C variables a symbol forwards to:
+/// Lisp_Intfwd (one of alloc.c's process-wide counters, or an editor's
+/// DEFVAR_INT), Lisp_Objfwd (a DEFVAR_LISP) and Lisp_Boolfwd (a
+/// DEFVAR_BOOL).  Each names the variable's storage, which outlives the
+/// forward: a counter is a static, and an editor's variable lives as long
+/// as the editor, whose state detaches its symbols from it when it is
+/// dropped (`SymbolCell::unforward').
+#[derive(Clone, Copy, Debug)]
+pub(crate) enum LispFwd {
+    Counter(&'static AtomicI64),
+    Int(NonNull<AtomicI64>),
+    Obj(NonNull<Cell<Value>>),
+    Bool(NonNull<AtomicBool>),
+}
 
 /// lisp.h's `enum symbol_interned', the values of Lisp_Symbol.interned.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -285,8 +310,13 @@ pub(crate) enum SymbolInterned {
 pub(crate) union SymbolPayload {
     value: Value,
     alias: SymbolName,
-    /// `Lisp_Intfwd.intvar': one of alloc.c's process-wide counters.
-    counter: &'static AtomicI64,
+    /// `Lisp_Intfwd.intvar': one of alloc.c's process-wide counters, or an
+    /// editor's DEFVAR_INT.
+    intvar: NonNull<AtomicI64>,
+    /// `Lisp_Objfwd.objvar'.
+    objvar: NonNull<Cell<Value>>,
+    /// `Lisp_Boolfwd.boolvar'.
+    boolvar: NonNull<AtomicBool>,
 }
 
 /// data.c:store_symval_forwarding's Lisp_Fwd_Int case: the store has passed
@@ -358,33 +388,53 @@ impl SymbolCell {
     #[inline]
     pub(crate) fn value(&self) -> Option<Value> {
         let state = self.state.get();
-        if state & (VALUE_PRESENT | INT_FORWARD) == VALUE_PRESENT {
-            // SAFETY: VALUE_PRESENT without INT_FORWARD selects the value member.
+        if state & (VALUE_PRESENT | FORWARD) == VALUE_PRESENT {
+            // SAFETY: VALUE_PRESENT without FORWARD selects the value member.
             return Some(unsafe { self.payload.get().value });
         }
-        (state & INT_FORWARD != 0).then(|| self.forwarded_value())
+        (state & FORWARD != 0).then(|| self.forwarded_value())
     }
 
     /// data.c:find_symbol_value of a bound symbol that is no alias and not
     /// localized in any buffer, whose value is the one its cell holds: a
-    /// plain symbol, or a C variable forwarded to an object slot (a KBOARD
-    /// variable's, a counter's or a buffer-held variable's value is
-    /// elsewhere).  Any other symbol, or a void one, answers None.
+    /// plain symbol, or a C variable whose value is its cell's; or one
+    /// forwarded to a DEFVAR_LISP or DEFVAR_BOOL, read through the forward
+    /// (do_symval_forwarding).  A KBOARD variable's, an integer's or a
+    /// buffer-held variable's value is read elsewhere.  Any other symbol,
+    /// or a void one, answers None.
     #[inline(always)]
     pub(crate) fn unlocalized_value(&self) -> Option<Value> {
         use crate::lisp::eval::symbol_cell_flags::LOCALIZED;
-        if self.state.get() & (VALUE_PRESENT | ALIAS | INT_FORWARD | KBOARD_FORWARD | BUFFER_SLOT)
-            == VALUE_PRESENT
-            && self.flags.get() & LOCALIZED == 0
-        {
-            // SAFETY: VALUE_PRESENT without INT_FORWARD selects the value member.
+        let state =
+            self.state.get() & (VALUE_PRESENT | ALIAS | FORWARD | KBOARD_FORWARD | BUFFER_SLOT);
+        if state == VALUE_PRESENT && self.flags.get() & LOCALIZED == 0 {
+            // SAFETY: VALUE_PRESENT without FORWARD selects the value member.
             return Some(unsafe { self.payload.get().value });
+        }
+        if state == VALUE_PRESENT | FORWARD && self.flags.get() & LOCALIZED == 0 {
+            return self.unlocalized_forwarded_value();
         }
         None
     }
 
-    /// A bound C variable whose value is its cell's and whose store changes
-    /// nothing else (`set_global_binding_resolved's cell-only case): no
+    /// `unlocalized_value' of a FORWARD symbol: its DEFVAR_LISP's or
+    /// DEFVAR_BOOL's value, none for an integer's.
+    #[inline]
+    fn unlocalized_forwarded_value(&self) -> Option<Value> {
+        self.forwards_object_or_bool()
+            .then(|| self.forwarded_value())
+    }
+
+    /// Whether the forward of a FORWARD symbol is a Lisp_Objfwd or a
+    /// Lisp_Boolfwd, whose stores need no integer check.
+    #[inline(always)]
+    fn forwards_object_or_bool(&self) -> bool {
+        matches!(self.bits.get() & FWD_KIND_BITS, FWD_OBJ | FWD_BOOL)
+    }
+
+    /// A bound C variable whose store changes nothing but its value
+    /// (`set_global_binding_resolved's cell-only case): its value in its
+    /// cell, or in the DEFVAR_LISP or DEFVAR_BOOL it forwards to; no
     /// alias, counter, KBOARD, store-effect or buffer-held slot, no value
     /// conversion of its own, no watcher, not constant, and neither
     /// localized, local if set, per-buffer nor always local.
@@ -395,18 +445,19 @@ impl SymbolCell {
         use crate::lisp::eval::symbol_cell_flags::{
             ALWAYS_LOCAL, FWD_INT, LOCAL_IF_SET, LOCALIZED, PER_BUFFER,
         };
-        self.state.get()
+        let state = self.state.get()
             & (VALUE_PRESENT
                 | ALIAS
                 | C_SLOT
-                | INT_FORWARD
+                | FORWARD
                 | KBOARD_FORWARD
                 | STORE_EFFECT
                 | TRAPPED_WRITE
                 | CONSTANT
                 | BUFFER_SLOT
-                | STORE_CONVERTS)
-            == VALUE_PRESENT | C_SLOT
+                | STORE_CONVERTS);
+        (state == VALUE_PRESENT | C_SLOT
+            || (state == VALUE_PRESENT | C_SLOT | FORWARD && self.forwards_object_or_bool()))
             && self.flags.get() & (LOCALIZED | LOCAL_IF_SET | PER_BUFFER | ALWAYS_LOCAL | FWD_INT)
                 == 0
     }
@@ -420,7 +471,7 @@ impl SymbolCell {
     #[inline(always)]
     pub(crate) fn has_local_value_cells(&self) -> bool {
         use crate::lisp::eval::symbol_cell_flags::LOCALIZED;
-        self.state.get() & (ALIAS | INT_FORWARD | KBOARD_FORWARD | BUFFER_SLOT) == 0
+        self.state.get() & (ALIAS | FORWARD | KBOARD_FORWARD | BUFFER_SLOT) == 0
             && self.flags.get() & LOCALIZED != 0
     }
 
@@ -432,7 +483,7 @@ impl SymbolCell {
     pub(crate) fn localized_default(&self) -> Option<Value> {
         use crate::lisp::eval::symbol_cell_flags::ALWAYS_LOCAL;
         if self.state.get() & VALUE_PRESENT != 0 && self.flags.get() & ALWAYS_LOCAL == 0 {
-            // SAFETY: VALUE_PRESENT without INT_FORWARD (which local value
+            // SAFETY: VALUE_PRESENT without FORWARD (which local value
             // cells exclude) selects the value member.
             return Some(unsafe { self.payload.get().value });
         }
@@ -452,7 +503,7 @@ impl SymbolCell {
         };
         self.state.get()
             & (ALIAS
-                | INT_FORWARD
+                | FORWARD
                 | KBOARD_FORWARD
                 | STORE_EFFECT
                 | TRAPPED_WRITE
@@ -464,47 +515,93 @@ impl SymbolCell {
                 == LOCALIZED
     }
 
-    /// data.c:do_symval_forwarding: `make_int (*intvar)'.
-    #[cold]
+    /// data.c:do_symval_forwarding: `make_int (*intvar)', `*objvar' or
+    /// `*boolvar ? Qt : Qnil'.
+    #[inline]
     fn forwarded_value(&self) -> Value {
-        // SAFETY: INT_FORWARD is set only with the counter union member.
-        let counter = unsafe { self.payload.get().counter };
-        crate::lisp::primitives::normalize_integer_value(counter.load(Ordering::Relaxed))
-    }
-
-    /// lread.c:defvar_int: the symbol's value is the C counter itself.
-    pub(crate) fn forward_to_counter(&self, counter: &'static AtomicI64) {
-        assert!(self.alias().is_none(), "forwarding a symbol alias");
-        self.payload.set(SymbolPayload { counter });
-        self.state
-            .set((self.state.get() & !PLAIN_STORE) | VALUE_PRESENT | INT_FORWARD);
-    }
-
-    pub(crate) fn is_forwarded_counter(&self) -> bool {
-        self.state.get() & INT_FORWARD != 0
-    }
-
-    /// The counter this symbol forwards to, for the test image copier, which
-    /// copies the redirect itself.
-    #[cfg(test)]
-    pub(crate) fn forwarded_counter(&self) -> Option<&'static AtomicI64> {
-        // SAFETY: INT_FORWARD is set only with the counter union member.
-        self.is_forwarded_counter()
-            .then(|| unsafe { self.payload.get().counter })
-    }
-
-    /// data.c:store_symval_forwarding into the counter. Callers check
-    /// FWD_INT first; a value that cannot live there (only a store that
-    /// data.c:set_internal would make plain) detaches and stores plainly.
-    #[cold]
-    fn store_forwarded(&self, value: Value) {
-        match forwarded_integer(value) {
-            Some(integer) => {
-                // SAFETY: INT_FORWARD is set only with the counter union member.
-                unsafe { self.payload.get().counter }.store(integer, Ordering::Relaxed);
+        let payload = self.payload.get();
+        // SAFETY: FORWARD is set only with the member its kind names, and
+        // the variable outlives the forward (`LispFwd').
+        unsafe {
+            match self.bits.get() & FWD_KIND_BITS {
+                FWD_OBJ => payload.objvar.as_ref().get(),
+                FWD_BOOL => {
+                    if payload.boolvar.as_ref().load(Ordering::Relaxed) {
+                        Value::T
+                    } else {
+                        Value::Nil
+                    }
+                }
+                _ => crate::lisp::primitives::normalize_integer_value(
+                    payload.intvar.as_ref().load(Ordering::Relaxed),
+                ),
             }
-            None => {
-                self.detach_counter();
+        }
+    }
+
+    /// lread.c:defvar_int, defvar_lisp and defvar_bool: the symbol's value
+    /// is the C variable FWD names itself, which keeps the value it holds.
+    pub(crate) fn forward_to(&self, fwd: LispFwd) {
+        assert!(self.alias().is_none(), "forwarding a symbol alias");
+        let (payload, kind) = match fwd {
+            LispFwd::Counter(counter) => (
+                SymbolPayload {
+                    intvar: NonNull::from(counter),
+                },
+                FWD_COUNTER,
+            ),
+            LispFwd::Int(intvar) => (SymbolPayload { intvar }, FWD_INT),
+            LispFwd::Obj(objvar) => (SymbolPayload { objvar }, FWD_OBJ),
+            LispFwd::Bool(boolvar) => (SymbolPayload { boolvar }, FWD_BOOL),
+        };
+        self.payload.set(payload);
+        self.bits.set((self.bits.get() & !FWD_KIND_BITS) | kind);
+        self.state
+            .set((self.state.get() & !PLAIN_STORE) | VALUE_PRESENT | FORWARD);
+    }
+
+    pub(crate) fn is_forwarded(&self) -> bool {
+        self.state.get() & FORWARD != 0
+    }
+
+    /// The C variable this symbol forwards to, none for any other symbol.
+    pub(crate) fn forward(&self) -> Option<LispFwd> {
+        if self.state.get() & FORWARD == 0 {
+            return None;
+        }
+        let payload = self.payload.get();
+        // SAFETY: FORWARD is set only with the member its kind names, and
+        // a counter's is a static's (`forward_to').
+        Some(unsafe {
+            match self.bits.get() & FWD_KIND_BITS {
+                FWD_COUNTER => LispFwd::Counter(payload.intvar.as_ref()),
+                FWD_INT => LispFwd::Int(payload.intvar),
+                FWD_OBJ => LispFwd::Obj(payload.objvar),
+                _ => LispFwd::Bool(payload.boolvar),
+            }
+        })
+    }
+
+    /// data.c:store_symval_forwarding into the C variable: an object as it
+    /// is, a bool as `!NILP (newval)', an integer after the callers' check
+    /// (FWD_INT).  A value that cannot live there (only a store that
+    /// data.c:set_internal would make plain) detaches and stores plainly.
+    #[inline]
+    fn store_forwarded(&self, value: Value) {
+        let payload = self.payload.get();
+        let unbound = matches!(value.kind(), crate::lisp::types::Kind::Unbound);
+        // SAFETY: FORWARD is set only with the member its kind names, and
+        // the variable outlives the forward (`LispFwd').
+        match (self.bits.get() & FWD_KIND_BITS, forwarded_integer(value)) {
+            (FWD_OBJ, _) if !unbound => unsafe { payload.objvar.as_ref() }.set(value),
+            (FWD_BOOL, _) if !unbound => {
+                unsafe { payload.boolvar.as_ref() }.store(!value.is_nil(), Ordering::Relaxed);
+            }
+            (FWD_COUNTER | FWD_INT, Some(integer)) => {
+                unsafe { payload.intvar.as_ref() }.store(integer, Ordering::Relaxed);
+            }
+            _ => {
+                self.detach_forward();
                 self.payload.set(SymbolPayload { value });
                 self.state.set(self.state.get() | VALUE_PRESENT);
             }
@@ -512,17 +609,46 @@ impl SymbolCell {
     }
 
     /// data.c:set_internal storing Qunbound into a forwarded symbol:
-    /// `sym->u.s.redirect = SYMBOL_PLAINVAL'. The counter keeps counting;
-    /// only this symbol stops forwarding to it, and it is left void.
-    fn detach_counter(&self) {
+    /// `sym->u.s.redirect = SYMBOL_PLAINVAL'. The C variable keeps its
+    /// value (a counter keeps counting); only this symbol stops forwarding
+    /// to it, and it is left void.
+    fn detach_forward(&self) {
         self.payload.set(SymbolPayload::unbound());
         self.state
-            .set(self.state.get() & !(VALUE_PRESENT | INT_FORWARD));
+            .set(self.state.get() & !(VALUE_PRESENT | FORWARD));
+    }
+
+    /// The symbol's value made its cell's own, as the C variable holds it,
+    /// and the forward gone: data.c:make_blv's default cell for a variable
+    /// made local in a buffer (`localize_forward'), or a symbol whose C
+    /// variable is going away with its editor.  A counter's symbol and any
+    /// other are left alone.
+    pub(crate) fn unforward(&self) {
+        if !matches!(self.forward(), Some(fwd) if !matches!(fwd, LispFwd::Counter(_))) {
+            return;
+        }
+        let value = self.forwarded_value();
+        self.state.set(self.state.get() & !FORWARD);
+        self.payload.set(SymbolPayload { value });
+    }
+
+    /// data.c:Fmake_local_variable and Fmake_variable_buffer_local of a
+    /// SYMBOL_FORWARDED symbol: make_blv keeps the forward beside the
+    /// default cell.  The cell takes the C variable's value as the
+    /// default, and a store then reaches the C variable through the
+    /// evaluator's store of the binding loaded for the current buffer
+    /// (STORE_EFFECT), as the C variable holds that binding.
+    pub(crate) fn localize_forward(&self) {
+        if matches!(self.forward(), Some(fwd) if !matches!(fwd, LispFwd::Counter(_))) {
+            self.unforward();
+            self.state
+                .set((self.state.get() | STORE_EFFECT) & !PLAIN_STORE);
+        }
     }
 
     pub(crate) fn set_value(&self, value: Value) {
         assert!(self.alias().is_none(), "plain store into a symbol alias");
-        if self.state.get() & INT_FORWARD != 0 {
+        if self.state.get() & FORWARD != 0 {
             return self.store_forwarded(value);
         }
         self.payload.set(SymbolPayload { value });
@@ -534,8 +660,7 @@ impl SymbolCell {
     /// Any other symbol, or a void one, is left alone and answers false.
     #[inline(always)]
     pub(crate) fn store_plain_value(&self, value: Value) -> bool {
-        if self.state.get() & (PLAIN_STORE | VALUE_PRESENT | INT_FORWARD)
-            != PLAIN_STORE | VALUE_PRESENT
+        if self.state.get() & (PLAIN_STORE | VALUE_PRESENT | FORWARD) != PLAIN_STORE | VALUE_PRESENT
         {
             return false;
         }
@@ -548,7 +673,7 @@ impl SymbolCell {
         if state & VALUE_PRESENT == 0 {
             return false;
         }
-        if state & INT_FORWARD != 0 {
+        if state & FORWARD != 0 {
             self.store_forwarded(value);
         } else {
             self.payload.set(SymbolPayload { value });
@@ -558,7 +683,7 @@ impl SymbolCell {
 
     pub(crate) fn take_value(&self) -> Option<Value> {
         let value = self.value()?;
-        self.detach_counter();
+        self.detach_forward();
         Some(value)
     }
 
@@ -572,7 +697,7 @@ impl SymbolCell {
     pub(crate) fn set_alias(&self, target: SymbolName) {
         self.payload.set(SymbolPayload { alias: target });
         self.state
-            .set((self.state.get() & !(VALUE_PRESENT | PLAIN_STORE | INT_FORWARD)) | ALIAS);
+            .set((self.state.get() & !(VALUE_PRESENT | PLAIN_STORE | FORWARD)) | ALIAS);
     }
 
     pub(crate) fn clear_alias(&self) -> bool {
@@ -599,8 +724,10 @@ impl SymbolCell {
 
     pub(crate) fn value_or_alias_root(&self) -> Option<Value> {
         // A forwarded counter is an integer word, never an object to trace;
-        // reading it here could allocate a bignum during collection.
-        if self.is_forwarded_counter() {
+        // reading it here could allocate a bignum during collection.  A
+        // DEFVAR_LISP's object is its own root (lread.c:defvar_lisp
+        // staticpro's the C variable), traced by its owner.
+        if self.is_forwarded() {
             return None;
         }
         self.value().or_else(|| self.alias().map(Value::Symbol))
@@ -713,7 +840,7 @@ impl SymbolCell {
                 | BUILTIN_NIL
                 | BUILTIN_T
                 | C_SLOT
-                | INT_FORWARD
+                | FORWARD
                 | KBOARD_FORWARD
                 | STORE_EFFECT
                 | BUFFER_SLOT
