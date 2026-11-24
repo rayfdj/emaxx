@@ -1234,6 +1234,42 @@ fn an_indirect_family_reads_its_base_s_own_text_through_kills_and_swaps_as_gnu()
 }
 
 #[test]
+fn a_base_that_only_its_indirect_buffers_hold_keeps_its_text_through_collections_as_gnu() {
+    // A base buffer no variable holds, reached by the collector through
+    // the buffer list and the indirect buffer's base_buffer, whose
+    // own_text the indirect buffer edits between collections; an
+    // indirect buffer made of an indirect one takes the base; once the
+    // base is killed (and its indirect buffers with it) the killed
+    // indirect buffer still names it.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((b (generate-new-buffer "gc-base"))
+               (i (make-indirect-buffer b "gc-ind"))
+               (r nil))
+          (with-current-buffer b (insert "base text"))
+          (setq b nil)
+          (garbage-collect)
+          (with-current-buffer i (goto-char (point-max)) (insert "!"))
+          (garbage-collect)
+          (push (list (with-current-buffer i (buffer-string))
+                      (with-current-buffer (buffer-base-buffer i) (buffer-string))
+                      (buffer-name (buffer-base-buffer i)))
+                r)
+          (let ((j (make-indirect-buffer i "gc-ind2")))
+            (setq i nil)
+            (garbage-collect)
+            (with-current-buffer j (insert "?") (garbage-collect)
+              (push (list (buffer-string) (buffer-name (buffer-base-buffer j))) r))
+            (kill-buffer (buffer-base-buffer j))
+            (garbage-collect)
+            (garbage-collect)
+            (push (list (buffer-live-p j) (buffer-base-buffer j)) r))
+          (nreverse r))"#,
+        r##"(("base text!" "base text!" "gc-base") ("base text?!" "gc-base") (nil #<killed buffer>))"##,
+        "indirect-held base",
+    );
+}
+
+#[test]
 fn an_indirect_buffer_s_text_is_its_base_object_s_own_text() {
     // The objects behind the family: a base's state reads its object's
     // own_text, an indirect buffer's state its base's, a killed indirect
@@ -1606,6 +1642,82 @@ fn the_matcher_calls_syntax_propertize_as_gnu() {
              (nreverse r)))"#,
         r##"(((t 2) nil -1 nil nil) ((t 8) ((1 16)) 16 (2) (2)) ((t 4) nil 16 (2) (2)) ((12 9) ((1 16)) 16 (2) (2)) ((12 9) ((1 16)) 16 (2) (2)) ((16 nil) nil 16 (2) nil) ((6 9) nil 16 (2) nil))"##,
         "matcher callouts",
+    );
+}
+
+#[test]
+fn a_match_whose_syntax_propertize_edits_the_buffer_reads_the_text_it_started_with_as_gnu() {
+    // A matcher entry that can run Lisp (`parse-sexp-lookup-properties'
+    // set, a syntax-propertize-function past a syntax-table property)
+    // keeps the bytes it reads before the callout runs: an insertion, a
+    // deletion and a refill of the whole text (which moves the bytes) in
+    // the callout leave the match reading the text it started with until
+    // parse_sexp_propertize signals that the buffer was modified, and a
+    // collection or a change of properties alone lets it go on.  Under
+    // debug assertions a match that read the text unshared while it
+    // changed fails its snapshot's check.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil) (edit nil))
+          (with-temp-buffer
+            (setq-local parse-sexp-lookup-properties t)
+            (setq-local syntax-propertize-function
+                        (lambda (start end)
+                          (push (list 'propertize start end) r)
+                          (garbage-collect)
+                          (when edit (funcall edit))))
+            (dolist (case (list (cons 'insert-at-end (lambda () (save-excursion (goto-char (point-max)) (insert "!!"))))
+                                (cons 'delete (lambda () (delete-region 1 2)))
+                                (cons 'refill (lambda () (erase-buffer) (insert (make-string 3000 ?z))))
+                                (cons 'properties (lambda () (put-text-property 1 3 'face 'bold)))
+                                (cons 'gc nil)))
+              (dolist (search (list (lambda () (goto-char 1) (looking-at "\\w+\\s-\\w+"))
+                                    (lambda () (goto-char 1) (re-search-forward "\\_<ba\\w\\_>" nil t))
+                                    (lambda () (goto-char (point-max)) (re-search-backward "\\<b\\w+" nil t))
+                                    (lambda () (goto-char 1) (posix-looking-at "\\(\\w\\|\\s-\\)+"))))
+                (setq edit nil)
+                (erase-buffer)
+                (insert "foo bér baz qux\n")
+                (put-text-property 6 7 'syntax-table (string-to-syntax "w"))
+                (set-match-data nil)
+                (setq syntax-propertize--done 2)
+                (setq edit (cdr case))
+                (let ((v (condition-case e (funcall search) (error e))))
+                  (push (list (car case) v (match-data t) (point) (buffer-size)) r)))))
+          (nreverse r))"#,
+        r##"((propertize 1 17) (insert-at-end (error "internal--syntax-propertize modified the buffer!") nil 1 18) (propertize 1 17) (insert-at-end (error "internal--syntax-propertize modified the buffer!") nil 1 18) (insert-at-end 9 (9 12 #<killed buffer>) 9 16) (propertize 1 17) (insert-at-end (error "internal--syntax-propertize modified the buffer!") nil 1 18) (propertize 1 17) (delete (error "internal--syntax-propertize modified the buffer!") nil 1 15) (propertize 1 17) (delete (error "internal--syntax-propertize modified the buffer!") nil 1 15) (delete 9 (9 12 #<killed buffer>) 9 16) (propertize 1 17) (delete (error "internal--syntax-propertize modified the buffer!") nil 1 15) (propertize 1 17) (refill (error "internal--syntax-propertize modified the buffer!") nil 1 3000) (propertize 1 17) (refill (error "internal--syntax-propertize modified the buffer!") nil 1 3000) (refill 9 (9 12 #<killed buffer>) 9 16) (propertize 1 17) (refill (error "internal--syntax-propertize modified the buffer!") nil 1 3000) (propertize 1 17) (properties t (1 8 #<killed buffer>) 1 16) (propertize 1 17) (properties 12 (9 12 #<killed buffer>) 12 16) (properties 9 (9 12 #<killed buffer>) 9 16) (propertize 1 17) (properties t (1 17 16 17 #<killed buffer>) 1 16) (propertize 1 17) (gc t (1 8 #<killed buffer>) 1 16) (propertize 1 17) (gc 12 (9 12 #<killed buffer>) 12 16) (gc 9 (9 12 #<killed buffer>) 9 16) (propertize 1 17) (gc t (1 17 16 17 #<killed buffer>) 1 16))"##,
+        "editing callouts",
+    );
+}
+
+#[test]
+fn a_match_keeps_its_text_through_a_callout_that_changes_its_representation_or_kills_it() {
+    // syntax-propertize callouts that replace the stored text with its
+    // unibyte form (set-buffer-multibyte, which changes no character
+    // count) or kill the buffer (its text freed): the match goes on over
+    // the bytes it kept, and its snapshot's check passes.  GNU answers
+    // (t t) for the first too; for the second its matcher would read the
+    // freed text, so the value is this matcher's: parse_sexp_propertize's
+    // check of CHARS_MODIFF, read from the buffer now current, signals.
+    assert_interpreter_prints(
+        r#"(let ((r nil))
+           (dolist (edit (list (lambda () (set-buffer-multibyte nil))
+                               (lambda () (kill-buffer (current-buffer)))))
+             (let ((b (generate-new-buffer "callout")))
+               (with-current-buffer b
+                 (insert "foo bar baz")
+                 (setq-local parse-sexp-lookup-properties t)
+                 (put-text-property 6 7 'syntax-table (string-to-syntax "w"))
+                 (setq-local syntax-propertize-function
+                             (lambda (_start _end) (garbage-collect) (funcall edit)))
+                 (setq syntax-propertize--done 2)
+                 (goto-char 1)
+                 (push (list (condition-case e (looking-at "\\w+\\s-\\w+") (error (car e)))
+                             (buffer-live-p b))
+                       r))
+               (kill-buffer b)))
+           (nreverse r))"#,
+        "((t t) (error nil))",
+        "callouts that replace the text",
     );
 }
 

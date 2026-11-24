@@ -2989,6 +2989,28 @@ fn image_buffers_take_the_places_of_the_loading_process_buffers_of_their_ids() {
             expected("Base TEXT"),
             "image process {image_process}"
         );
+        // The loaded indirect buffer's text is its base object's
+        // own_text, as the loader's share_text_of points it, and the
+        // byte positions of each are its text's.
+        let (Kind::Buffer(base), Kind::Buffer(ind)) = (loaded[2].kind(), loaded[3].kind()) else {
+            panic!("the image's base and indirect buffers")
+        };
+        // The base's point stands after its insertion, the indirect
+        // buffer's where it was made.
+        for (buffer, bytes) in [(base, (10, 1, 10)), (ind, (1, 1, 10))] {
+            assert!(
+                buffer
+                    .borrow()
+                    .text_owner()
+                    .is_some_and(|owner| owner.ptr_eq(&base)),
+                "image process {image_process}: the base's own_text"
+            );
+            assert_eq!(
+                buffer.borrow().position_bytes_stored(),
+                bytes,
+                "image process {image_process}"
+            );
+        }
         // An edit through the indirect buffer is the base's, and every
         // answer is the same after a collection; a buffer made after the
         // load is none of the image's or the process's.

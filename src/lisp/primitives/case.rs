@@ -89,16 +89,17 @@ pub(crate) fn public_buffer_char_code(ch: char, multibyte: bool) -> i64 {
 /// every public character accessor must consult that sidecar through this
 /// one boundary rather than leaking the placeholder value.
 pub(crate) fn public_buffer_char_code_at(interp: &Interpreter, position: usize) -> Option<i64> {
-    interp
-        .buffer
-        .borrow()
+    let buffer = interp.buffer.borrow();
+    if let Some(byte) = buffer.ascii_char_at(position) {
+        return byte.map(i64::from);
+    }
+    buffer
         .extended_char_at(position)
         .map(i64::from)
         .or_else(|| {
-            interp
-                .current_buffer()
+            buffer
                 .char_at(position)
-                .map(|ch| public_buffer_char_code(ch, interp.current_buffer().multibyte()))
+                .map(|ch| public_buffer_char_code(ch, buffer.is_multibyte()))
         })
 }
 

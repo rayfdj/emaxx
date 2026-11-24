@@ -1315,6 +1315,26 @@ impl BufferRef {
         self.borrow().char_at(pos)
     }
 
+    /// The buffer's text, its halves before and after the gap with the
+    /// gap's and the end's positions, with no guard counted: for a
+    /// matcher that reads it only while nothing runs that could change
+    /// it, as `StringRef::bytes_unguarded' is for a string.
+    ///
+    /// # Safety
+    /// Neither a change of the text nor any Lisp nor a collection happens
+    /// while the view is in use, unless a share of the bytes
+    /// (`Buffer::share_text_bytes') taken before the first of them keeps
+    /// them; a mutable guard of the state alive now panics.
+    #[inline(always)]
+    pub(crate) unsafe fn text_halves_unguarded<'a>(&self) -> crate::buffer::ScanView<'a> {
+        // SAFETY: as the caller's contract: no mutable guard aliases the
+        // state while the view is taken.
+        let state =
+            unsafe { self.state.try_borrow_unguarded() }.expect("buffer already mutably borrowed");
+        // SAFETY: as the caller's contract.
+        unsafe { state.text_halves_unguarded() }
+    }
+
     /// BVAR (b, syntax_table), when the buffer holds one.
     #[inline]
     pub(crate) fn syntax_table(&self) -> Option<CharTableRef> {

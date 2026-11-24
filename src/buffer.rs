@@ -540,11 +540,20 @@ impl PositionCache {
 /// change.
 pub type ScanText = GapText;
 
-/// `Buffer::match_view': the accessible text a regexp match reads, its
-/// region's ends and point (1-based) with their offsets in the stored
-/// bytes (0-based), and what the matcher needs to know of the text.
+/// A buffer's text as a matcher reads it in place (see
+/// `BufferValue::text_halves_unguarded'): its halves before and after
+/// the gap, and the gap's and the end's positions.
+pub(crate) type ScanView<'a> = GapText<&'a [u8]>;
+
+/// A share of a buffer text's bytes (`Buffer::share_text_bytes'): while
+/// it is held, a change of the text copies them first.
+pub(crate) type TextPin = std::rc::Rc<Vec<u8>>;
+
+/// `Buffer::match_view': what a regexp match reads of the buffer besides
+/// its text, the region's ends and point (1-based) with their offsets in
+/// the stored bytes (0-based), and what the matcher needs to know of the
+/// text.
 pub(crate) struct MatchView {
-    pub(crate) text: ScanText,
     pub(crate) begv: usize,
     pub(crate) begv_byte: usize,
     pub(crate) zv: usize,
@@ -555,7 +564,6 @@ pub(crate) struct MatchView {
     /// Characters beyond Unicode lie in the region.
     pub(crate) side: bool,
     pub(crate) ascii: bool,
-    pub(crate) tick: ModCount,
 }
 
 /// What an insertion puts in the text: characters, or a unibyte
@@ -1728,9 +1736,27 @@ impl Buffer {
     }
 
     /// buf_charpos_to_bytepos in the stored text: the byte position of
-    /// POS, POS itself while each character is one byte (Z == Z_BYTE).
+    /// POS, PT_BYTE, BEGV_BYTE or ZV_BYTE when it is one of those
+    /// (CONSIDERed before a count), POS itself while each character is
+    /// one byte (Z == Z_BYTE), else counted.  The kept bytes must be
+    /// their positions' (see `converted_stored_byte').
     #[inline]
     fn stored_byte_of(&self, pos: usize) -> usize {
+        if pos == self.pt {
+            self.pt_byte
+        } else if pos == self.begv {
+            self.begv_byte
+        } else if pos == self.zv {
+            self.zv_byte
+        } else {
+            self.converted_stored_byte(pos)
+        }
+    }
+
+    /// `stored_byte_of' from the text alone, for positions whose kept
+    /// bytes are to be found again.
+    #[inline]
+    fn converted_stored_byte(&self, pos: usize) -> usize {
         let text = self.text.get().borrow();
         if text.text.is_ascii() {
             pos
@@ -1756,10 +1782,9 @@ impl Buffer {
     /// SET_BUF_BEGV and SET_BUF_ZV: the bounds BEGV and ZV, with their
     /// byte positions.
     fn set_bounds(&mut self, begv: usize, zv: usize) {
-        self.begv_byte = self.stored_byte_of(begv);
-        self.zv_byte = self.stored_byte_of(zv);
-        self.begv = begv;
-        self.zv = zv;
+        let (begv_byte, zv_byte) = (self.stored_byte_of(begv), self.stored_byte_of(zv));
+        (self.begv, self.begv_byte) = (begv, begv_byte);
+        (self.zv, self.zv_byte) = (zv, zv_byte);
     }
 
     /// The byte positions of point and the bounds found again, after a
@@ -1767,9 +1792,9 @@ impl Buffer {
     /// hand (a replacement, a change of representation) or a fetch of
     /// the positions from their markers.
     fn refresh_position_bytes(&mut self) {
-        self.pt_byte = self.stored_byte_of(self.pt);
-        self.begv_byte = self.stored_byte_of(self.begv);
-        self.zv_byte = self.stored_byte_of(self.zv);
+        self.pt_byte = self.converted_stored_byte(self.pt);
+        self.begv_byte = self.converted_stored_byte(self.begv);
+        self.zv_byte = self.converted_stored_byte(self.zv);
     }
 
     /// PT_BYTE, BEGV_BYTE and ZV_BYTE in the stored text.
@@ -1778,9 +1803,9 @@ impl Buffer {
         debug_assert_eq!(
             (self.pt_byte, self.begv_byte, self.zv_byte),
             (
-                self.stored_byte_of(self.pt),
-                self.stored_byte_of(self.begv),
-                self.stored_byte_of(self.zv)
+                self.converted_stored_byte(self.pt),
+                self.converted_stored_byte(self.begv),
+                self.converted_stored_byte(self.zv)
             ),
             "the byte positions follow the positions"
         );
@@ -2354,45 +2379,61 @@ impl Buffer {
         self.text.get().borrow().string(start..end)
     }
 
-    /// What a regexp match reads of the buffer before it starts, the text
-    /// borrowed once: the accessible region's text, shared, with its ends'
-    /// and point's positions and stored bytes, as looking_at_1 and
-    /// search_buffer_re take BEGV, ZV, PT and their bytes.
+    /// What a regexp match reads of the buffer before it starts, as
+    /// looking_at_1 and search_buffer_re take BEGV, ZV, PT and their
+    /// bytes: the fields, and of the text whether each character is one
+    /// byte and whether characters beyond Unicode lie in the region.
+    #[inline]
     pub(crate) fn match_view(&self) -> MatchView {
+        let (point_byte, begv_byte, zv_byte) = self.position_bytes_stored();
         let text = self.text.get().borrow();
-        let scan = text.scan_text();
-        let ascii = scan.is_ascii();
         let (begv, zv, point) = (self.begv, self.zv, self.pt);
-        // An ASCII text's bytes are its characters; otherwise the text's
-        // conversions, which know its ends, the gap and the positions
-        // converted since its last edit before them.
-        let byte = |pos: usize| {
-            if ascii {
-                pos - 1
-            } else {
-                text.char_to_byte(pos - 1)
-            }
+        let side = !text.extended_chars.is_empty() && {
+            let first = text
+                .extended_chars
+                .partition_point(|(position, _)| *position < begv);
+            text.extended_chars
+                .get(first)
+                .is_some_and(|(position, _)| *position < zv)
         };
-        let first = text
-            .extended_chars
-            .partition_point(|(position, _)| *position < begv);
-        let side = text
-            .extended_chars
-            .get(first)
-            .is_some_and(|(position, _)| *position < zv);
         MatchView {
             begv,
-            begv_byte: byte(begv),
+            begv_byte: begv_byte - 1,
             zv,
-            zv_byte: byte(zv),
+            zv_byte: zv_byte - 1,
             point,
-            point_byte: byte(point),
+            point_byte: point_byte - 1,
             multibyte: self.multibyte,
             side,
-            ascii,
-            tick: text.chars_modiff,
-            text: scan,
+            ascii: text.text.is_ascii(),
         }
+    }
+
+    /// The text's halves and positions read with no guard counted: see
+    /// `BufferValue::text_halves_unguarded'.
+    ///
+    /// # Safety
+    /// As `BufferValue::text_halves_unguarded's.
+    #[inline(always)]
+    pub(crate) unsafe fn text_halves_unguarded<'a>(&self) -> ScanView<'a> {
+        // SAFETY: as the caller's contract: no change of the text, which
+        // would take a mutable guard, while the view is used.
+        let text = unsafe { self.text.get().try_borrow_unguarded() }
+            .expect("buffer text already mutably borrowed");
+        // SAFETY: as the caller's contract.
+        unsafe { text.text.view_unbounded() }
+    }
+
+    /// A share of the text's bytes, which keeps a view of them
+    /// (`text_halves_unguarded') taken since the text last changed from
+    /// any change after it.
+    pub(crate) fn share_text_bytes(&self) -> TextPin {
+        self.text.get().borrow().text.share_bytes()
+    }
+
+    /// Whether VIEW reads the text's bytes as they now are.
+    pub(crate) fn text_is_viewed_by(&self, view: &ScanView<'_>) -> bool {
+        self.text.get().borrow().text.is_viewed_by(view)
     }
 
     /// The text for a scan apart from the buffer: the gap buffer's bytes,
@@ -3268,6 +3309,18 @@ impl Buffer {
         self.text_char_at(pos)
     }
 
+    /// Fchar_after's FETCH_CHAR (CHAR_TO_BYTE (POS)) in a text whose
+    /// characters are each one byte (Z == Z_BYTE), with none beyond
+    /// Unicode: the byte at POS of the accessible text, None outside it;
+    /// None for any other text.
+    #[inline]
+    pub(crate) fn ascii_char_at(&self, pos: usize) -> Option<Option<u8>> {
+        let text = self.text.get().borrow();
+        text.text
+            .is_ascii()
+            .then(|| (self.begv <= pos && pos < self.zv).then(|| text.text.byte(pos - 1)))
+    }
+
     /// buffer.h FETCH_CHAR: the character at POS anywhere in the text,
     /// the restriction aside (BEG <= POS < Z).
     pub(crate) fn fetch_char(&self, pos: usize) -> Option<char> {
@@ -3298,7 +3351,12 @@ impl Buffer {
             cache.last_single = Some(index);
             if !scanning {
                 drop(cache);
-                let byte = text.char_to_byte(index);
+                // CHAR_TO_BYTE, which knows point's byte.
+                let byte = if pos == self.pt {
+                    self.pt_byte - 1
+                } else {
+                    text.char_to_byte(index)
+                };
                 return text.rest_at_byte(byte).chars().next();
             }
         }
@@ -5967,9 +6025,9 @@ mod tests {
         // several-byte characters and text with raw-byte markers.
         fn check(buf: &Buffer, label: &str) {
             let converted = (
-                buf.stored_byte_of(buf.pt),
-                buf.stored_byte_of(buf.begv),
-                buf.stored_byte_of(buf.zv),
+                buf.converted_stored_byte(buf.pt),
+                buf.converted_stored_byte(buf.begv),
+                buf.converted_stored_byte(buf.zv),
             );
             assert_eq!(
                 (buf.pt_byte, buf.begv_byte, buf.zv_byte),

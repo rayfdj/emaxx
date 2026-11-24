@@ -1868,10 +1868,17 @@ impl Interpreter {
         // lisp.h:maybe_quit first reads Vquit_flag directly and returns on
         // the overwhelmingly common nil case.  These are eval.c's forwarded
         // cells, not symbol-name lookups.
-        if self.quit_flag_is_nil() && !primitives::atimer::signals_pending() {
+        if self.quit_check_clear() {
             return Ok(());
         }
         self.probably_quit(env)
+    }
+
+    /// maybe_quit's first test: no quit and no signal pending, nothing
+    /// for probably_quit to run.
+    #[inline(always)]
+    pub(crate) fn quit_check_clear(&self) -> bool {
+        self.quit_flag_is_nil() && !primitives::atimer::signals_pending()
     }
 
     /// eval.c:probably_quit: a fatal signal's terminate_due_to_signal (whose

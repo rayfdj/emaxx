@@ -371,6 +371,9 @@ pub(super) struct LispMatchEnv<'a, 't> {
     /// quit check.
     error: Option<LispError>,
     categories: Option<CharTableRef>,
+    /// The buffer text the match reads in place, whose bytes are kept
+    /// before the match runs what could run Lisp.
+    snapshot: Option<&'t BufferSnapshot<'t>>,
 }
 
 impl Drop for LispMatchEnv<'_, '_> {
@@ -396,6 +399,48 @@ impl<'a, 't> LispMatchEnv<'a, 't> {
             object: Object::None,
             error: None,
             categories: None,
+            snapshot: None,
+        }
+    }
+
+    /// The buffer text the match reads, SNAPSHOT's, kept before Lisp can
+    /// run (`keep_text'): the matcher's text and point's offset in it.
+    #[inline(always)]
+    fn reads(&mut self, snapshot: &'t BufferSnapshot<'t>) -> (Text<'t>, usize) {
+        self.snapshot = Some(snapshot);
+        let (text, object, point) = snapshot.matcher_parts();
+        self.object = object;
+        (text, point)
+    }
+
+    /// parse_sexp_propertize's error, signaled where the syntax lookup
+    /// called internal--syntax-propertize: the search that called it
+    /// ends there, its registers BEFORE it (the last match's) kept as
+    /// GNU's longjmp leaves search_regs.
+    fn end_at_propertize_error(
+        &mut self,
+        registers: &mut Registers,
+        before: Option<Registers>,
+    ) -> Result<(), LispError> {
+        match self.error.take() {
+            Some(error) => {
+                if let Some(before) = before {
+                    *registers = before;
+                }
+                Err(error)
+            }
+            None => Ok(()),
+        }
+    }
+
+    /// The bytes of the text the match reads kept from a change, before
+    /// it runs what could run Lisp: a quit's handler (the debugger, the
+    /// hooks of kill-emacs), a pending signal's, a syntax lookup's
+    /// internal--syntax-propertize.
+    #[inline]
+    fn keep_text(&self) {
+        if let Some(snapshot) = self.snapshot {
+            snapshot.keep_text();
         }
     }
 
@@ -644,6 +689,7 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
         if !self.interp.parse_sexp_lookup_properties {
             return;
         }
+        self.keep_text();
         let (gl, error) = GlState::for_regexp(self.interp, object, || self.charpos(at));
         if let Some(error) = error {
             self.error.get_or_insert(error);
@@ -760,6 +806,10 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
         {
             return Err(error);
         }
+        if self.interp.quit_check_clear() {
+            return Ok(());
+        }
+        self.keep_text();
         self.interp.maybe_quit(self.env)
     }
 }
@@ -982,11 +1032,19 @@ fn release_cell(cell: u8, entry: Option<Box<CacheEntry>>) {
     });
 }
 
-/// The buffer's accessible text, a snapshot the matcher reads without
-/// holding the buffer: the gap buffer's bytes, shared until its next
-/// change.
-struct BufferSnapshot {
-    text: crate::buffer::ScanText,
+/// The buffer's accessible text as the matcher reads it without holding
+/// the buffer, as looking_at_1 takes BEGV_ADDR, GPT_BYTE and the rest:
+/// the buffer's own bytes in place (`text_halves_unguarded'), and the
+/// fields of the region and point.  Before the match runs anything that
+/// can run Lisp it shares the bytes (`keep_text'), as re_match_2_internal
+/// sets inhibit_shrinking before a syntax lookup can call
+/// internal--syntax-propertize: a change of the text then copies them,
+/// and the match goes on reading the bytes it started with.
+struct BufferSnapshot<'t> {
+    text: crate::buffer::ScanView<'t>,
+    /// The buffer the text is of, and the share of its bytes once kept.
+    buffer: crate::lisp::types::BufferRef,
+    kept: std::cell::OnceCell<crate::buffer::TextPin>,
     begv: usize,
     begv_byte: usize,
     zv: usize,
@@ -997,9 +1055,6 @@ struct BufferSnapshot {
     multibyte: bool,
     side: bool,
     ascii: bool,
-    /// The buffer's chars-modified tick when taken: its text is the
-    /// snapshot's while the tick stays.
-    tick: crate::buffer::ModCount,
 }
 
 /// A snapshot's accessible text as the matcher's object reads it: its
@@ -1035,11 +1090,41 @@ impl SnapshotRange<'_> {
     }
 }
 
-impl BufferSnapshot {
-    #[inline]
-    fn take(interp: &Interpreter) -> Self {
-        let view = interp.buffer.borrow().match_view();
-        BufferSnapshot {
+impl Drop for BufferSnapshot<'_> {
+    fn drop(&mut self) {
+        // `take's contract: a text read in place, its bytes not kept, saw
+        // no change.
+        debug_assert!(
+            self.kept.get().is_some()
+                || self
+                    .buffer
+                    .state
+                    .try_borrow()
+                    .map_or(true, |buffer| buffer.text_is_viewed_by(&self.text)),
+            "the text changed under a match that read it in place"
+        );
+    }
+}
+
+impl BufferSnapshot<'_> {
+    /// The current buffer's accessible text and positions, its bytes
+    /// shared at once when SHARE (the match can run Lisp).
+    ///
+    /// # Safety
+    /// Until `keep_text' shares the bytes, nothing changes the buffer's
+    /// text: the caller runs no Lisp and no collection and makes no
+    /// change, and keeps the text before it lets the matcher run what
+    /// could (`LispMatchEnv::keep_text').
+    #[inline(always)]
+    unsafe fn take<'t>(interp: &Interpreter, share: bool) -> BufferSnapshot<'t> {
+        let buffer = interp.buffer;
+        let view = buffer.borrow().match_view();
+        let snapshot = BufferSnapshot {
+            // SAFETY: as the caller's contract: no change of the text
+            // while it is read unshared.
+            text: unsafe { buffer.text_halves_unguarded() },
+            buffer,
+            kept: std::cell::OnceCell::new(),
             begv: view.begv,
             begv_byte: view.begv_byte,
             zv: view.zv,
@@ -1049,9 +1134,25 @@ impl BufferSnapshot {
             multibyte: view.multibyte,
             side: view.side,
             ascii: view.ascii,
-            tick: view.tick,
-            text: view.text,
+        };
+        if share {
+            snapshot.keep_text();
         }
+        snapshot
+    }
+
+    /// freeze_buffer_relocation's counterpart for a match about to run
+    /// what can run Lisp: the bytes the snapshot reads shared, so that a
+    /// change of the text copies them first.
+    fn keep_text(&self) {
+        self.kept.get_or_init(|| {
+            let buffer = self.buffer.borrow();
+            debug_assert!(
+                buffer.text_is_viewed_by(&self.text),
+                "the text changed before its bytes were kept"
+            );
+            buffer.share_text_bytes()
+        });
     }
 
     /// The accessible text as the matcher reads it.
@@ -1074,6 +1175,7 @@ impl BufferSnapshot {
     }
 
     /// The text offset of buffer position POS.
+    #[inline]
     fn offset(&self, pos: usize) -> usize {
         if self.ascii {
             pos - self.begv
@@ -1107,12 +1209,13 @@ impl BufferSnapshot {
     }
 
     /// POSITION through BUFFER, the buffer this snapshot was taken of,
-    /// while its text is the snapshot's: the buffer's own conversion
+    /// while its text is the snapshot's (the bytes it reads, the gap
+    /// where it was): the buffer's own conversion
     /// (BYTE_TO_CHAR), which starts from the positions it converted last
     /// (point's, which `take' converted, then each register's).
     fn position_in(&self, buffer: &crate::buffer::Buffer, offset: usize) -> usize {
         let byte = self.begv_byte + offset;
-        if self.ascii || buffer.chars_modified_tick() != self.tick {
+        if self.ascii || !buffer.text_is_viewed_by(&self.text) {
             return self.position(offset);
         }
         if byte == self.point_byte {
@@ -1237,18 +1340,18 @@ fn set_search_regs(
 }
 
 /// set_search_regs for REGISTERS, offsets in SNAPSHOT's text, the current
-/// buffer's when it was taken: converted by the buffer (see
-/// `BufferSnapshot::position_in').
+/// buffer's when it was taken: converted by the buffer while it is still
+/// current (see `BufferSnapshot::position_in'), the searched buffer the
+/// snapshot's object.
 fn set_buffer_search_regs(
     interp: &mut Interpreter,
     registers: &Registers,
     snapshot: &BufferSnapshot,
-    buffer_id: u64,
 ) {
-    let searched = interp.buffer_object(buffer_id);
+    let searched = snapshot.buffer.is_live().then_some(snapshot.buffer);
     let buffer = interp.buffer;
+    let same = buffer.ptr_eq(&snapshot.buffer);
     let buffer = buffer.borrow();
-    let same = interp.current_buffer_id() == buffer_id;
     set_search_regs(
         interp,
         registers,
@@ -1294,8 +1397,7 @@ pub(super) fn looking_at_1(
     let case_table = interp
         .case_fold_search_active()
         .then(|| interp.current_case_canon_table());
-    let buffer_id = interp.current_buffer_id();
-    let snapshot = BufferSnapshot::take(interp);
+    let snapshot;
     // The environment ends with its block, dropped where it lies.
     let (entry, registers, result, pending) = {
         let mut menv = LispMatchEnv::new(interp, env, case_table);
@@ -1305,8 +1407,13 @@ pub(super) fn looking_at_1(
             release_pattern(entry);
             return Err(error);
         }
-        let (text, object, pos) = snapshot.matcher_parts();
-        menv.object = object;
+        // The text and positions read once the quit is done, as GNU
+        // reads BEGV_ADDR and PT_BYTE.
+        let share = menv.interp.parse_sexp_lookup_properties;
+        // SAFETY: nothing runs before the match, which keeps the bytes
+        // before it runs what could change them (`LispMatchEnv::reads').
+        snapshot = unsafe { BufferSnapshot::take(menv.interp, share) };
+        let (text, pos) = menv.reads(&snapshot);
         let mut registers = take_registers(menv.interp, modify_match_data);
         let result = rx::re_match(
             &mut entry.pattern,
@@ -1324,7 +1431,7 @@ pub(super) fn looking_at_1(
         (None, Ok(end)) => Ok(end.is_some()),
     };
     if let (Ok(true), Some(registers)) = (&found, &registers) {
-        set_buffer_search_regs(interp, registers, &snapshot, buffer_id);
+        set_buffer_search_regs(interp, registers, &snapshot);
     }
     give_back_registers(interp, registers);
     Ok(if found? { Value::T } else { Value::Nil })
@@ -1571,17 +1678,18 @@ fn search_buffer_re(
     posix: bool,
 ) -> Result<i64, LispError> {
     let preserve_match_data = modify_match_data_allowed(interp);
-    let buffer_id = interp.current_buffer_id();
     let case_table = interp
         .case_fold_search_active()
         .then(|| interp.current_case_canon_table());
-    let snapshot = BufferSnapshot::take(interp);
+    let share = interp.parse_sexp_lookup_properties;
+    // SAFETY: nothing runs before the match, which keeps the bytes before
+    // it runs what could change them (`LispMatchEnv::reads').
+    let snapshot = unsafe { BufferSnapshot::take(interp, share) };
     // The environment ends with its block, dropped where it lies.
     let (entry, registers, found_any, outcome, pending) = {
         let mut menv = LispMatchEnv::new(interp, env, case_table);
+        let (text, _) = menv.reads(&snapshot);
         let mut entry = compile_pattern(&mut menv, regexp, posix)?;
-        let (text, object, _) = snapshot.matcher_parts();
-        menv.object = object;
         let lim_byte = snapshot.offset(lim);
         let mut pos_byte = snapshot.offset(pos);
         // search_regs, or search_regs_1 when the match data is to stay: each
@@ -1594,6 +1702,7 @@ fn search_buffer_re(
         let outcome = (|| -> Result<Result<i64, usize>, LispError> {
             menv.maybe_quit()?;
             while n < 0 {
+                let before = (share && found_any).then(|| registers.clone());
                 let found = rx::re_search(
                     &mut entry.pattern,
                     &text,
@@ -1605,6 +1714,7 @@ fn search_buffer_re(
                     &mut menv,
                 )
                 .map_err(match_error)?;
+                menv.end_at_propertize_error(&mut registers, before)?;
                 if found.is_none() {
                     return Ok(Ok(n));
                 }
@@ -1614,6 +1724,7 @@ fn search_buffer_re(
                 menv.maybe_quit()?;
             }
             while n > 0 {
+                let before = (share && found_any).then(|| registers.clone());
                 let found = rx::re_search(
                     &mut entry.pattern,
                     &text,
@@ -1624,6 +1735,7 @@ fn search_buffer_re(
                     &mut menv,
                 )
                 .map_err(match_error)?;
+                menv.end_at_propertize_error(&mut registers, before)?;
                 if found.is_none() {
                     return Ok(Ok(-n));
                 }
@@ -1639,7 +1751,7 @@ fn search_buffer_re(
     release_pattern(entry);
     // Each match found updated the match data, the last one standing.
     if preserve_match_data && found_any {
-        set_buffer_search_regs(interp, &registers, &snapshot, buffer_id);
+        set_buffer_search_regs(interp, &registers, &snapshot);
     }
     interp.search_registers = registers;
     if let Some(error) = pending {
@@ -1649,7 +1761,7 @@ fn search_buffer_re(
         Ok(count) => count,
         Err(end) => {
             let buffer = interp.buffer;
-            let position = if interp.current_buffer_id() == buffer_id {
+            let position = if buffer.ptr_eq(&snapshot.buffer) {
                 snapshot.position_in(&buffer.borrow(), end)
             } else {
                 snapshot.position(end)
@@ -2188,12 +2300,14 @@ pub(crate) fn fast_looking_at(
     string: &Value,
 ) -> Result<Option<usize>, LispError> {
     if string.is_nil() {
-        let snapshot = BufferSnapshot::take(interp);
+        let share = interp.parse_sexp_lookup_properties;
+        // SAFETY: nothing runs before the match, which keeps the bytes
+        // before it runs what could change them (`LispMatchEnv::reads').
+        let snapshot = unsafe { BufferSnapshot::take(interp, share) };
         let (entry, result) = {
-            let (text, object, _) = snapshot.matcher_parts();
             let mut menv = LispMatchEnv::new(interp, env, None);
+            let (text, _) = menv.reads(&snapshot);
             let mut entry = compile_pattern(&mut menv, regexp, false)?;
-            menv.object = object;
             let start = snapshot.offset(pos);
             let result = rx::re_match(
                 &mut entry.pattern,
@@ -2255,6 +2369,60 @@ pub(crate) fn fast_looking_at(
             string_text.byte_to_char(end)
         } - pos,
     ))
+}
+
+#[cfg(test)]
+mod in_place_text_tests {
+    use super::*;
+    use crate::test_support::{eval_lisp, initialized_upstream_batch_interpreter};
+
+    #[test]
+    fn a_quit_check_keeps_the_text_before_its_handler_runs() {
+        // LispMatchEnv::maybe_quit: a quit pending when the matcher asks
+        // runs probably_quit, whose debugger (debug-on-quit) here replaces
+        // the text and collects; the bytes the match reads are kept first,
+        // and the snapshot goes on reading the text it was taken of.
+        let mut interp = initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        eval_lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (set-buffer (get-buffer-create "in place"))
+                 (insert "abc x d\u00e9f")
+                 (goto-char 3)
+                 (setq debug-on-quit t)
+                 (setq debugger (lambda (&rest _)
+                                  (erase-buffer)
+                                  (insert (make-string 5000 ?z))
+                                  (garbage-collect)
+                                  nil)))"#,
+        )
+        .expect("set up the buffer and the debugger");
+        // SAFETY: nothing runs before the quit check, which keeps the
+        // bytes before the debugger runs.
+        let snapshot = unsafe { BufferSnapshot::take(&interp, false) };
+        assert!(snapshot.kept.get().is_none(), "no Lisp can run yet");
+        assert_eq!((snapshot.point, snapshot.point_byte), (3, 2));
+        interp.set_symbol_value_key(cached_symbol!("quit-flag"), Value::T);
+        {
+            let mut menv = LispMatchEnv::new(&mut interp, &mut env, None);
+            menv.reads(&snapshot);
+            assert!(menv.maybe_quit().is_ok(), "the debugger returned");
+        }
+        assert!(
+            snapshot.kept.get().is_some(),
+            "the quit check kept the bytes"
+        );
+        let (first, second) = snapshot.range().parts.parts();
+        assert_eq!(
+            [first, second].concat(),
+            "abc x d\u{e9}f".as_bytes(),
+            "the snapshot reads the text it was taken of"
+        );
+        assert_eq!(interp.buffer.borrow().size_total(), 5000);
+        assert_eq!(snapshot.position(6), 7);
+    }
 }
 
 #[cfg(test)]

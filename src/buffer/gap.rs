@@ -22,10 +22,13 @@ const NEW_BUFFER_GAP: usize = 20;
 /// the bytes after it in one allocation, which a scan shares (GNU's
 /// `inhibit_shrinking' keeps its own from moving), and the positions,
 /// counted from BEG, of the gap and the end.
-#[derive(Clone, Default)]
-pub struct GapText {
+///
+/// The text owns its bytes through the Rc; a `GapText<&[u8]>' is a view
+/// of them (`view'), which a matcher reads in place.
+#[derive(Clone, Copy, Default)]
+pub struct GapText<B = Rc<Vec<u8>>> {
     /// BEG_ADDR's bytes, the gap included.
-    beg: Rc<Vec<u8>>,
+    beg: B,
     /// GPT - BEG: the characters before the gap.
     gpt: usize,
     /// GPT_BYTE - BEG_BYTE: where the gap starts.
@@ -36,6 +39,25 @@ pub struct GapText {
     z_byte: usize,
     /// GAP_SIZE.
     gap_size: usize,
+}
+
+/// Where a gap text's bytes are: its own allocation, or a view of one.
+pub trait GapBytes {
+    fn gap_bytes(&self) -> &[u8];
+}
+
+impl GapBytes for Rc<Vec<u8>> {
+    #[inline(always)]
+    fn gap_bytes(&self) -> &[u8] {
+        self
+    }
+}
+
+impl GapBytes for &[u8] {
+    #[inline(always)]
+    fn gap_bytes(&self) -> &[u8] {
+        self
+    }
 }
 
 /// The byte offsets of a text's newlines, kept until the text changes.
@@ -132,6 +154,56 @@ impl GapText {
         }
     }
 
+    /// The text as a view of its bytes.
+    #[inline]
+    pub(crate) fn view(&self) -> GapText<&[u8]> {
+        GapText {
+            beg: &self.beg[..],
+            gpt: self.gpt,
+            gpt_byte: self.gpt_byte,
+            z: self.z,
+            z_byte: self.z_byte,
+            gap_size: self.gap_size,
+        }
+    }
+
+    /// `view' with no lifetime of its own: a reader's that holds the bytes
+    /// in place while nothing changes the text.
+    ///
+    /// # Safety
+    /// The text does not change, and is not dropped, while the view is
+    /// used, unless a share of its bytes (`share_bytes') taken before the
+    /// first change keeps them.
+    #[inline]
+    pub(crate) unsafe fn view_unbounded<'a>(&self) -> GapText<&'a [u8]> {
+        GapText {
+            // SAFETY: as the caller's contract: the allocation stays where
+            // it is, unchanged, while the view is used.
+            beg: unsafe { &*std::ptr::from_ref::<[u8]>(&self.beg[..]) },
+            gpt: self.gpt,
+            gpt_byte: self.gpt_byte,
+            z: self.z,
+            z_byte: self.z_byte,
+            gap_size: self.gap_size,
+        }
+    }
+
+    /// A share of the bytes: a change of the text while it is held copies
+    /// them first, so that a view taken before keeps reading them.
+    #[inline]
+    pub(crate) fn share_bytes(&self) -> Rc<Vec<u8>> {
+        Rc::clone(&self.beg)
+    }
+
+    /// Whether VIEW reads this text's bytes as they now are.
+    pub(crate) fn is_viewed_by(&self, view: &GapText<&[u8]>) -> bool {
+        std::ptr::eq(self.beg.as_ptr(), view.beg.as_ptr())
+            && (self.gpt_byte, self.z_byte, self.gap_size)
+                == (view.gpt_byte, view.z_byte, view.gap_size)
+    }
+}
+
+impl<B: GapBytes> GapText<B> {
     /// Z_BYTE - BEG_BYTE.
     #[inline]
     pub(crate) fn len(&self) -> usize {
@@ -177,7 +249,7 @@ impl GapText {
     /// The text before the gap and the text after it.
     #[inline]
     pub(crate) fn halves(&self) -> (&str, &str) {
-        let bytes = &self.beg[..];
+        let bytes = self.beg.gap_bytes();
         // SAFETY: each half holds whole characters of the valid UTF-8 the
         // text was made and changed with: the gap only ever stands at a
         // character boundary.
@@ -192,10 +264,11 @@ impl GapText {
     /// The byte at AT.
     #[inline]
     pub(crate) fn byte(&self, at: usize) -> u8 {
+        let bytes = self.beg.gap_bytes();
         if at < self.gpt_byte {
-            self.beg[at]
+            bytes[at]
         } else {
-            self.beg[at + self.gap_size]
+            bytes[at + self.gap_size]
         }
     }
 
@@ -226,7 +299,7 @@ impl GapText {
     /// ends are character boundaries.
     #[inline]
     pub(crate) fn range_parts(&self, range: std::ops::Range<usize>) -> (&[u8], &[u8]) {
-        let bytes = &self.beg[..];
+        let bytes = self.beg.gap_bytes();
         let split = self.gpt_byte;
         let gap_end = self.gap_end();
         let first = &bytes[range.start.min(split)..range.end.min(split)];
@@ -414,7 +487,9 @@ impl GapText {
     pub(crate) fn byte_to_char(&self, byte: usize) -> usize {
         self.byte_to_char_near(byte, std::iter::empty())
     }
+}
 
+impl GapText {
     /// The bytes, for a change: copied first while a scan shares them.
     #[inline]
     fn bytes_mut(&mut self) -> &mut Vec<u8> {
