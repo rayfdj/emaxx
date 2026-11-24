@@ -1014,7 +1014,7 @@ impl Printer {
             }
             Kind::HashTable(_) => return self.print_hash_table(interp, env, obj, escape),
             Kind::BoolVector(vector) => self.print_bool_vector(interp, env, vector)?,
-            Kind::Unbound | Kind::ReaderForm(_) => self.strout(interp, env, &obj.to_string())?,
+            Kind::Unbound => self.strout(interp, env, &obj.to_string())?,
             _ => self.print_vectorlike_unreadable(interp, env, obj, escape)?,
         }
         Ok(Step::Done)

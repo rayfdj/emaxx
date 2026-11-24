@@ -9109,12 +9109,15 @@ fn c_stack_overflow_leaves_for_the_command_loop_without_unwinding() {
                       (let ((so-v n))
                         (unwind-protect (1+ (so-f (1+ n))) (setq so-log 'ran)))))",
         );
-        let form = Reader::new("(condition-case nil (so-f 0) (error 'caught))")
-            .read()
-            .expect("parse")
-            .expect("a form");
-        interp.intern_symbols_in_value(&form);
         let mut env = Env::new();
+        let form = crate::lisp::read_next_load_form(
+            &mut interp,
+            "(condition-case nil (so-f 0) (error 'caught))",
+            &mut 0,
+            &mut env,
+        )
+        .expect("parse")
+        .expect("a form");
         let error = interp
             .eval(&form, &mut env)
             .expect_err("the overflow exits");

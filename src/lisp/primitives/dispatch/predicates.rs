@@ -737,20 +737,10 @@ pub(crate) fn markerp(value: &Value) -> bool {
     matches!(value.kind(), Kind::Marker(_))
 }
 
-/// data.c:Frecordp: RECORDP.  The reader's record form, what a `#s(...)'
-/// read with no interpreter to build the record holds (lread.c's
-/// record_from_list before it is made), is a record too.  The form is
-/// read in place: `record_literal_items' answers Some of exactly these
-/// objects, but collects their slots to do it.
+/// data.c:Frecordp: RECORDP.
 #[inline]
 pub(crate) fn recordp(value: &Value) -> bool {
-    match value.kind() {
-        Kind::LispRecord(_) => true,
-        Kind::ReaderForm(form) => {
-            matches!(form.as_ref(), crate::lisp::types::ReaderForm::Record { .. })
-        }
-        _ => false,
-    }
+    matches!(value.kind(), Kind::LispRecord(_))
 }
 
 /// data.c:Fsubrp: t exactly for subr objects.  A native builtin is a

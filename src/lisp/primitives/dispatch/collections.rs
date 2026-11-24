@@ -905,11 +905,9 @@ define_dispatch!(
                     }
                     return Ok(table.get(raw_idx as u32));
                 }
-                let literal = record_literal_items(&args[0]);
                 // data.c:Faref exposes records and closures, but not the
                 // other pseudovectors kept in our internal Record storage.
-                if literal.is_none()
-                    && !args[0].is_string()
+                if !args[0].is_string()
                     && !is_vector_value(&args[0])
                     && !matches!(
                         args[0].kind(),
@@ -922,10 +920,6 @@ define_dispatch!(
                     return Err(args_out_of_range(&args[0], &args[1]));
                 }
                 let idx = raw_idx as usize;
-                // Support both list-vectors and strings
-                if let Some(items) = literal {
-                    return record_literal_aref(&args[0], &items, idx, &args[1]);
-                }
                 match args[0].kind() {
                     Kind::Closure(lambda) => lambda
                         .get(idx)

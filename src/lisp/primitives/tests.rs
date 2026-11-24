@@ -3288,35 +3288,29 @@ fn record_literal_detection_does_not_traverse_vector_storage() {
     // Even a cyclic payload leaves the object class unchanged. The former
     // raw mutable slice did not enforce a borrow or detect traversal.
     vector_storage.set(0, vector);
-    assert!(record_literal_items(&vector).is_none());
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    assert_eq!(
+        call(&mut interp, "recordp", &[vector], &mut env).expect("recordp"),
+        Value::Nil
+    );
 }
 
 #[test]
 fn character_table_literal_materializes_nested_bytecode_decoder() {
-    let decoder = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-        crate::lisp::types::ReaderForm::Closure {
-            kind: crate::lisp::types::ReaderClosureKind::ByteCode,
-            slots: vec![
-                Value::Integer(0),
-                Value::String(String::new().into()),
-                Value::vector([]),
-                Value::Integer(0),
-            ],
-        },
-    ));
-    let mut fields = vec![Value::Nil; 70];
-    fields[2] = Value::symbol("char-code-property-table");
-    fields[68] = Value::symbol("name");
-    fields[69] = decoder;
-    let literal = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-        crate::lisp::types::ReaderForm::CharTable { fields },
-    ));
-
+    // The interpreter's reader builds the table and its nested decoder as
+    // their syntax closes: the purpose in slot 2, the extras `name' and
+    // the byte-code decoder after the 68 standard slots.
+    let text = format!(
+        "#^[nil nil char-code-property-table {} name #[0 \"\" [] 0]]",
+        vec!["nil"; 65].join(" ")
+    );
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     let Kind::CharTable(table_id) =
-        materialize_read_char_table_literals(&mut interp, &literal, &mut env)
+        crate::lisp::read_next_load_form(&mut interp, &text, &mut 0, &mut env)
             .expect("materialize a character table with a bytecode decoder")
+            .expect("a character table")
             .kind()
     else {
         panic!("character-table syntax must produce a typed table");
@@ -3845,14 +3839,10 @@ fn subr_frontier_recordp_does_not_expose_hash_table_runtime_storage() {
     assert_upstream_primitive_contract(&format!("(prin1 {contract})"), "(nil t)");
 
     let mut interp = Interpreter::new();
-    let form = Reader::new(contract)
-        .read()
+    let mut env = crate::lisp::types::Env::new();
+    let form = crate::lisp::read_next_load_form(&mut interp, contract, &mut 0, &mut env)
         .expect("record predicate contract should parse")
         .expect("record predicate contract should contain a form");
-    let mut env = crate::lisp::types::Env::new();
-    let form = interp
-        .materialize_read_object_literals(form, &mut env)
-        .expect("construct reader objects before evaluation");
     assert_eq!(
         interp
             .eval(&form, &mut env)
@@ -3872,14 +3862,10 @@ fn subr_frontier_direct_vector_evaluation_materializes_nested_record_literals() 
     );
 
     let mut interp = Interpreter::new();
-    let form = Reader::new(contract)
-        .read()
+    let mut env = crate::lisp::types::Env::new();
+    let form = crate::lisp::read_next_load_form(&mut interp, contract, &mut 0, &mut env)
         .expect("nested record vector contract should parse")
         .expect("nested record vector contract should contain a form");
-    let mut env = crate::lisp::types::Env::new();
-    let form = interp
-        .materialize_read_object_literals(form, &mut env)
-        .expect("construct reader objects before evaluation");
     assert_eq!(
         interp
             .eval(&form, &mut env)
@@ -22825,11 +22811,9 @@ fn describe_vector_groups_equal_ranges_and_shares_standard_output_with_describer
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    let form = Reader::new(bare_program)
-        .read()
+    let form = crate::lisp::read_next_load_form(&mut interp, bare_program, &mut 0, &mut env)
         .expect("vector description contract should parse")
         .expect("vector description contract should contain a form");
-    interp.intern_symbols_in_value(&form);
     assert_eq!(
         interp
             .eval(&form, &mut env)

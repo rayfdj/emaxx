@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::compat::{self, BatchReport, FileStatus, TestStatus};
 use crate::lisp;
 use crate::lisp::eval::Interpreter;
+#[cfg(test)]
 use crate::lisp::reader::Reader;
 use crate::lisp::types::{EmacsTermination, Env, Kind, LispError, LispErrorKind, Value};
 
@@ -214,41 +215,19 @@ fn run_batch_actions(
                 }
             }
             BatchAction::Eval(expression) => {
-                let forms = Reader::new(expression)
-                    .read_all()
-                    .map_err(|error| format!("parse --eval expression `{expression}`: {error}"))?;
-                for form in forms {
-                    // GNU's reader interns as it reads, so `--eval' leaves
-                    // every symbol in the form it evaluates in the obarray.
-                    // (Not every symbol in the STRING: startup.el:2669 reads
-                    // one form and silently discards any trailing ones, which
-                    // Emaxx's read_all loop does not -- a separate, older
-                    // divergence.)  Walking per form rather than all forms up
-                    // front is the faithful choice: an early form asking about
-                    // a symbol only a later form mentions answers nil in GNU
-                    // too.  The file
-                    // loader and `eval-region' replicate that with this walk
-                    // (lisp/mod.rs:947, loading.rs:401); `--eval' did not, so
-                    // `emacs --batch --eval "(progn 'foo (intern-soft \"foo\"))"'
-                    // answered nil where GNU answers foo -- for ordinary
-                    // symbols as well as keywords.
-                    interpreter.intern_symbols_in_value(&form);
-                    match interpreter
-                        .materialize_read_object_literals(form, eval_env)
-                        .and_then(|form| interpreter.eval(&form, eval_env))
-                        .map_err(LispError::into_kind)
-                    {
-                        Ok(_) => {}
-                        Err(LispErrorKind::Terminate(termination)) => {
-                            return Ok(Ok(termination.into()));
-                        }
-                        Err(error) => return Ok(Err(LispError::from(error))),
-                    }
-                    if let Some(termination) = interpreter.take_pending_termination() {
+                // startup.el's command-line-1: `(read-from-string STR)',
+                // whose reader interns as it reads in the current obarray;
+                // only the blanks minibuf.c's string_to_object allows may
+                // follow the expression; then `(eval EXPR t)'.
+                match eval_command_line_expression(interpreter, expression, eval_env)
+                    .map_err(LispError::into_kind)
+                {
+                    Ok(_) => {}
+                    Err(LispErrorKind::Terminate(termination)) => {
                         return Ok(Ok(termination.into()));
                     }
+                    Err(error) => return Ok(Err(LispError::from(error))),
                 }
-                continue;
             }
             BatchAction::Funcall(function) => {
                 let form = Value::list([Value::Symbol(function.clone().into())]);
@@ -274,6 +253,29 @@ fn run_batch_actions(
     // exits through `kill-emacs'.  Reaching this point means every action
     // evaluated without a termination request.
     Ok(Ok(BatchRunOutcome::Exit(0)))
+}
+
+/// command-line-1's `--eval': EXPRESSION read by `read-from-string',
+/// anything but blanks after it "Trailing garbage", the form evaluated
+/// lexically.
+fn eval_command_line_expression(
+    interpreter: &mut Interpreter,
+    expression: &str,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let string = Value::String(expression.into());
+    let read_data = lisp::primitives::call(interpreter, "read-from-string", &[string], env)?;
+    let (form, end) = read_data
+        .cons_values()
+        .expect("read-from-string returns (OBJECT . END)");
+    let end = usize::try_from(end.integer_value().unwrap_or(0)).unwrap_or(0);
+    let rest = expression.chars().skip(end).collect::<String>();
+    if !rest.chars().all(|ch| matches!(ch, ' ' | '\t' | '\n')) {
+        return Err(LispError::Signal(format!(
+            "Trailing garbage following expression: {rest}"
+        )));
+    }
+    lisp::primitives::call(interpreter, "eval", &[form, Value::T], env)
 }
 
 /// keyboard.c:top_level_1's handler for an error leaving the actions:

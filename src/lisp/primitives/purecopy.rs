@@ -250,7 +250,7 @@ fn purecopy_inner(
                 "Don't know how to purify: {printed}"
             )));
         }
-        Kind::ReaderForm(_) | Kind::Unbound => {
+        Kind::Unbound => {
             return Err(LispError::Signal(format!(
                 "Don't know how to purify: {}",
                 value.type_name()

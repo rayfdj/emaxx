@@ -1332,7 +1332,6 @@ pub use marker::{MarkerRef, MarkerValue};
 pub type FrameRef = crate::lisp::alloc::VectorlikeRef<FrameValue>;
 pub type TerminalRef = crate::lisp::alloc::VectorlikeRef<TerminalValue>;
 pub use crate::lisp::alloc::StringObjectRef;
-pub type ReaderFormRef = crate::lisp::alloc::VectorlikeRef<ReaderForm>;
 /// PVEC_RECORD's handle: the record's state in a vector block.
 pub type RecordRef = crate::lisp::alloc::VectorlikeRef<crate::lisp::eval::RecordState>;
 pub use crate::lisp::alloc::vectors::{
@@ -1853,37 +1852,6 @@ pub(crate) fn circular_list(tail: Value) -> LispError {
     LispError::SignalValue(Value::list([Value::symbol("circular-list"), tail]))
 }
 
-/// Parser output that still needs an Interpreter to allocate its final Lisp
-/// object.  Keeping this typed prevents reader bookkeeping from entering the
-/// Lisp namespace as a private symbol or callable bridge.
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-#[doc(hidden)]
-pub enum ReaderClosureKind {
-    Interpreted,
-    ByteCode,
-}
-
-#[derive(Clone, Debug, PartialEq)]
-#[doc(hidden)]
-pub enum ReaderForm {
-    HashTable {
-        fields: Vec<Value>,
-    },
-    CharTable {
-        fields: Vec<Value>,
-    },
-    SubCharTable {
-        fields: Vec<Value>,
-    },
-    Record {
-        slots: Vec<Value>,
-    },
-    Closure {
-        kind: ReaderClosureKind,
-        slots: Vec<Value>,
-    },
-}
-
 /// lisp.h's `Lisp_Object': one machine word, the object's address or an
 /// immediate, with `enum Lisp_Type' in the low three bits (USE_LSB_TAG):
 /// a symbol 0, a fixnum 2 or 6 (the value in the upper 62 bits), a cons
@@ -1975,8 +1943,6 @@ pub enum Kind {
     BoolVector(BoolVectorRef),
     /// GNU PVEC_FINALIZER: the object containing its callback and list links.
     Finalizer(crate::lisp::alloc::FinalizerRef),
-    /// Typed reader state awaiting Interpreter-owned object allocation.
-    ReaderForm(ReaderFormRef),
     /// Internal marker for EIEIO slots that have not been bound.
     Unbound,
 }
@@ -2128,10 +2094,6 @@ impl Value {
     pub fn Finalizer(object: crate::lisp::alloc::FinalizerRef) -> Value {
         Value::from_bits(object.identity() | TAG_VECTORLIKE)
     }
-    #[inline]
-    pub fn ReaderForm(form: ReaderFormRef) -> Value {
-        Value::from_bits(form.identity() | TAG_VECTORLIKE)
-    }
 
     /// The word itself (the conservative scan's and the native runtime's
     /// view of a `Lisp_Object').
@@ -2256,9 +2218,6 @@ impl Value {
                         crate::lisp::alloc::VectorTag::Closure => {
                             Kind::Closure(crate::lisp::alloc::ClosureRef::from_raw(header))
                         }
-                        crate::lisp::alloc::VectorTag::ReaderForm => {
-                            Kind::ReaderForm(crate::lisp::alloc::VectorlikeRef::from_raw(header))
-                        }
                         crate::lisp::alloc::VectorTag::Record => {
                             if crate::lisp::alloc::vectors::generic_records::record_has_inline_slots(
                                 header,
@@ -2354,7 +2313,6 @@ impl Kind {
             Kind::LispRecord(v) => Value::LispRecord(v),
             Kind::BoolVector(v) => Value::BoolVector(v),
             Kind::Finalizer(v) => Value::Finalizer(v),
-            Kind::ReaderForm(v) => Value::ReaderForm(v),
         }
     }
 }
@@ -3435,7 +3393,6 @@ impl Value {
             Kind::LispRecord(record) => format!("record<{:x}>", record.identity()),
             Kind::BoolVector(vector) => format!("bool-vector<{:x}>", vector.identity()),
             Kind::Finalizer(object) => format!("finalizer<{:x}>", object.identity()),
-            Kind::ReaderForm(_) => "reader-form".into(),
             Kind::Unbound => "unbound".into(),
         }
     }
@@ -3554,7 +3511,6 @@ fn values_equal_recursive(
         (Kind::LispRecord(a), Kind::LispRecord(b)) => a.ptr_eq(&b),
         (Kind::BoolVector(a), Kind::BoolVector(b)) => a.identity() == b.identity(),
         (Kind::Finalizer(a), Kind::Finalizer(b)) => a == b,
-        (Kind::ReaderForm(a), Kind::ReaderForm(b)) => a.ptr_eq(&b),
         (Kind::Unbound, Kind::Unbound) => true,
         _ => false,
     }
@@ -3666,7 +3622,6 @@ fn format_value(
         }
         // print.c prints a finalizer as `#<finalizer>' with no identity.
         Kind::Finalizer(_) => write!(f, "#<finalizer>"),
-        Kind::ReaderForm(_) => write!(f, "#<reader-form>"),
         Kind::Unbound => write!(f, "#<unbound>"),
     }
 }

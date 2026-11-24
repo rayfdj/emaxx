@@ -38,7 +38,7 @@ pub use windows::WindowObjectRef;
 #[cfg(test)]
 mod tests;
 
-use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, Value};
+use super::super::types::{BufferValue, LispBignum, MarkBit, Value};
 use super::{BlockKind, blocks_of, register_block, sweep_blocks_of, unregister_block};
 use std::cell::Cell;
 use std::marker::PhantomData;
@@ -111,7 +111,6 @@ pub enum VectorTag {
     /// lisp.h's PVEC_RECORD: a record, and the pseudovector kinds this
     /// implementation keeps as records (the kind is in the state).
     Record = 34,
-    ReaderForm = 41,
 }
 
 impl VectorTag {
@@ -136,7 +135,6 @@ impl VectorTag {
             32 => Self::CharTable,
             33 => Self::SubCharTable,
             34 => Self::Record,
-            41 => Self::ReaderForm,
             _ => Self::Normal,
         }
     }
@@ -1290,10 +1288,6 @@ impl Vectorlike for BufferValue {
     const TAG: VectorTag = VectorTag::Buffer;
 }
 
-impl Vectorlike for ReaderForm {
-    const TAG: VectorTag = VectorTag::ReaderForm;
-}
-
 impl Vectorlike for crate::lisp::eval::RecordState {
     const TAG: VectorTag = VectorTag::Record;
 }
@@ -1443,7 +1437,7 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                     raise(&LIVE_RECORD_SLOTS, slots);
                 }
             }
-            VectorTag::Normal | VectorTag::Free | VectorTag::ReaderForm => {}
+            VectorTag::Normal | VectorTag::Free => {}
         }
     }
 }
@@ -1501,7 +1495,6 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             | VectorTag::CharTable
             | VectorTag::SubCharTable
             | VectorTag::SymbolWithPos => {}
-            VectorTag::ReaderForm => std::ptr::drop_in_place(body.cast::<ReaderForm>()),
             VectorTag::HashTable => hash_tables::cleanup(header),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {}
             VectorTag::Record => {
@@ -1594,7 +1587,7 @@ impl SweepStats {
                         self.record_slots += slots;
                     }
                 }
-                VectorTag::Free | VectorTag::ReaderForm => {}
+                VectorTag::Free => {}
             }
         }
     }
@@ -1964,7 +1957,6 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::CharTable => Value::CharTable(CharTableRef::from_raw(header)),
             VectorTag::SubCharTable => Value::SubCharTable(SubCharTableRef::from_raw(header)),
             VectorTag::HashTable => Value::HashTable(HashTableRef::from_raw(header)),
-            VectorTag::ReaderForm => Value::ReaderForm(VectorlikeRef::from_raw(header)),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {
                 Value::LispRecord(LispRecordRef::from_raw(header))
             }

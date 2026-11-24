@@ -511,8 +511,6 @@ impl Interpreter {
             | Kind::Finalizer(_)
             | Kind::Unbound => Ok(*expr),
 
-            Kind::ReaderForm(_) => self.materialize_read_object_literals(*expr, env),
-
             Kind::Symbol(name) => self.lookup_symbol(&name, env),
 
             Kind::Cons(cell) => self.eval_cons(*expr, cell, env),

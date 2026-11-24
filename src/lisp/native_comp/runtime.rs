@@ -6487,7 +6487,6 @@ impl NativeHeap {
                         | crate::lisp::alloc::VectorTag::Bignum
                         | crate::lisp::alloc::VectorTag::Record
                         | crate::lisp::alloc::VectorTag::BoolVector
-                        | crate::lisp::alloc::VectorTag::ReaderForm
                         | crate::lisp::alloc::VectorTag::Buffer
                         | crate::lisp::alloc::VectorTag::Terminal
                         | crate::lisp::alloc::VectorTag::Frame
@@ -7596,14 +7595,13 @@ mod tests {
             Kind::LispRecord(_) => 24,
             Kind::BoolVector(_) => 25,
             Kind::Finalizer(_) => 26,
-            Kind::ReaderForm(_) => 27,
             Kind::Unbound => UNBOUND_ORDINAL,
         }
     }
 
     /// The unbound marker's place, after every kind of object: it is the
     /// one kind with no sample, being no object a subr is given.
-    const UNBOUND_ORDINAL: usize = 28;
+    const UNBOUND_ORDINAL: usize = 27;
 
     /// The samples as `sample_objects' gathers them.
     struct Samples<'a> {
@@ -7645,9 +7643,7 @@ mod tests {
         environment: &mut Env,
     ) -> crate::lisp::alloc::RootedVec<(&'static str, Value)> {
         use crate::lisp::alloc::vectors::native_functions::NativeFunctionSpec;
-        use crate::lisp::types::{
-            CharTableRef, NativeFunctionRef, NativeUnitRef, ReaderForm, ReaderFormRef,
-        };
+        use crate::lisp::types::{CharTableRef, NativeFunctionRef, NativeUnitRef};
         extern "C" fn sample_subr(value: NativeWord) -> NativeWord {
             value
         }
@@ -7815,18 +7811,6 @@ mod tests {
         s.make("a thread", "current-thread", &[]);
         let mutex = s.make("a mutex", "make-mutex", &[]);
         s.make("a condition variable", "make-condition-variable", &[mutex]);
-        s.add(
-            "a reader form",
-            Value::ReaderForm(ReaderFormRef::allocate(ReaderForm::Record {
-                slots: vec![symbol, Value::T],
-            })),
-        );
-        s.add(
-            "a reader form of no record",
-            Value::ReaderForm(ReaderFormRef::allocate(ReaderForm::HashTable {
-                fields: vec![symbol, Value::T],
-            })),
-        );
         s.objects
     }
 
@@ -8207,21 +8191,8 @@ mod tests {
         let mut answers = vec![(false, false); compared().count()];
         for enabled in [Value::Nil, Value::T] {
             interpreter.set_symbol_value_cell("symbols-with-pos-enabled", enabled);
-            for (place, (entry, answered)) in compared().zip(&mut answers).enumerate() {
-                let reads = place >= WORD_LEVEL_ENTRIES.len();
+            for (entry, answered) in compared().zip(&mut answers) {
                 let mut agree = |names: &[&str], arguments: &[Value]| {
-                    // The reader's forms are objects GNU does not have,
-                    // which an entry that reads further than the object's
-                    // kind reports as an internal error, its message a
-                    // string made at each signal: only the word-level
-                    // entries are asked of them.
-                    if reads
-                        && arguments
-                            .iter()
-                            .any(|argument| matches!(argument.kind(), Kind::ReaderForm(_)))
-                    {
-                        return;
-                    }
                     let answer = assert_entry_agrees(
                         &mut interpreter,
                         &mut runtime,
@@ -17800,11 +17771,7 @@ mod tests {
         let integer = Value::Integer(i64::MAX);
         let another_integer = Value::Integer(i64::MAX);
         assert_ne!(integer.word(), another_integer.word());
-        let form = Value::ReaderForm(crate::lisp::types::ReaderFormRef::allocate(
-            crate::lisp::types::ReaderForm::Record {
-                slots: vec![first_record, integer],
-            },
-        ));
+        let form = Value::vector([first_record, integer]);
         let mut first = NativeHeap::new();
         let mut second = NativeHeap::new();
         for value in [
@@ -17836,22 +17803,16 @@ mod tests {
         fn make_graph(interpreter: &mut Interpreter) -> [usize; 6] {
             let integer = Value::Integer(i64::MAX);
             let record = interpreter.create_record("native-record-cycle", vec![Value::Nil]);
-            let reader = Value::ReaderForm(crate::lisp::types::ReaderFormRef::allocate(
-                crate::lisp::types::ReaderForm::Record {
-                    slots: vec![record, integer],
-                },
-            ));
+            // A vector of the record and the bignum, which the record's
+            // field holds in turn: a cycle through both kinds.
+            let reader = Value::vector([record, integer]);
             let Kind::LispRecord(id) = record.kind() else {
                 panic!("record")
             };
             assert!(id.set(1, reader));
             let dead_integer = Value::Integer(i64::MIN);
             let dead_record = interpreter.create_record("native-dead-record", vec![dead_integer]);
-            let dead_reader = Value::ReaderForm(crate::lisp::types::ReaderFormRef::allocate(
-                crate::lisp::types::ReaderForm::Record {
-                    slots: vec![dead_record],
-                },
-            ));
+            let dead_reader = Value::vector([dead_record]);
             [
                 reader,
                 record,
@@ -17875,12 +17836,10 @@ mod tests {
             let reader = heap.decode(hidden[0] ^ HIDE).expect("native reader root");
             let record = heap.decode(hidden[1] ^ HIDE).expect("record child");
             let integer = heap.decode(hidden[2] ^ HIDE).expect("bignum child");
-            let Kind::ReaderForm(form) = reader.kind() else {
-                panic!("retained reader form")
+            let Kind::Vector(form) = reader.kind() else {
+                panic!("retained vector")
             };
-            let crate::lisp::types::ReaderForm::Record { slots } = form.as_ref() else {
-                panic!("retained reader fields")
-            };
+            let slots = form.slots().collect::<Vec<_>>();
             assert_eq!(slots[0].word(), record.word());
             assert_eq!(slots[1].word(), integer.word());
             let Kind::LispRecord(id) = record.kind() else {

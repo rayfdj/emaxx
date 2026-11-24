@@ -1,6 +1,4 @@
-use super::types::{
-    IdentityBuildHasher, Kind, LispError, ReaderClosureKind, ReaderForm, StringObjectRef, Value,
-};
+use super::types::{IdentityBuildHasher, Kind, LispError, StringObjectRef, Value};
 mod input;
 use input::Input;
 pub(crate) use input::ReaderStream;
@@ -99,16 +97,27 @@ enum AtomSyntax {
     Uninterned,
 }
 
+/// A literal whose syntax just closed, its fields the objects they read
+/// as: what read0 hands RE_record, bytecode_from_rev_list,
+/// hash_table_from_plist and the char-table constructors.
+#[derive(Debug)]
+pub(crate) enum ReadLiteral {
+    HashTable { fields: Vec<Value> },
+    CharTable { fields: Vec<Value> },
+    SubCharTable { fields: Vec<Value> },
+    Record { slots: Vec<Value> },
+    Closure { slots: Vec<Value> },
+}
+
 /// What the reader asks of the Lisp world as it reads: lread.c's read0
 /// interns each symbol in the current obarray, and builds each `#s(...)',
-/// `#[...]', `#&...' and `#^[...]' object when its syntax closes.  A
-/// reader without a context leaves `ReaderForm' placeholders for the
-/// interpreter to finish (`materialize_read_object_literals').
+/// `#[...]' and `#^[...]' object when its syntax closes.  A reader with
+/// no context reads no such literal (`literal_object').
 pub(crate) trait ReadContext {
     /// read0's intern of NAME in the current obarray, a new symbol named
     /// by a string of the multibyteness readchar reported (MULTIBYTE).
     fn intern(&mut self, name: &str, multibyte: bool) -> Result<Value, LispError>;
-    fn build(&mut self, form: ReaderForm) -> Result<Value, LispError>;
+    fn build(&mut self, literal: ReadLiteral) -> Result<Value, LispError>;
     /// Vload_file_name, the value `#$' reads as.
     fn load_file_name(&mut self) -> Value;
     /// load_force_doc_strings.
@@ -330,17 +339,6 @@ impl Substitution<'_> {
                     string.borrow_mut().props.set(Some(intervals));
                 }
             }
-            Kind::ReaderForm(form) => {
-                // A literal read without a context, its fields still open.
-                let len = reader_form_fields(&form).len();
-                for index in 0..len {
-                    let field = reader_form_fields(&form)[index];
-                    let field = self.recurse(field);
-                    // SAFETY: the reader made the form and holds no other
-                    // reference to its fields while this store runs.
-                    unsafe { set_reader_form_field(&form, index, field) };
-                }
-            }
             // GNU 30's hash tables have no Lisp slots in their header (the
             // walk leaves their entries alone), nor do bool vectors and
             // the other kinds.
@@ -383,71 +381,6 @@ impl Substitution<'_> {
             cursor = tail;
         }
     }
-}
-
-/// The fields of a literal read without a context.
-fn reader_form_fields(form: &crate::lisp::types::ReaderFormRef) -> &[Value] {
-    match form.as_ref() {
-        ReaderForm::HashTable { fields }
-        | ReaderForm::CharTable { fields }
-        | ReaderForm::SubCharTable { fields }
-        | ReaderForm::Record { slots: fields }
-        | ReaderForm::Closure { slots: fields, .. } => fields,
-    }
-}
-
-/// Store VALUE as field INDEX of a literal read without a context.
-///
-/// # Safety
-///
-/// No reference to the form's fields is alive while the store runs.
-unsafe fn set_reader_form_field(
-    form: &crate::lisp::types::ReaderFormRef,
-    index: usize,
-    value: Value,
-) {
-    // SAFETY: the caller's guarantee; the payload is the form's.
-    match unsafe { &mut *form.as_ptr() } {
-        ReaderForm::HashTable { fields }
-        | ReaderForm::CharTable { fields }
-        | ReaderForm::SubCharTable { fields }
-        | ReaderForm::Record { slots: fields }
-        | ReaderForm::Closure { slots: fields, .. } => fields[index] = value,
-    }
-}
-
-/// Whether a parsed object still contains reader forms requiring runtime
-/// allocation. Resolve these once at the read boundary, as lread.c does,
-/// before evaluation or returning the object from a Lisp reader primitive.
-pub(crate) fn read_object_needs_resolution(value: &Value) -> bool {
-    let mut seen = std::collections::HashSet::new();
-    let mut seen_vectors = std::collections::HashSet::new();
-    let mut stack = vec![*value];
-    while let Some(current) = stack.pop() {
-        match current.kind() {
-            Kind::ReaderForm(_) => return true,
-            Kind::Cons(cons_cell) => {
-                let car_cell = &cons_cell.car;
-                let cdr_cell = &cons_cell.cdr;
-                let ptr = crate::lisp::types::ConsCell::identity(&cons_cell);
-                if !seen.insert(ptr) {
-                    continue;
-                }
-                stack.push(car_cell.get());
-                stack.push(cdr_cell.get());
-            }
-            Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
-                stack.extend(vector.slots());
-            }
-            Kind::StringObject(state) => {
-                if let Some(intervals) = state.borrow().props.intervals() {
-                    stack.extend(intervals.plists());
-                }
-            }
-            _ => {}
-        }
-    }
-    false
 }
 
 fn encode_raw_byte(byte: u8) -> char {
@@ -621,11 +554,6 @@ pub struct Reader<'a> {
     /// Monotonic byte→char cursor so positions cost O(n) over the input.
     position_cursor_byte: usize,
     position_cursor_char: i64,
-    /// Whether any datum read so far is a `ReaderForm' placeholder (a
-    /// circular label or reference, a hash-table, record, char-table,
-    /// bool-vector or closure literal): only then
-    /// does the read result need Interpreter-owned object materialization.
-    emitted_reader_forms: bool,
     /// read0's read_objects_map: each `#N=' label of this top-level read,
     /// mapped to its placeholder until the labelled object is complete and
     /// to the object after; a `#N#' naming no label is invalid syntax.
@@ -672,7 +600,6 @@ impl<'a> Reader<'a> {
             // GNU's reader always encodes quote shorthands with the raw
             // `\``/`\,'/`\,@' symbols; pcase.el's pattern expanders are
             // registered under those names.
-            emitted_reader_forms: false,
             read_objects_map: HashMap::default(),
             read_objects_completed: HashSet::default(),
             read_depth: 0,
@@ -951,15 +878,18 @@ impl<'a> Reader<'a> {
         Ok(object)
     }
 
-    /// The object a literal's syntax stands for, built now (read0); without
-    /// a context the placeholder waits for the interpreter.
-    fn literal_object(&mut self, form: ReaderForm) -> Result<Value, LispError> {
-        if let Some(context) = self.read_context() {
-            return context.build(form);
+    /// The object a literal's syntax stands for, built now, as read0
+    /// builds it.  Only the Lisp world builds one: a reader with no
+    /// context signals the literal as invalid syntax.
+    fn literal_object(&mut self, literal: ReadLiteral) -> Result<Value, LispError> {
+        match self.read_context() {
+            Some(context) => context.build(literal),
+            None => Err(LispError::ReadError(match literal {
+                ReadLiteral::HashTable { .. } | ReadLiteral::Record { .. } => "#s".into(),
+                ReadLiteral::CharTable { .. } | ReadLiteral::SubCharTable { .. } => "#^".into(),
+                ReadLiteral::Closure { .. } => "#[".into(),
+            })),
         }
-        Ok(Value::ReaderForm(
-            crate::lisp::alloc::VectorlikeRef::allocate(form),
-        ))
     }
 
     fn peek(&mut self) -> Result<Option<u8>, LispError> {
@@ -1123,20 +1053,7 @@ impl<'a> Reader<'a> {
         // its base.
         let datum = result.as_ref().ok().copied().flatten();
         self.root_read_result(roots, datum.filter(|_| self.read_depth != 0));
-        let value = result?;
-        // Every placeholder is the value of some `read' call, nested ones
-        // included (lists, vectors and quotes read their elements here).
-        if matches!(value.map(|v| v.kind()), Some(Kind::ReaderForm(_))) {
-            self.emitted_reader_forms = true;
-        }
-        Ok(value)
-    }
-
-    /// Whether a datum read so far contains a placeholder that
-    /// the Interpreter must materialize. False for the
-    /// common marker-free text, whose value is final as read.
-    pub fn emitted_reader_forms(&self) -> bool {
-        self.emitted_reader_forms
+        result
     }
 
     /// read0: one object, the data nested in it read on the read stack
@@ -1183,11 +1100,6 @@ impl<'a> Reader<'a> {
             // We have read an object in OBJ: the stack decides what to do
             // with it.
             loop {
-                // Every placeholder is an object read here, nested ones
-                // included.
-                if matches!(obj.kind(), Kind::ReaderForm(_)) {
-                    self.emitted_reader_forms = true;
-                }
                 if read_stack_sp() <= base_sp {
                     return Ok(Some(obj));
                 }
@@ -1410,9 +1322,9 @@ impl<'a> Reader<'a> {
                 if matches!(kind.kind(), Kind::Symbol(kind_name) if kind_name.is_named("hash-table"))
                 {
                     let fields = fields.to_vec();
-                    self.literal_object(ReaderForm::HashTable { fields })
+                    self.literal_object(ReadLiteral::HashTable { fields })
                 } else {
-                    self.literal_object(ReaderForm::Record { slots: elements })
+                    self.literal_object(ReadLiteral::Record { slots: elements })
                 }
             }
             SequenceSyntax::CharTable => {
@@ -1421,7 +1333,7 @@ impl<'a> Reader<'a> {
                 {
                     return Err(LispError::ReadError("Invalid size char-table".into()));
                 }
-                self.literal_object(ReaderForm::CharTable { fields: elements })
+                self.literal_object(ReadLiteral::CharTable { fields: elements })
             }
             SequenceSyntax::SubCharTable => {
                 // lread.c sub_char_table_from_rev_list signals `error'.
@@ -1443,7 +1355,7 @@ impl<'a> Reader<'a> {
                         "Invalid minimum character in sub-char-table".into(),
                     ));
                 }
-                self.literal_object(ReaderForm::SubCharTable { fields: elements })
+                self.literal_object(ReadLiteral::SubCharTable { fields: elements })
             }
             SequenceSyntax::ByteCode => {
                 let mut fields = elements;
@@ -1467,14 +1379,7 @@ impl<'a> Reader<'a> {
                 if !valid_len {
                     return Err(LispError::ReadError("Invalid byte-code object".into()));
                 }
-                self.literal_object(ReaderForm::Closure {
-                    kind: if interpreted {
-                        ReaderClosureKind::Interpreted
-                    } else {
-                        ReaderClosureKind::ByteCode
-                    },
-                    slots: fields,
-                })
+                self.literal_object(ReadLiteral::Closure { slots: fields })
             }
             SequenceSyntax::StringProps => {
                 // lread.c string_props_from_rev_list: the first element
@@ -2784,13 +2689,24 @@ mod tests {
         Reader::new(s).read().unwrap().unwrap()
     }
 
+    /// One datum of TEXT read by INTERP's reader, which builds each
+    /// literal as its syntax closes.
+    fn read_in(interp: &mut crate::lisp::eval::Interpreter, text: &str) -> Value {
+        let mut env = crate::lisp::types::Env::new();
+        let mut context = crate::lisp::eval::LispReadContext::current(interp, &mut env);
+        Reader::new(text)
+            .with_read_context(&mut context)
+            .read()
+            .unwrap()
+            .unwrap()
+    }
+
     #[test]
     fn positioning_reader_returns_final_native_words_without_materialization() {
+        let mut interpreter = crate::lisp::eval::Interpreter::new();
         let mut reader =
             Reader::from_encoded_positioned("(alpha [β alpha t nil])".as_bytes(), true, vec![], 17);
         let form = reader.read().expect("read positions").expect("one form");
-        assert!(!reader.emitted_reader_forms());
-        assert!(!read_object_needs_resolution(&form));
         let items = form.to_vec().expect("outer list");
         let Kind::Vector(vector) = items[1].kind() else {
             panic!("nested vector");
@@ -2817,41 +2733,66 @@ mod tests {
             );
         }
         assert_ne!(objects[0].word(), objects[2].word(), "distinct occurrences");
-        let before = objects.map(|object| object.word());
-        let mut interpreter = crate::lisp::eval::Interpreter::new();
-        interpreter.intern_symbols_in_value(&form);
-        let after = interpreter
-            .materialize_read_object_literals(form, &mut crate::lisp::types::Env::new())
-            .expect("no replacement objects");
-        assert_eq!(after.word(), form.word());
-        let items = after.to_vec().expect("same list");
+        // The interpreter's reader reads the same text as the same words:
+        // each occurrence a symbol with position over the symbol it
+        // interns, at the same position.
+        let fields_of = |objects: [Value; 4]| {
+            objects.map(|object| {
+                let fields = (object.word() & !7) as *const usize;
+                unsafe { (fields.add(1).read(), fields.add(2).read()) }
+            })
+        };
+        let before = fields_of(objects);
+        let mut env = crate::lisp::types::Env::new();
+        let mut context = crate::lisp::eval::LispReadContext::current(&mut interpreter, &mut env);
+        let again =
+            Reader::from_encoded_positioned("(alpha [β alpha t nil])".as_bytes(), true, vec![], 17)
+                .with_read_context(&mut context)
+                .read()
+                .expect("read positions")
+                .expect("one form");
+        assert_ne!(again.word(), form.word(), "a second read is new objects");
+        let items = again.to_vec().expect("outer list");
         let Kind::Vector(vector) = items[1].kind() else {
-            panic!("same vector");
+            panic!("nested vector");
         };
         let slots = vector.slots().collect::<Vec<_>>();
-        assert_eq!(
-            [items[0], slots[0], slots[1], slots[2]].map(|v| v.word()),
-            before
-        );
+        assert_eq!(fields_of([items[0], slots[0], slots[1], slots[2]]), before);
     }
 
     #[test]
     fn emitted_reader_forms_says_whether_the_result_needs_resolution() {
-        let emitted = |text: &str| {
-            let mut reader = Reader::new(text);
-            reader.read().unwrap().unwrap();
-            reader.emitted_reader_forms()
+        // Historical selector: every read is final as read.  The
+        // interpreter's reader builds each literal where it is nested; a
+        // reader with no context reads none.
+        let mut interp = crate::lisp::eval::Interpreter::new();
+        let nth = |value: Value, index: usize| value.to_vec().expect("a list")[index];
+        let text = read_in(&mut interp, "(a (b [c d] \"e\") . f)");
+        let inner = text
+            .cdr()
+            .and_then(|rest| rest.car())
+            .expect("a dotted list");
+        assert!(matches!(nth(inner, 1).kind(), Kind::Vector(_)));
+        let quoted = read_in(&mut interp, "'(quote (1 2))");
+        assert!(matches!(nth(quoted, 1).kind(), Kind::Cons(_)));
+        // A labelled object: read0's placeholder becomes the object.
+        let labelled = read_in(&mut interp, "#1=(a . #1#)");
+        assert!(labelled.cdr().expect("a cons").eq_value(labelled));
+        let table = read_in(&mut interp, "(x (y #s(hash-table data (1 2))))");
+        assert!(matches!(nth(nth(table, 1), 1).kind(), Kind::HashTable(_)));
+        let record = read_in(&mut interp, "[1 #s(record a) 2]");
+        let Kind::Vector(vector) = record.kind() else {
+            panic!("a vector");
         };
-        // Marker-free text, nested lists and vectors included, is final as read.
-        assert!(!emitted("(a (b [c d] \"e\") . f)"));
-        assert!(!emitted("'(quote (1 2))"));
-        // So is a labelled object: read0's placeholder becomes the object.
-        assert!(!emitted("#1=(a . #1#)"));
-        // Literal placeholders nested anywhere set the flag.
-        assert!(emitted("(x (y #s(hash-table data (1 2))))"));
-        assert!(emitted("[1 #s(record a) 2]"));
+        assert!(matches!(
+            vector.get(1).map(|v| v.kind()),
+            Some(Kind::LispRecord(_))
+        ));
         // A bool vector is the object itself, made as read0 makes it.
-        assert!(!emitted("(f #&3\"\\7\")"));
+        let bits = read_in(&mut interp, "(f #&3\"\\7\")");
+        assert!(matches!(nth(bits, 1).kind(), Kind::BoolVector(_)));
+        assert!(Reader::new("[1 #s(record a) 2]").read().is_err());
+        assert!(Reader::new("#^[nil]").read().is_err());
     }
 
     #[test]
@@ -3022,14 +2963,13 @@ mod tests {
 
     #[test]
     fn reads_three_field_interpreted_closure_syntax() {
-        let value = read_one("#[(_tag &rest _) ('(t)) (dynamic-name t)]");
-        let Kind::ReaderForm(form) = value.kind() else {
-            panic!("closure syntax must remain typed until materialization");
+        let mut interp = crate::lisp::eval::Interpreter::new();
+        let value = read_in(&mut interp, "#[(_tag &rest _) ('(t)) (dynamic-name t)]");
+        let Kind::Closure(closure) = value.kind() else {
+            panic!("closure syntax reads as a closure");
         };
-        let ReaderForm::Closure { kind, slots } = form.as_ref() else {
-            panic!("expected a closure reader form");
-        };
-        assert_eq!(*kind, ReaderClosureKind::Interpreted);
+        assert!(!closure.is_bytecode());
+        let slots = closure.slots().collect::<Vec<_>>();
         assert!(slots.first().is_some_and(|params| {
             params.to_vec().ok().is_some_and(
                 |params| matches!(params.first().map(|v| v.kind()), Some(Kind::Symbol(name)) if name.is_named("_tag")),
@@ -3262,37 +3202,31 @@ mod tests {
             .collect::<Vec<_>>()
             .join(" ");
         let roots = std::iter::repeat_n("nil", 64).collect::<Vec<_>>().join(" ");
-        let literal = read_one(&format!(
-            "#^[fallback nil purpose #^^[3 0 {ascii}] {roots}]"
-        ));
-        let Kind::ReaderForm(form) = literal.kind() else {
-            panic!("character-table syntax must remain typed until materialization");
+        let mut interp = crate::lisp::eval::Interpreter::new();
+        let literal = read_in(
+            &mut interp,
+            &format!("#^[fallback nil purpose #^^[3 0 {ascii}] {roots}]"),
+        );
+        let Kind::CharTable(literal) = literal.kind() else {
+            panic!("character-table syntax reads as a char-table");
         };
-        let ReaderForm::CharTable { fields } = form.as_ref() else {
-            panic!("expected a character-table reader form");
-        };
+        let fields = literal.slots().collect::<Vec<_>>();
         assert_eq!(fields.len(), 68);
         assert!(matches!(
             fields[3].kind(),
-            Kind::ReaderForm(form)
-                if matches!(
-                    form.as_ref(),
-                    ReaderForm::SubCharTable { fields }
-                        if matches!(crate::lisp::types::kinds(fields).as_slice(), [Kind::Integer(3), Kind::Integer(0), ..])
-                )
+            Kind::SubCharTable(sub) if sub.depth() == 3 && sub.min_char() == 0
         ));
 
         // make-char-table limits the property to ten extras; literal reader
         // objects carry their own size and may have more (lread.c).
-        let wide = read_one(&format!(
-            "#^[{}]",
-            std::iter::repeat_n("nil", 88).collect::<Vec<_>>().join(" ")
-        ));
-        let mut interp = crate::lisp::eval::Interpreter::new();
-        let materialized = interp
-            .materialize_read_object_literals(wide, &mut crate::lisp::types::Env::new())
-            .expect("wide char-table literal");
-        let Kind::CharTable(table) = materialized.kind() else {
+        let wide = read_in(
+            &mut interp,
+            &format!(
+                "#^[{}]",
+                std::iter::repeat_n("nil", 88).collect::<Vec<_>>().join(" ")
+            ),
+        );
+        let Kind::CharTable(table) = wide.kind() else {
             panic!("canonical char-table")
         };
         assert_eq!(table.extra_count(), 20);
@@ -3327,15 +3261,13 @@ mod tests {
             panic!("a vector");
         };
         assert!(slots.get(1).expect("two slots").eq_value(vector));
-        // A literal read without a context, its fields still open.
-        let record = read_one("#1=#s(r #1#)");
-        let Kind::ReaderForm(form) = record.kind() else {
-            panic!("a record form");
+        // A record built as its syntax closes, the label then put in it.
+        let mut interp = crate::lisp::eval::Interpreter::new();
+        let record = read_in(&mut interp, "#1=#s(r #1#)");
+        let Kind::LispRecord(slots) = record.kind() else {
+            panic!("a record");
         };
-        let ReaderForm::Record { slots } = form.as_ref() else {
-            panic!("a record form");
-        };
-        assert!(slots[1].eq_value(record));
+        assert!(slots.get(1).expect("a data slot").eq_value(record));
         // `#N#' before its label, and `#1=#1#', are invalid.
         assert!(Reader::new("(#1# #1=a)").read().is_err());
         assert!(matches!(
@@ -3383,39 +3315,47 @@ mod tests {
 
     #[test]
     fn reads_hash_table_structure_syntax_as_self_evaluating_literal() {
-        let Kind::ReaderForm(form) =
-            read_one("#s(hash-table test equal data (\"bla\" \"ble\"))").kind()
-        else {
-            panic!("hash-table syntax must remain typed until materialization");
-        };
-        let ReaderForm::HashTable { fields } = form.as_ref() else {
-            panic!("expected a hash-table reader form");
+        let mut interp = crate::lisp::eval::Interpreter::new();
+        let table = read_in(
+            &mut interp,
+            "#s(hash-table test equal data (\"bla\" \"ble\"))",
+        );
+        assert!(matches!(table.kind(), Kind::HashTable(_)));
+        let call = |interp: &mut crate::lisp::eval::Interpreter, name, args: &[Value]| {
+            crate::lisp::primitives::call(interp, name, args, &mut crate::lisp::types::Env::new())
+                .expect(name)
         };
         assert_eq!(
-            fields,
-            &vec![
-                Value::Symbol("test".into()),
-                Value::Symbol("equal".into()),
-                Value::Symbol("data".into()),
-                Value::list([Value::String("bla".into()), Value::String("ble".into())]),
-            ]
+            call(&mut interp, "hash-table-test", &[table]),
+            Value::symbol("equal")
+        );
+        assert_eq!(
+            call(
+                &mut interp,
+                "gethash",
+                &[Value::String("bla".into()), table]
+            ),
+            Value::String("ble".into())
+        );
+        assert_eq!(
+            call(&mut interp, "hash-table-count", &[table]),
+            Value::Integer(1)
         );
     }
 
     #[test]
     fn reads_record_structure_syntax_as_record_literal_form() {
-        let Kind::ReaderForm(form) = read_one("#s(a b #s(c d) [e])").kind() else {
-            panic!("record syntax must remain typed until materialization");
+        let mut interp = crate::lisp::eval::Interpreter::new();
+        let Kind::LispRecord(record) = read_in(&mut interp, "#s(a b #s(c d) [e])").kind() else {
+            panic!("record syntax reads as a record");
         };
-        let ReaderForm::Record { slots } = form.as_ref() else {
-            panic!("expected a record reader form");
-        };
+        let slots = record.slots().collect::<Vec<_>>();
         assert!(matches!(
             slots.as_slice().iter().map(|v| v.kind()).collect::<Vec<_>>().as_slice(),
-            [Kind::Symbol(kind), Kind::Symbol(field), Kind::ReaderForm(nested), vector]
+            [Kind::Symbol(kind), Kind::Symbol(field), Kind::LispRecord(nested), vector]
                 if kind.is_named("a")
                     && field.is_named("b")
-                    && matches!(nested.as_ref(), ReaderForm::Record { .. })
+                    && nested.len() == 2
                     && crate::lisp::primitives::vector_items(&vector.value()).is_ok_and(|items| matches!(
                         crate::lisp::types::kinds(&items).as_slice(),
                         [Kind::Symbol(item)] if item.is_named("e")

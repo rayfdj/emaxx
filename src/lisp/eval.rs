@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{
-    EmacsTermination, Env, EnvFrame, Kind, LispError, LispErrorKind, ReaderForm, SymbolName, Value,
+    EmacsTermination, Env, EnvFrame, Kind, LispError, LispErrorKind, SymbolName, Value,
 };
 use crate::compat::DiscoveredTest;
 #[cfg(test)]
@@ -4047,7 +4047,6 @@ struct ImageGraphCopier {
     vectors: std::collections::HashMap<usize, Value>,
     strings: std::collections::HashMap<usize, Value>,
     lambdas: std::collections::HashMap<usize, Value>,
-    reader_forms: std::collections::HashMap<usize, Value>,
     records: std::collections::HashMap<usize, Value>,
     finalizers: std::collections::HashMap<usize, Value>,
     buffers: std::collections::HashMap<usize, Value>,
@@ -4070,7 +4069,6 @@ impl ImageGraphCopier {
             vectors: Default::default(),
             strings: Default::default(),
             lambdas: Default::default(),
-            reader_forms: Default::default(),
             records: Default::default(),
             finalizers: Default::default(),
             buffers: Default::default(),
@@ -4575,44 +4573,6 @@ impl ImageGraphCopier {
                 }
                 copied
             }
-            Kind::ReaderForm(form) => {
-                let key = form.identity();
-                if let Some(copied) = self.reader_forms.get(&key) {
-                    return *copied;
-                }
-                let copied = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-                    match form.as_ref() {
-                        crate::lisp::types::ReaderForm::HashTable { fields } => {
-                            crate::lisp::types::ReaderForm::HashTable {
-                                fields: fields.iter().map(|field| self.copy(field)).collect(),
-                            }
-                        }
-                        crate::lisp::types::ReaderForm::CharTable { fields } => {
-                            crate::lisp::types::ReaderForm::CharTable {
-                                fields: fields.iter().map(|field| self.copy(field)).collect(),
-                            }
-                        }
-                        crate::lisp::types::ReaderForm::SubCharTable { fields } => {
-                            crate::lisp::types::ReaderForm::SubCharTable {
-                                fields: fields.iter().map(|field| self.copy(field)).collect(),
-                            }
-                        }
-                        crate::lisp::types::ReaderForm::Record { slots } => {
-                            crate::lisp::types::ReaderForm::Record {
-                                slots: slots.iter().map(|slot| self.copy(slot)).collect(),
-                            }
-                        }
-                        crate::lisp::types::ReaderForm::Closure { kind, slots } => {
-                            crate::lisp::types::ReaderForm::Closure {
-                                kind: *kind,
-                                slots: slots.iter().map(|slot| self.copy(slot)).collect(),
-                            }
-                        }
-                    },
-                ));
-                self.reader_forms.insert(key, copied);
-                copied
-            }
             other => other.value(),
         }
     }
@@ -4796,7 +4756,6 @@ impl LispReachability {
             Kind::LispRecord(record) => record.mark_bit().is_marked(self.epoch),
             Kind::BoolVector(vector) => vector.mark_bit().is_marked(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
-            Kind::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
         }
     }
 
@@ -4890,7 +4849,6 @@ impl LispReachability {
             Kind::LispRecord(record) => record.mark_bit().mark(self.epoch),
             Kind::BoolVector(vector) => vector.mark_bit().mark(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
-            Kind::ReaderForm(value) => value.mark_bit().mark(self.epoch),
         }
     }
 
@@ -5064,18 +5022,6 @@ impl LispReachability {
                         self.enqueue(&interp.condition_variable_name(record.id));
                     }
                     _ => {}
-                }
-            }
-            Kind::ReaderForm(form) => {
-                let children: &[Value] = match form.as_ref() {
-                    ReaderForm::HashTable { fields }
-                    | ReaderForm::CharTable { fields }
-                    | ReaderForm::SubCharTable { fields }
-                    | ReaderForm::Record { slots: fields }
-                    | ReaderForm::Closure { slots: fields, .. } => fields,
-                };
-                for child in children {
-                    self.enqueue(child);
                 }
             }
             Kind::Nil

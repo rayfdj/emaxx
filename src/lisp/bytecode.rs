@@ -1214,13 +1214,33 @@ pub(crate) mod tests {
     /// &rest) — every embedded `#[...]` object must decode cleanly.
     const ORACLE_ELC: &str = include_str!("bytecode/fixture-oracle-30.2.elc");
 
+    /// The forms of the compiled file ELC, read as `load' reads one: by
+    /// the interpreter's reader, `#@N' lazy docs skipped by byte count,
+    /// `#$' the file being loaded, each `#[...]' built as it closes.
+    pub(crate) fn read_fixture_forms(
+        interp: &mut crate::lisp::eval::Interpreter,
+        elc: &str,
+    ) -> crate::lisp::alloc::RootedVec<Value> {
+        let mut env = crate::lisp::types::Env::new();
+        let mut offset = 0;
+        let mut forms = crate::lisp::alloc::RootedVec::new();
+        while let Some(form) = crate::lisp::read_next_load_input_form(
+            interp,
+            crate::lisp::LoadInput::File(elc.as_bytes()),
+            &mut offset,
+            &mut env,
+        )
+        .unwrap()
+        {
+            forms.push(form);
+        }
+        forms
+    }
+
     fn collect_byte_code_slot_lists(value: &Value, found: &mut Vec<Vec<Value>>) {
-        if let Kind::ReaderForm(form) = value.kind() {
-            let crate::lisp::types::ReaderForm::Closure { kind, slots } = form.as_ref() else {
-                return;
-            };
-            if *kind == crate::lisp::types::ReaderClosureKind::ByteCode {
-                found.push(slots.clone());
+        if let Kind::Closure(closure) = value.kind() {
+            if closure.is_bytecode() {
+                found.push(closure.slots().collect());
             }
             return;
         }
@@ -1236,10 +1256,11 @@ pub(crate) mod tests {
 
     /// Parse an oracle fixture into named byte-code objects
     /// ((defalias 'NAME #[...]) pairs), shared with the VM tests.
-    pub(crate) fn named_objects(elc: &str) -> std::collections::HashMap<String, ByteCodeObject> {
-        let forms = super::super::reader::Reader::from_file(elc.as_bytes(), 0, Vec::new())
-            .read_all()
-            .unwrap();
+    pub(crate) fn named_objects(
+        interp: &mut crate::lisp::eval::Interpreter,
+        elc: &str,
+    ) -> std::collections::HashMap<String, ByteCodeObject> {
+        let forms = read_fixture_forms(interp, elc);
         let mut objects = std::collections::HashMap::new();
         for form in &forms {
             let Ok(items) = form.to_vec() else { continue };
@@ -1271,8 +1292,10 @@ pub(crate) mod tests {
         objects
     }
 
-    pub(crate) fn fixture_objects() -> std::collections::HashMap<String, ByteCodeObject> {
-        named_objects(ORACLE_ELC)
+    pub(crate) fn fixture_objects(
+        interp: &mut crate::lisp::eval::Interpreter,
+    ) -> std::collections::HashMap<String, ByteCodeObject> {
+        named_objects(interp, ORACLE_ELC)
     }
 
     /// Third fixture: dynamic-binding (legacy list argspec) bytecode.
@@ -1316,9 +1339,8 @@ pub(crate) mod tests {
         );
         // Read as the loader reads a compiled file: `#@N` lazy docs
         // skipped by byte count, `#$` the file being loaded.
-        let forms = super::super::reader::Reader::from_file(ORACLE_ELC.as_bytes(), 0, Vec::new())
-            .read_all()
-            .unwrap();
+        let mut interp = crate::lisp::eval::Interpreter::new();
+        let forms = read_fixture_forms(&mut interp, ORACLE_ELC);
         let mut slot_lists = Vec::new();
         for form in &forms {
             collect_byte_code_slot_lists(form, &mut slot_lists);

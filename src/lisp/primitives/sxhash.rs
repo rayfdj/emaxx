@@ -17,13 +17,11 @@ const SXHASH_MAX_DEPTH: u32 = 3;
 const SXHASH_MAX_LEN: usize = 7;
 
 /// lisp.h's `PSEUDOVECTOR_FLAG', the tag's place in a pseudovector's size
-/// word and the tags of the record and font, whose size words
-/// `sxhash_vector' starts from where this implementation has no GNU
-/// header to read (a font is a host record, a record literal a reader
-/// form).
+/// word and the tag of a font, whose size word `sxhash_vector' starts
+/// from where this implementation has no GNU header to read (a font is a
+/// host record).
 const PSEUDOVECTOR_FLAG: u64 = 1 << 62;
 const PSEUDOVECTOR_AREA_BITS: u32 = 24;
-const PVEC_RECORD: u64 = 34;
 const PVEC_FONT: u64 = 35;
 
 /// lisp.h's `INTMASK': the bits of a fixnum.
@@ -110,7 +108,6 @@ fn sxhash_obj(interp: &Interpreter, obj: Value, depth: u32) -> u64 {
         }
         Kind::SymbolWithPos(object) => xhash(object.symbol()),
         Kind::Record(record) => sxhash_host_record(interp, obj, record, depth),
-        Kind::ReaderForm(_) => sxhash_reader_form(interp, obj, depth),
         // Others are `equal' if they are `eq', so take their address.
         _ => xhash(obj),
     }
@@ -233,22 +230,6 @@ fn sxhash_host_record(
         },
         _ => xhash(obj),
     }
-}
-
-/// sxhash_obj of a reader form: a record literal as `sxhash_vector'
-/// hashes the record it is `equal' to; any other form by address.
-fn sxhash_reader_form(interp: &Interpreter, obj: Value, depth: u32) -> u64 {
-    let Some(items) = record_literal_items(&obj) else {
-        return xhash(obj);
-    };
-    let slots = &items[1..];
-    let size = PSEUDOVECTOR_FLAG | (PVEC_RECORD << PSEUDOVECTOR_AREA_BITS) | slots.len() as u64;
-    sxhash_slots(
-        interp,
-        size,
-        slots.iter().map(record_literal_slot_data),
-        depth,
-    )
 }
 
 /// fns.c:Fsxhash_equal_including_properties: `sxhash', and for a string

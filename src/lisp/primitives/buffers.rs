@@ -893,11 +893,6 @@ pub(crate) fn cl_type_value(interp: &Interpreter, value: &Value) -> Result<Value
         Kind::NativeFunction(_) => cached_symbol!("native-comp-function"),
         Kind::NativeCompUnit(_) => cached_symbol!("native-comp-unit"),
         Kind::Finalizer(_) => cached_symbol!("finalizer"),
-        Kind::ReaderForm(_) => {
-            return Err(LispError::Signal(
-                "reader form escaped object materialization".into(),
-            ));
-        }
         // Qunbound is a symbol, uninterned.
         Kind::Unbound => cached_symbol!("symbol"),
     };

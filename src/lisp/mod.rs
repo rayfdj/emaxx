@@ -902,7 +902,7 @@ pub(crate) fn read_next_load_input_form(
     env: &mut types::Env,
 ) -> Result<Option<types::Value>, types::LispError> {
     let shorthands = primitives::read_symbol_shorthands(interp)?;
-    let (value, needs_materialization) = {
+    let value = {
         let mut context = eval::LispReadContext::current(interp, env);
         let (reader, base) = match input {
             LoadInput::Text(source) => (
@@ -918,18 +918,11 @@ pub(crate) fn read_next_load_input_form(
         let mut reader = reader.with_read_context(&mut context);
         let value = reader.read();
         *offset = base + reader.position();
-        (value, reader.emitted_reader_forms())
+        value
     };
     // An end inside a datum is end_of_file_error, naming
     // `load-true-file-name'.
-    let value =
-        value.map_err(|error| crate::lisp::primitives::print::reader_end_of_file(interp, error))?;
-    match value {
-        Some(value) if needs_materialization => interp
-            .materialize_read_object_literals(value, env)
-            .map(Some),
-        value => Ok(value),
-    }
+    value.map_err(|error| crate::lisp::primitives::print::reader_end_of_file(interp, error))
 }
 
 fn read_lisp_file_bytes(
@@ -1265,20 +1258,31 @@ mod tests {
     };
     use std::path::Path;
 
-    /// The forms `load' reads from BYTES, a file named PATH, read without
-    /// an interpreter (so `#$' reads as nil).
+    /// The forms `load' reads from BYTES, a file named PATH: a compiled or
+    /// `utf-8-emacs' file by INTERP's reader, which builds its literals
+    /// (`#$' reads as nil, no file being loaded), a source file's with its
+    /// file-local shorthands.
     fn read_load_text_forms(
+        interp: &mut super::eval::Interpreter,
         path: &Path,
         bytes: Vec<u8>,
     ) -> super::alloc::RootedVec<super::types::Value> {
+        let read_all = |interp: &mut super::eval::Interpreter, input: super::LoadInput<'_>| {
+            let mut env = super::types::Env::new();
+            let mut offset = 0;
+            let mut forms = super::alloc::RootedVec::new();
+            while let Some(form) =
+                super::read_next_load_input_form(interp, input, &mut offset, &mut env)
+                    .expect("read compiled forms")
+            {
+                forms.push(form);
+            }
+            forms
+        };
         match load_text(path, bytes).expect("load text") {
-            LoadText::File(bytes) => super::reader::Reader::from_file(&bytes, 0, Vec::new())
-                .read_all()
-                .expect("read compiled forms"),
+            LoadText::File(bytes) => read_all(interp, super::LoadInput::File(&bytes)),
             LoadText::Source(source) => read_source_forms(&source).expect("read source forms"),
-            LoadText::Internal(bytes) => super::reader::Reader::from_text_bytes(&bytes, Vec::new())
-                .read_all()
-                .expect("read utf-8-emacs forms"),
+            LoadText::Internal(bytes) => read_all(interp, super::LoadInput::Internal(&bytes)),
         }
     }
 
@@ -1424,10 +1428,11 @@ mod tests {
 
     #[test]
     fn compiled_file_markers_inside_strings_comments_and_symbols_are_text() {
+        let mut interp = super::eval::Interpreter::new();
         let source = ";ELC\x1e\n(#[0 \"raw #@12 bytes #$ (#$ . 9) \\\"tail\" [nil] 1])\n\
                       ; #@7 and #$ are comment text\n\
                       (list byte-compile--\\#$ byte-compile--\\#@7)\n";
-        let forms = read_load_text_forms(Path::new("/tmp/sample.elc"), source.into());
+        let forms = read_load_text_forms(&mut interp, Path::new("/tmp/sample.elc"), source.into());
         assert_eq!(forms.len(), 2);
         let symbols = forms[1].to_vec().expect("list form");
         assert_eq!(
@@ -1446,11 +1451,12 @@ mod tests {
 
     #[test]
     fn compiled_file_skips_lazy_strings_by_byte_count() {
+        let mut interp = super::eval::Interpreter::new();
         // skip_lazy_string from a file counts the bytes after the digits,
         // a multibyte character and an embedded ^_ included; #@00 ends
         // the input.
         let source = ";ELC\x1e\n#@8 h\u{e9}\x1f\x1fx\x1f(a)#@00 (b";
-        let forms = read_load_text_forms(Path::new("/tmp/sample.elc"), source.into());
+        let forms = read_load_text_forms(&mut interp, Path::new("/tmp/sample.elc"), source.into());
         assert_eq!(forms.len(), 2);
         assert_eq!(format!("{}", forms[0]), "(a)");
         assert!(forms[1].is_nil());
@@ -1458,11 +1464,12 @@ mod tests {
 
     #[test]
     fn utf8_emacs_source_preserves_extended_character_literals_as_integers() {
+        let mut interp = super::eval::Interpreter::new();
         let mut bytes = b";;; -*- coding: utf-8-emacs; -*-\n(setq sample ?".to_vec();
         bytes.extend([0xF6, 0xA0, 0x87, 0x8A]);
         bytes.extend(b")\n");
         assert_eq!(
-            read_load_text_forms(Path::new("ethiopic-sample.el"), bytes)[0],
+            read_load_text_forms(&mut interp, Path::new("ethiopic-sample.el"), bytes)[0],
             super::types::Value::list([
                 super::types::Value::symbol("setq"),
                 super::types::Value::symbol("sample"),
@@ -1473,10 +1480,11 @@ mod tests {
 
     #[test]
     fn utf8_emacs_source_preserves_extended_string_characters() {
+        let mut interp = super::eval::Interpreter::new();
         let mut bytes = b";;; -*- coding: utf-8-emacs; -*-\n(setq sample \"".to_vec();
         bytes.extend([0xF6, 0xA0, 0x87, 0x8A]);
         bytes.extend(b"\")\n");
-        let form = read_load_text_forms(Path::new("extended-string.el"), bytes)
+        let form = read_load_text_forms(&mut interp, Path::new("extended-string.el"), bytes)
             .remove(0)
             .to_vec()
             .expect("setq form");
@@ -1493,11 +1501,12 @@ mod tests {
 
     #[test]
     fn utf8_emacs_source_decodes_five_byte_and_raw_byte8_characters() {
+        let mut interp = super::eval::Interpreter::new();
         let mut bytes = b";;; -*- coding: utf-8-emacs; -*-\n(setq sample \"".to_vec();
         bytes.extend([0xF8, 0x88, 0x80, 0x80, 0x80]);
         bytes.extend([0xC0, 0x80]);
         bytes.extend(b"\")\n");
-        let form = read_load_text_forms(Path::new("extended-ranges.el"), bytes)
+        let form = read_load_text_forms(&mut interp, Path::new("extended-ranges.el"), bytes)
             .remove(0)
             .to_vec()
             .expect("setq form");
@@ -1513,10 +1522,11 @@ mod tests {
 
     #[test]
     fn compiled_lisp_decodes_internal_utf8_emacs_without_a_cookie() {
+        let mut interp = super::eval::Interpreter::new();
         let mut bytes = b";ELC\x1e\0\0\0\n(setq sample \"".to_vec();
         bytes.extend([0xF6, 0xA0, 0x87, 0x8A]);
         bytes.extend(b"\")\n");
-        let form = read_load_text_forms(Path::new("extended-string.elc"), bytes)
+        let form = read_load_text_forms(&mut interp, Path::new("extended-string.elc"), bytes)
             .remove(0)
             .to_vec()
             .expect("setq form");
@@ -1531,10 +1541,11 @@ mod tests {
 
     #[test]
     fn compiled_lisp_preserves_raw_bytecode_octets_inside_strings() {
+        let mut interp = super::eval::Interpreter::new();
         let mut bytes = b";ELC\x1e\0\0\0\n(setq sample \"".to_vec();
         bytes.extend([0xC0, 0x01, 0xC2, 0xFF]);
         bytes.extend(b"\")\n");
-        let form = read_load_text_forms(Path::new("raw-bytecode.elc"), bytes)
+        let form = read_load_text_forms(&mut interp, Path::new("raw-bytecode.elc"), bytes)
             .remove(0)
             .to_vec()
             .expect("setq form");
@@ -1625,23 +1636,18 @@ mod tests {
             super::types::Value::symbol("reader-data-must-not-be-called"),
             super::types::Value::symbol("payload"),
         ]);
-        let literal = super::types::Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-            super::types::ReaderForm::Closure {
-                kind: super::types::ReaderClosureKind::ByteCode,
-                slots: vec![
-                    super::types::Value::Integer(0),
-                    super::types::Value::String(String::new().into()),
-                    super::types::Value::vector([]),
-                    super::types::Value::Integer(0),
-                    callable_looking_data,
-                ],
-            },
-        ));
         let mut interp = super::eval::Interpreter::new();
         let mut env = super::types::Env::new();
-        let materialized = interp
-            .materialize_read_object_literals(literal, &mut env)
-            .expect("reader construction must treat every closure slot as data");
+        // Read by the interpreter's reader, which builds the closure as
+        // its syntax closes (lread.c:bytecode_from_rev_list).
+        let materialized = super::read_next_load_form(
+            &mut interp,
+            "#[0 \"\" [] 0 (reader-data-must-not-be-called payload)]",
+            &mut 0,
+            &mut env,
+        )
+        .expect("reader construction must treat every closure slot as data")
+        .expect("a closure");
         let super::types::Kind::Closure(closure) = materialized.kind() else {
             panic!("byte-code reader form must become a closure pseudovector");
         };
@@ -1649,6 +1655,9 @@ mod tests {
         // this slot as data. Ordinary GNU confirms the five-slot object
         // without invoking the callable-looking documentation form.
         assert_eq!(closure.public_len(), 5);
-        assert_eq!(closure.get(4), Some(callable_looking_data));
+        assert_eq!(
+            closure.get(4).map(|slot| slot.to_string()),
+            Some(callable_looking_data.to_string())
+        );
     }
 }

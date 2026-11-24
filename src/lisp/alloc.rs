@@ -2167,7 +2167,6 @@ fn vectorlike_is_marked(value: &super::types::Value, epoch: u32) -> Option<bool>
         Kind::Marker(marker) => Some(marker.mark_bit().is_marked(epoch)),
         Kind::Overlay(overlay) => Some(overlay.mark_bit().is_marked(epoch)),
         Kind::StringObject(state) => Some(state.mark_bit().is_marked(epoch)),
-        Kind::ReaderForm(form) => Some(form.mark_bit().is_marked(epoch)),
         Kind::BigInteger(integer) => Some(integer.mark_bit().is_marked(epoch)),
         Kind::CharTable(table) => Some(table.mark_bit().is_marked(epoch)),
         Kind::HashTable(table) => Some(table.mark_bit().is_marked(epoch)),

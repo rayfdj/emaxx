@@ -1470,11 +1470,6 @@ define_dispatch!(
                         return cl_type_value(interp, &args[0]);
                     }
                     Kind::Finalizer(_) => cached_symbol!("finalizer"),
-                    Kind::ReaderForm(_) => {
-                        return Err(LispError::Signal(
-                            "reader form escaped object materialization".into(),
-                        ));
-                    }
                     // Qunbound is a symbol, uninterned.
                     Kind::Unbound => cached_symbol!("symbol"),
                 };

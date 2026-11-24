@@ -1176,64 +1176,6 @@ impl Interpreter {
         true
     }
 
-    /// Register ordinary symbols constructed by the Lisp reader in the
-    /// standard obarray.  Reader data may be circular and propertized strings
-    /// may hide symbols in their property values, so walk iteratively with an
-    /// identity guard instead of assuming a proper tree.
-    pub(crate) fn intern_symbols_in_value(&mut self, value: &Value) {
-        let mut pending = vec![*value];
-        let mut seen_cons_cells = HashSet::new();
-        let mut seen_strings = HashSet::new();
-        let mut seen_vectors = HashSet::new();
-
-        while let Some(current) = pending.pop() {
-            match current.kind() {
-                Kind::Symbol(name)
-                    if crate::lisp::types::visible_symbol_name(name.as_str()) == name.as_str() =>
-                {
-                    self.intern_symbol_name(name.as_str());
-                }
-                Kind::Cons(cons_cell) => {
-                    let car = &cons_cell.car;
-                    let cdr = &cons_cell.cdr;
-                    if seen_cons_cells.insert(crate::lisp::types::ConsCell::identity(&cons_cell)) {
-                        pending.push(cdr.get());
-                        pending.push(car.get());
-                    }
-                }
-                Kind::Vector(vector) if seen_vectors.insert(vector.identity()) => {
-                    pending.extend(vector.slots());
-                }
-                Kind::SymbolWithPos(object) if seen_vectors.insert(object.identity()) => {
-                    pending.push(object.symbol());
-                }
-                Kind::StringObject(state) if seen_strings.insert(state.identity()) => {
-                    if let Some(intervals) = state.borrow().props.intervals() {
-                        pending.extend(intervals.plists());
-                    }
-                }
-                // GNU's reader interns symbols inside every literal it
-                // builds: `#[...]' closure constant vectors, `#s(...)'
-                // hash tables/records and char-tables (lread.c read0
-                // interns at each `read_symbol').  Skipping
-                // these left every symbol that only occurs in a compiled
-                // constant vector out of the standard obarray.
-                Kind::ReaderForm(form) => match form.as_ref() {
-                    crate::lisp::types::ReaderForm::HashTable { fields }
-                    | crate::lisp::types::ReaderForm::CharTable { fields }
-                    | crate::lisp::types::ReaderForm::SubCharTable { fields } => {
-                        pending.extend(fields.iter().cloned());
-                    }
-                    crate::lisp::types::ReaderForm::Record { slots }
-                    | crate::lisp::types::ReaderForm::Closure { slots, .. } => {
-                        pending.extend(slots.iter().cloned());
-                    }
-                },
-                _ => {}
-            }
-        }
-    }
-
     pub(crate) fn is_standard_obarray_id(&self, id: u64) -> bool {
         id == self.standard_obarray_id
     }
