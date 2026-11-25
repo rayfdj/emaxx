@@ -1,6 +1,8 @@
 ;;; -*- lexical-binding: t -*-
 ;; An interpreted loop calling a native-compiled function: each call
-;; enters native code from eval, an outermost native activation.
+;; enters native code from eval.  In a batch run it is a nested
+;; activation, since startup's own native functions are still active;
+;; an outermost one is entered only from a command loop.
 (defun probe-native-callee (x) x)
 (native-compile 'probe-native-callee)
 (unless (native-comp-function-p (symbol-function 'probe-native-callee)) (error "interp-to-native: not native"))

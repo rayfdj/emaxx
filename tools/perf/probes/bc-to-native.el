@@ -1,6 +1,8 @@
 ;;; -*- lexical-binding: t -*-
 ;; A byte-compiled loop calling a native-compiled function: each call
-;; enters native code from byte code, an outermost native activation.
+;; enters native code from byte code.  In a batch run it is a nested
+;; activation, since startup's own native functions are still active;
+;; an outermost one is entered only from a command loop.
 (defun probe-native-callee (x) x)
 (native-compile 'probe-native-callee)
 (unless (native-comp-function-p (symbol-function 'probe-native-callee)) (error "bc-to-native: not native"))
