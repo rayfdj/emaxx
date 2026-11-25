@@ -2902,6 +2902,15 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// keyboard.c:read_char holds previous_echo_area_message in a local, which
+/// mark_c_stack finds on the stack while the read runs.  Kept here between
+/// the read's steps, where no stack scan looks, it is marked while set.
+pub(crate) fn mark_read_char_roots(mark: &mut dyn FnMut(&Value)) {
+    if let Some(message) = PREVIOUS_ECHO_AREA_MESSAGE.get() {
+        mark(&message);
+    }
+}
+
 /// command_loop_1 at the top of each cycle in a minibuffer: a message in
 /// the echo area over it (the mini window is the echo area's) shows for
 /// `minibuffer-message-timeout' seconds, or until input comes, with
@@ -3461,4 +3470,77 @@ pub(crate) fn release_thread_state() {
     });
     kbd_input::release_thread_state();
     command_loop::release_thread_state();
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::lisp::eval::Interpreter;
+    use crate::lisp::types::{Env, Kind, Value};
+    use crate::lisp::{json, primitives};
+
+    // The messages are made in frames of their own, cleared before each
+    // collection, so that no word of the test's names one.
+    #[inline(never)]
+    fn witnessed_message(interpreter: &mut Interpreter, table: &Value) -> Value {
+        let message = primitives::call(
+            interpreter,
+            "make-string",
+            &[Value::Integer(3), Value::Integer(i64::from(b'm'))],
+            &mut Env::new(),
+        )
+        .expect("make a message");
+        primitives::call(
+            interpreter,
+            "puthash",
+            &[message, Value::T, *table],
+            &mut Env::new(),
+        )
+        .expect("witness the message");
+        message
+    }
+
+    #[inline(never)]
+    fn keep_one_of_two(interpreter: &mut Interpreter, table: &Value) {
+        let kept = witnessed_message(interpreter, table);
+        let _dropped = witnessed_message(interpreter, table);
+        super::PREVIOUS_ECHO_AREA_MESSAGE.set(Some(kept));
+    }
+
+    #[inline(never)]
+    fn witnesses_after_collection(interpreter: &mut Interpreter, table: &Value) -> usize {
+        crate::lisp::alloc::clobber_stack();
+        let Kind::HashTable(id) = table.kind() else {
+            panic!("a hash table");
+        };
+        primitives::call(interpreter, "garbage-collect", &[], &mut Env::new()).expect("collect");
+        id.count()
+    }
+
+    #[test]
+    fn the_read_s_kept_previous_message_lives_through_a_collection() {
+        // The message the read keeps for after the input method, held by
+        // nothing else (`input-method-previous-message' may be bound over
+        // in the meantime), lives through a collection on this thread; a
+        // message made with it and held by nothing dies there.
+        let mut interpreter = Interpreter::new();
+        let table = json::make_hash_table(&mut interpreter, "eq", Vec::new());
+        let Kind::HashTable(id) = table.kind() else {
+            panic!("a hash table");
+        };
+        id.set_weakness(1);
+        interpreter.set_global_binding("read-char-message-witnesses", table);
+        keep_one_of_two(&mut interpreter, &table);
+        crate::lisp::alloc::clobber_stack();
+        assert_eq!(
+            witnesses_after_collection(&mut interpreter, &table),
+            1,
+            "only the kept message lives"
+        );
+        let kept = super::PREVIOUS_ECHO_AREA_MESSAGE
+            .take()
+            .expect("the message is still kept");
+        let found = primitives::call(&mut interpreter, "gethash", &[kept, table], &mut Env::new())
+            .expect("look the kept message up");
+        assert_eq!(found, Value::T, "the live one is the kept message");
+    }
 }
