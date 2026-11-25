@@ -2714,29 +2714,42 @@ pub(crate) fn runtime_threads_start_with_process_signals_blocked() {
 /// The calls by which native code's helpers signal, `remember_helper_error'
 /// and `remember_active_helper_error', longjmp past the Rust frames between
 /// them and the handler or escape record they jump to (`jump_nonlocal'), as
-/// eval.c:unwind_to_catch longjmps past C frames.  Those frames must be
-/// plain: nothing in them is dropped, and nothing after the call runs.
+/// eval.c:unwind_to_catch longjmps past C frames.  Those frames must own
+/// nothing live: a destructor skipped there is storage never freed or state
+/// never restored.  Every call into native code from Rust makes an escape
+/// record in the calling frame, and every call into Lisp returns its error
+/// as an `Err', so the frames a jump passes are the helpers' own: those
+/// from an entry native code calls down to the jumping call.
 ///
 /// What it checks, on the runtime's sources with comments and literals
-/// removed, for every call of either (but the functions' own definitions):
-/// that the call ends its arm or block, nothing following it there but a
-/// trivial value (`0', `false', `None', `Some(0)', a null pointer, or a
-/// `return' of one); and that no local of an owning type (Vec, SmallVec,
-/// String, Box, Rc, a Ref or RefMut, a MutexGuard: its type or its
-/// initializer naming one, or a call making one) is live at the call in the
-/// innermost function holding it: bound before it in a block that encloses
-/// it, and not given to `drop' before it; nor is a parameter of such a type.
-/// An initializer is read at its own level: the blocks in it (a closure's
-/// body, a block expression, a match arm) are not.
+/// removed (test modules and test files left out):
+/// - the jumping functions: those that call either helper, or a function
+///   defined only under src/lisp/native_comp that is one, to a fixed point;
+/// - in each, at every call of a helper or of a jumping function, that no
+///   local of an owning type is live (Vec, SmallVec, String, Box, Rc, a Ref
+///   or RefMut, a MutexGuard: its type or its initializer's own level
+///   naming one, or a call making one; bound before the call in a block
+///   that encloses it, and not given to `drop' in a block that does), and
+///   that no parameter has such a type;
+/// - that a helper's call ends its arm or block, nothing following it
+///   there but a trivial value (`0', `false', `None', `Some(0)', a null
+///   pointer, or a `return' of one);
+/// - that a crate function a jumping call is passed to inside a closure
+///   (`with_active') declares no local or parameter of an owning type.
 ///
-/// What it does not prove: that the frames further up (the function's
-/// callers, down to the handler) are plain; that a type it cannot see (an
-/// inferred one whose initializer names none of those at its own level)
-/// owns nothing; or that the call is on an error path.  Those rest on
-/// `jump_nonlocal''s rule and on review.
+/// What it does not prove: that a type it cannot see (an inferred one
+/// whose initializer names none of those at its own level, or one with a
+/// destructor of its own under another name) owns nothing; that frames of
+/// the standard library a jumping closure runs in (`LocalKey::with',
+/// `unwrap_or_else') hold nothing, which they do not; that a call reached
+/// only through a function pointer or a name defined outside
+/// src/lisp/native_comp is seen; or that the call is on an error path.
+/// Those rest on `jump_nonlocal''s rule and on review.
 pub(crate) fn native_helper_errors_leave_plain_frames() {
-    let call = regex::Regex::new(r"(?:^|[^\w:])(remember_(?:active_)?helper_error)\s*\(")
-        .expect("compile helper error call pattern");
+    let helper = regex::Regex::new(r"^remember_(?:active_)?helper_error$")
+        .expect("compile helper name pattern");
+    let call = regex::Regex::new(r"(?:^|[^\w:])(\w+)\s*(?:::\s*<[^>]*>\s*)?\(")
+        .expect("compile call pattern");
     let header =
         regex::Regex::new(r"\bfn\s+(\w+)\s*(?:<[^>{]*>)?\s*\(").expect("compile fn pattern");
     let binding = regex::Regex::new(r"\blet\s+(?:mut\s+)?").expect("compile let pattern");
@@ -2752,9 +2765,16 @@ pub(crate) fn native_helper_errors_leave_plain_frames() {
         r"^\s*(?:return\b\s*)?(?:0|false|None|Some\s*\(\s*0\s*\)|std::ptr::null_mut\s*\(\s*\))?\s*;?\s*$",
     )
     .expect("compile trivial tail pattern");
+    struct Function {
+        name: String,
+        path: String,
+        parameters: String,
+        start: usize,
+        end: usize,
+    }
     let root = repo_root();
-    let mut violations = Vec::new();
-    let mut calls_seen = 0usize;
+    let mut texts = std::collections::BTreeMap::new();
+    let mut functions = Vec::new();
     for path in rust_files_below("src") {
         let relative = path
             .strip_prefix(root)
@@ -2773,142 +2793,253 @@ pub(crate) fn native_helper_errors_leave_plain_frames() {
         let text = without_test_modules(&code_only(
             &fs::read_to_string(&path).expect("read a runtime source"),
         ));
-        if !call.is_match(&text) {
-            continue;
-        }
-        // Each function's name, parameters and body (start, end).
-        let functions: Vec<(String, String, usize, usize)> = header
-            .captures_iter(&text)
-            .filter_map(|found| {
-                let whole = found.get(0).expect("the header");
-                let parameters = call_arguments(&text[whole.end() - 1..])?.to_owned();
-                let body = whole.end() - 1 + parameters.len();
-                let open = body + text[body..].find('{')?;
-                if text[body..open].contains(';') {
-                    return None;
-                }
-                let block = balanced_block(&text, open)?;
-                Some((found[1].to_owned(), parameters, open, open + block.len()))
-            })
-            .collect();
-        for found in call.captures_iter(&text) {
-            let name = found.get(1).expect("the called name");
-            let at = name.start();
-            if text[..at].trim_end().ends_with("fn") {
-                // A definition, not a call.
-                continue;
-            }
-            let line = text[..at].matches('\n').count() + 1;
-            let Some((function, parameters, start, end)) = functions
-                .iter()
-                .filter(|(_, _, start, end)| *start < at && at < *end)
-                .max_by_key(|(_, _, start, _)| *start)
-            else {
-                violations.push(format!("{relative}:{line}: a call outside a function"));
+        for found in header.captures_iter(&text) {
+            let whole = found.get(0).expect("the header");
+            let Some(parameters) = call_arguments(&text[whole.end() - 1..]) else {
                 continue;
             };
-            if function == "remember_helper_error" {
+            let after = whole.end() - 1 + parameters.len();
+            let Some(open) = text[after..].find('{').map(|open| after + open) else {
+                continue;
+            };
+            if text[after..open].contains(';') {
                 continue;
             }
-            calls_seen += 1;
-            let arguments = call_arguments(&text[name.end()..]).expect("the call's arguments");
-            let after = &text
-                [name.end() + text[name.end()..].find('(').expect("a call") + arguments.len()..];
-            let after = after.trim_start_matches(|c: char| c == ')' || c.is_whitespace());
-            let tail_ends = after.starts_with(',')
-                || after.starts_with('}')
-                || after.starts_with(';')
-                    && after[1..]
-                        .find('}')
-                        .is_some_and(|close| trivial.is_match(&after[1..1 + close]));
-            if !tail_ends {
-                violations.push(format!(
-                    "{relative}:{line}: {function}: the call does not end its arm or block"
-                ));
+            let Some(block) = balanced_block(&text, open) else {
+                continue;
+            };
+            functions.push(Function {
+                name: found[1].to_owned(),
+                path: relative.clone(),
+                parameters: parameters.to_owned(),
+                start: open,
+                end: open + block.len(),
+            });
+        }
+        texts.insert(relative, text);
+    }
+    // A function's calls, by name, at their offsets in its body; a nested
+    // item's are its own.
+    let calls_of = |function: &Function| -> Vec<(String, usize)> {
+        let text = &texts[&function.path];
+        let body = &text[function.start..function.end];
+        let nested: Vec<(usize, usize)> = functions
+            .iter()
+            .filter(|other| {
+                other.path == function.path
+                    && function.start < other.start
+                    && other.start < function.end
+            })
+            .map(|other| (other.start - function.start, other.end - function.start))
+            .collect();
+        call.captures_iter(body)
+            .filter_map(|found| {
+                let name = found.get(1).expect("the called name");
+                let inside_nested = nested
+                    .iter()
+                    .any(|(start, end)| *start < name.start() && name.start() < *end);
+                (!inside_nested && !body[..name.start()].trim_end().ends_with("fn"))
+                    .then(|| (name.as_str().to_owned(), name.start()))
+            })
+            .collect()
+    };
+    let native_only: std::collections::BTreeSet<&str> = functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .filter(|name| {
+            functions
+                .iter()
+                .filter(|function| function.name == *name)
+                .all(|function| function.path.starts_with("src/lisp/native_comp/"))
+        })
+        .collect();
+    let calls: Vec<Vec<(String, usize)>> = functions
+        .iter()
+        .map(|function| {
+            calls_of(function)
+                .into_iter()
+                .filter(|(name, _)| helper.is_match(name) || native_only.contains(name.as_str()))
+                .collect()
+        })
+        .collect();
+    let mut jumping = std::collections::BTreeSet::new();
+    loop {
+        let before = jumping.len();
+        for (index, function) in functions.iter().enumerate() {
+            if calls[index].iter().any(|(name, _)| {
+                helper.is_match(name)
+                    || native_only.contains(name.as_str()) && jumping.contains(name.as_str())
+            }) {
+                jumping.insert(function.name.clone());
             }
-            if owning_parameter.is_match(parameters) {
-                violations.push(format!(
-                    "{relative}:{line}: {function}: a parameter of an owning type"
-                ));
+        }
+        if jumping.len() == before {
+            break;
+        }
+    }
+    let jumps =
+        |name: &str| helper.is_match(name) || native_only.contains(name) && jumping.contains(name);
+    // The owning locals of BODY live at OFFSET: bound before it in a
+    // block that encloses it, not dropped in one that does.
+    let live_owners = |body: &str, offset: usize| -> Vec<String> {
+        let mut owners = Vec::new();
+        for local in binding.find_iter(body) {
+            if local.start() >= offset {
+                break;
             }
-            let body = &text[*start..*end];
-            let call_offset = at - start;
-            for local in binding.find_iter(body) {
-                if local.start() >= call_offset {
-                    break;
-                }
-                // The statement, to its `;' outside brackets.
-                let mut depth = 0usize;
-                let mut statement_end = body.len();
-                for (offset, byte) in body[local.start()..].bytes().enumerate() {
-                    match byte {
-                        b'(' | b'[' | b'{' => depth += 1,
-                        b')' | b']' | b'}' => depth = depth.saturating_sub(1),
-                        b';' if depth == 0 => {
-                            statement_end = local.start() + offset + 1;
-                            break;
-                        }
-                        _ => {}
+            let mut depth = 0usize;
+            let mut statement_end = body.len();
+            for (index, byte) in body[local.start()..].bytes().enumerate() {
+                match byte {
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                    b';' if depth == 0 => {
+                        statement_end = local.start() + index + 1;
+                        break;
                     }
+                    _ => {}
                 }
-                if statement_end > call_offset {
-                    continue;
+            }
+            if statement_end > offset {
+                continue;
+            }
+            let statement = &body[local.start()..statement_end];
+            let mut level = String::new();
+            let mut depth = 0usize;
+            for character in statement.chars() {
+                match character {
+                    '{' => depth += 1,
+                    '}' => depth = depth.saturating_sub(1),
+                    _ if depth == 0 => level.push(character),
+                    _ => {}
                 }
-                let statement = &body[local.start()..statement_end];
-                // The binding's type and its initializer's own level: what a
-                // block in it (a closure's body, a block expression, a match
-                // arm) binds ends with the block.
-                let mut level = String::new();
+            }
+            if !owning.is_match(&level) {
+                continue;
+            }
+            let encloses = |from: usize| {
                 let mut depth = 0usize;
-                for character in statement.chars() {
-                    match character {
-                        '{' => depth += 1,
-                        '}' => depth = depth.saturating_sub(1),
-                        _ if depth == 0 => level.push(character),
-                        _ => {}
-                    }
-                }
-                if !owning.is_match(&level) {
-                    continue;
-                }
-                // The innermost block holding the binding must hold the call.
-                let mut depth = 0usize;
-                let mut encloses = true;
-                for byte in body[local.start()..call_offset].bytes() {
+                for byte in body[from..offset].bytes() {
                     match byte {
                         b'{' => depth += 1,
                         b'}' => {
                             if depth == 0 {
-                                encloses = false;
-                                break;
+                                return false;
                             }
                             depth -= 1;
                         }
                         _ => {}
                     }
                 }
-                let bound = body[local.end()..]
-                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
-                    .next()
-                    .unwrap_or_default();
-                let dropped = !bound.is_empty()
-                    && body[statement_end..call_offset].contains(&format!("drop({bound})"));
-                if encloses && !dropped {
-                    violations.push(format!(
-                        "{relative}:{line}: {function}: `{}' is live across the call",
-                        statement.split_whitespace().collect::<Vec<_>>().join(" ")
-                    ));
+                true
+            };
+            if !encloses(local.start()) {
+                continue;
+            }
+            let bound = body[local.end()..]
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap_or_default();
+            let dropped = !bound.is_empty()
+                && body[statement_end..offset]
+                    .match_indices(&format!("drop({bound})"))
+                    .any(|(at, _)| encloses(statement_end + at));
+            if !dropped {
+                owners.push(level.split_whitespace().collect::<Vec<_>>().join(" "));
+            }
+        }
+        owners
+    };
+    let mut violations = Vec::new();
+    let mut helper_calls = 0usize;
+    let mut checked = std::collections::BTreeSet::new();
+    for (index, function) in functions.iter().enumerate() {
+        if function.name == "remember_helper_error" {
+            continue;
+        }
+        let text = &texts[&function.path];
+        let body = &text[function.start..function.end];
+        let line = |offset: usize| text[..function.start + offset].matches('\n').count() + 1;
+        let name = &function.name;
+        let relative = &function.path;
+        for (called, offset) in &calls[index] {
+            if !jumps(called) {
+                continue;
+            }
+            let at_line = line(*offset);
+            checked.insert(name.clone());
+            if owning_parameter.is_match(&function.parameters) {
+                violations.push(format!(
+                    "{relative}:{at_line}: {name}: a parameter of an owning type"
+                ));
+            }
+            for owner in live_owners(body, *offset) {
+                violations.push(format!(
+                    "{relative}:{at_line}: {name}: `{owner}' is live across {called}"
+                ));
+            }
+            if !helper.is_match(called) {
+                continue;
+            }
+            helper_calls += 1;
+            let arguments = call_arguments(&body[*offset..]).expect("the call's arguments");
+            let after =
+                &body[*offset + body[*offset..].find('(').expect("a call") + arguments.len()..];
+            let after = after.trim_start_matches(|c: char| c == ')' || c.is_whitespace());
+            let ends = after.starts_with(',')
+                || after.starts_with('}')
+                || after.starts_with(';')
+                    && after[1..]
+                        .find('}')
+                        .is_some_and(|close| trivial.is_match(&after[1..1 + close]));
+            if !ends {
+                violations.push(format!(
+                    "{relative}:{at_line}: {name}: the call does not end its arm or block"
+                ));
+            }
+            // The crate functions this call runs inside, passed a closure
+            // holding it: the enclosing calls up to the function's body.
+            let mut depth = 0usize;
+            for (back, byte) in body[..*offset].bytes().enumerate().rev() {
+                match byte {
+                    b')' => depth += 1,
+                    b'(' if depth > 0 => depth -= 1,
+                    b'(' => {
+                        let head = body[..back].trim_end();
+                        let callee = head
+                            .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+                            .next()
+                            .unwrap_or_default();
+                        for runner in functions.iter().filter(|other| other.name == callee) {
+                            let runner_body = &texts[&runner.path][runner.start..runner.end];
+                            let owners =
+                                live_owners(runner_body, runner_body.len().saturating_sub(1));
+                            if !owners.is_empty() || owning_parameter.is_match(&runner.parameters) {
+                                violations.push(format!(
+                                    "{relative}:{at_line}: {name}: {callee}, which runs the call, owns {owners:?}"
+                                ));
+                            }
+                        }
+                    }
+                    _ => {}
                 }
             }
         }
     }
     assert!(
-        calls_seen > 60,
-        "the gate must find the helpers' callers, found {calls_seen}"
+        helper_calls > 60,
+        "the gate must find the helpers' callers, found {helper_calls}"
     );
     assert!(
+        checked.len() > helper_calls / 2,
+        "the gate must find the jumping functions' callers too, found {}",
+        checked.len()
+    );
+    violations.sort();
+    violations.dedup();
+    assert!(
         violations.is_empty(),
-        "native helper errors that jump past a frame with something to drop: {violations:#?}"
+        "frames a native helper's jump passes that own something: {violations:#?}"
     );
 }
 

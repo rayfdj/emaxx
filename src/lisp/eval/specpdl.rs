@@ -97,6 +97,71 @@ pub(crate) enum UnwindAction {
     /// environment, whose frames are not on the specpdl, cut back to its
     /// first DEPTH, over which the nil frame lay.
     InterpreterEnvironment(usize),
+    /// lisp.h:SAFE_ALLOCA_LISP_EXTRA's record_unwind_protect_array: a
+    /// vector of Lisp words a helper took from the heap, marked while the
+    /// entry is on the specpdl and freed by the unbind or unwinding that
+    /// pops it.  An entry dropped undone (the exit after a C stack
+    /// overflow, as init_eval empties GNU's specpdl) leaves it, as GNU's
+    /// xfree record is left.
+    Array(std::mem::ManuallyDrop<LispArray>),
+}
+
+/// The heap vector of an `UnwindAction::Array': COUNT words its holder
+/// reads and writes through `as_mut_ptr' while the entry is on the
+/// specpdl, which frees it when it pops the entry (SAFE_FREE, or
+/// unwind_to_catch's unbind_to on a non-local exit).
+pub(crate) struct LispArray(std::ptr::NonNull<[Value]>);
+
+impl LispArray {
+    /// COUNT nil words.
+    pub(crate) fn new(count: usize) -> Self {
+        Self(std::ptr::NonNull::from(Box::leak(
+            vec![Value::Nil; count].into_boxed_slice(),
+        )))
+    }
+
+    /// The first word, for the holder's reads and writes.
+    pub(crate) fn as_mut_ptr(&self) -> *mut Value {
+        self.0.as_ptr().cast()
+    }
+
+    fn values(&self) -> &[Value] {
+        // SAFETY: the allocation `new' made, live until the drop; its
+        // holder writes whole words, never while this is read.
+        unsafe { self.0.as_ref() }
+    }
+}
+
+impl Drop for LispArray {
+    // Out of line: the specpdl's drop glue and run_unwind_action reach
+    // it only for this rare kind of entry.
+    #[cold]
+    #[inline(never)]
+    fn drop(&mut self) {
+        // SAFETY: the allocation `new' leaked, freed here once.
+        drop(unsafe { Box::from_raw(self.0.as_ptr()) });
+    }
+}
+
+impl Clone for LispArray {
+    fn clone(&self) -> Self {
+        let copy = Self::new(self.values().len());
+        // SAFETY: both are allocations of this many words.
+        unsafe {
+            std::ptr::copy_nonoverlapping(
+                self.values().as_ptr(),
+                copy.as_mut_ptr(),
+                self.values().len(),
+            );
+        }
+        copy
+    }
+}
+
+impl std::fmt::Debug for LispArray {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(formatter, "LispArray({} words)", self.values().len())
+    }
 }
 
 impl UnwindAction {
@@ -106,6 +171,7 @@ impl UnwindAction {
             Self::Excursion(saved) => mark(&Value::Marker(saved.marker_id)),
             Self::Restriction(saved) => saved.mark_values(mark),
             Self::CurrentBuffer(_) | Self::Redisplay | Self::InterpreterEnvironment(_) => {}
+            Self::Array(array) => array.values().iter().for_each(&mut *mark),
             Self::Cleanup { value, .. }
             | Self::KbdMacro(value)
             | Self::RestorePoint(value)
@@ -407,6 +473,11 @@ impl Interpreter {
             }
             UnwindAction::InterpreterEnvironment(depth) => {
                 env.truncate(depth);
+                Ok(())
+            }
+            // SAFE_FREE's xfree, or unwind_to_catch's of the same entry.
+            UnwindAction::Array(array) => {
+                drop(std::mem::ManuallyDrop::into_inner(array));
                 Ok(())
             }
             UnwindAction::KbdMacro(info) => self.with_lisp_stack_roots(&info, |interp| {

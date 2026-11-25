@@ -4465,37 +4465,38 @@ fn invoke_native_apply(active: &ActiveCall, arguments: &[NativeWord]) -> Option<
         Ok(None) => return None,
         Err(()) => return Some(0),
     };
-    let total = fixed.len().saturating_add(spread_length).max(1);
-    let mut funcall_arguments = smallvec::SmallVec::<[NativeWord; 8]>::with_capacity(total);
-    funcall_arguments.extend_from_slice(fixed);
-    let mut tail = spread;
-    while native_consp(tail) {
-        funcall_arguments.push(unsafe { native_car(tail) });
-        tail = unsafe { native_cdr(tail) };
-    }
-    if funcall_arguments.is_empty() {
-        // Fapply's single nil argument becomes Ffuncall's nil function.
-        funcall_arguments.push(0);
-    }
-
+    let given = fixed.len().saturating_add(spread_length);
+    // Fapply's single nil argument becomes Ffuncall's nil function.
+    let mut total = given.max(1);
     if spread_length > 1 {
         // SAFETY: the caller's function word, live in its activation.
-        let function = unsafe { Value::from_word(funcall_arguments[0]) };
+        let function = unsafe {
+            Value::from_word(match fixed.first() {
+                Some(function) => *function,
+                None => native_car(spread),
+            })
+        };
         let target = direct_funcall_target(
             unsafe { &*active.interpreter },
             unsafe { &*active.environment.get() },
             &function,
         )?;
-        let argument_count = funcall_arguments.len() - 1;
-        let padded_count = target.apply_padded_argument_count(argument_count);
-        funcall_arguments.resize(padded_count + 1, 0);
+        total = total.max(target.apply_padded_argument_count(given - 1) + 1);
     }
-
-    let runtime = unsafe { &mut *active.runtime };
-    runtime.push_ephemeral_root_range(funcall_arguments.as_ptr(), funcall_arguments.len());
-    let result = plain_native_funcall(active, &funcall_arguments)
-        .or_else(|| invoke_native_funcall(active, &funcall_arguments));
-    unsafe { &mut *active.runtime }.pop_ephemeral_root_range(funcall_arguments.len());
+    // SAFE_ALLOCA_LISP (funcall_args, ...): a call of the function below
+    // may signal, jumping past this frame.
+    let mut inline = [0; 8];
+    let words = NativeWords::take(active, &mut inline, total);
+    let funcall_arguments = words.words();
+    funcall_arguments[..fixed.len()].copy_from_slice(fixed);
+    let mut tail = spread;
+    for slot in &mut funcall_arguments[fixed.len()..given] {
+        *slot = unsafe { native_car(tail) };
+        tail = unsafe { native_cdr(tail) };
+    }
+    let result = plain_native_funcall(active, funcall_arguments)
+        .or_else(|| invoke_native_funcall(active, funcall_arguments));
+    words.release(active);
     result
 }
 
@@ -4523,10 +4524,12 @@ fn invoke_native_mapcar(active: &ActiveCall, arguments: &[NativeWord]) -> Option
             .position(|subroutine| subroutine.name == "funcall")
             .expect("funcall belongs to the native ABI")
     });
-    // Up to 32 results on the stack; MAPPED stays where it is while its
-    // range is a root.
-    let mut mapped = smallvec::SmallVec::<[NativeWord; 32]>::from_elem(0, length);
-    unsafe { &mut *active.runtime }.push_ephemeral_root_range(mapped.as_ptr(), mapped.len());
+    // SAFE_ALLOCA_LISP (args, leni): up to 32 results on the stack, the
+    // rest in the specpdl's vector; a callback may signal, jumping past
+    // this frame.
+    let mut inline = [0; 32];
+    let results = NativeWords::take(active, &mut inline, length);
+    let mapped = results.words();
     let mut tail = *sequence;
     let mut mapped_count = 0;
     while mapped_count < length && native_consp(tail) {
@@ -4537,10 +4540,7 @@ fn invoke_native_mapcar(active: &ActiveCall, arguments: &[NativeWord]) -> Option
         if let Err(error) =
             unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
         {
-            // The results go before the signal jumps past this frame
-            // (`jump_nonlocal').
-            unsafe { &mut *active.runtime }.pop_ephemeral_root_range(mapped.len());
-            drop(mapped);
+            results.release(active);
             remember_helper_error(active, error);
             return Some(0);
         }
@@ -4551,7 +4551,7 @@ fn invoke_native_mapcar(active: &ActiveCall, arguments: &[NativeWord]) -> Option
             None => invoke_subr(funcall, &words),
         };
         if native_call_has_pending_error(active) {
-            unsafe { &mut *active.runtime }.pop_ephemeral_root_range(mapped.len());
+            results.release(active);
             return Some(0);
         }
         mapped_count += 1;
@@ -4560,8 +4560,90 @@ fn invoke_native_mapcar(active: &ActiveCall, arguments: &[NativeWord]) -> Option
     let result = mapped[..mapped_count].iter().rev().fold(0, |tail, value| {
         unsafe { &mut *active.runtime }.heap.cons(*value, tail)
     });
-    unsafe { &mut *active.runtime }.pop_ephemeral_root_range(mapped.len());
+    results.release(active);
     Some(result)
+}
+
+/// lisp.h:SAFE_ALLOCA_LISP for a native helper's COUNT words: the
+/// helper's INLINE array when they fit, rooted as an ephemeral range, else
+/// a vector the specpdl holds (`UnwindAction::Array'), which marks them
+/// and which its unbind or a non-local exit's unwinding frees.  A signal
+/// below the helper jumps past its frame (`jump_nonlocal'), which owns
+/// neither; `release' is SAFE_FREE, on the paths that return.
+#[derive(Clone, Copy)]
+struct NativeWords {
+    address: *mut NativeWord,
+    count: usize,
+    in_specpdl: bool,
+}
+
+impl NativeWords {
+    /// COUNT nil words, in INLINE when they fit.
+    #[inline(always)]
+    fn take<const N: usize>(
+        active: &ActiveCall,
+        inline: &mut [NativeWord; N],
+        count: usize,
+    ) -> Self {
+        if count > N {
+            return Self::take_from_specpdl(active, count);
+        }
+        let address = inline.as_mut_ptr();
+        unsafe { &mut *active.runtime }.push_ephemeral_root_range(address, count);
+        Self {
+            address,
+            count,
+            in_specpdl: false,
+        }
+    }
+
+    /// record_unwind_protect_array of a fresh heap vector.
+    #[cold]
+    #[inline(never)]
+    fn take_from_specpdl(active: &ActiveCall, count: usize) -> Self {
+        let array = crate::lisp::eval::LispArray::new(count);
+        let address = array.as_mut_ptr().cast::<NativeWord>();
+        unsafe { &mut *active.runtime }.record_unwind(
+            unsafe { &mut *active.interpreter },
+            UnwindAction::Array(std::mem::ManuallyDrop::new(array)),
+        );
+        Self {
+            address,
+            count,
+            in_specpdl: true,
+        }
+    }
+
+    /// The words, for the helper that took them.
+    #[inline(always)]
+    fn words<'a>(self) -> &'a mut [NativeWord] {
+        // SAFETY: COUNT words that stay where they are until `release' or
+        // the unwinding past the helper; only the helper reaches them.
+        unsafe { std::slice::from_raw_parts_mut(self.address, self.count) }
+    }
+
+    /// SAFE_FREE: the words given back on a path that returns.
+    #[inline(always)]
+    fn release(self, active: &ActiveCall) {
+        if self.in_specpdl {
+            Self::release_specpdl(active);
+        } else {
+            unsafe { &mut *active.runtime }.pop_ephemeral_root_range(self.count);
+        }
+    }
+
+    /// SAFE_FREE's unbind_to of the vector's entry, the innermost.
+    #[cold]
+    #[inline(never)]
+    fn release_specpdl(active: &ActiveCall) {
+        let interpreter = unsafe { &mut *active.interpreter };
+        if let Some(entry) = interpreter.pop_specpdl_entry() {
+            // The vector's entry runs nothing but its free.
+            let undone =
+                interpreter.undo_specpdl_entry(entry, unsafe { &mut *active.environment.get() });
+            debug_assert!(undone.is_ok());
+        }
+    }
 }
 
 // Descriptor callbacks are real GNU ABI function pointers, including user
@@ -5488,9 +5570,14 @@ unsafe extern "C" {
 /// `remember_helper_error' or `remember_active_helper_error' as the last
 /// thing on its error path, with what it owned already dropped; a Lisp
 /// error inside Rust is an `Err' until then, and a Rust panic never
-/// reaches native frames (an `extern "C"' boundary aborts on one).  The
-/// gate `native_helper_errors_leave_plain_frames' checks each caller's
-/// call and live locals, not the frames further up.
+/// reaches native frames (an `extern "C"' boundary aborts on one).
+/// Storage a helper keeps across a call that may signal is SAFE_ALLOCA's
+/// (`NativeWords'): on its own stack, or held by the specpdl, whose
+/// unwinding before the jump frees it.  Every call from Rust into native
+/// code makes its own escape record, so a jump never passes the frame that
+/// made the call: the frames it passes are those of the helper native code
+/// called, from its entry down to the jumping call, which the gate
+/// `native_helper_errors_leave_plain_frames' checks.
 unsafe fn jump_nonlocal(buffer: *mut c_void) -> ! {
     // SAFETY: both kinds of buffer are larger than 68 bytes, and glibc's
     // `_setjmp' wrote the word at 64 of a handler's.
@@ -7367,6 +7454,135 @@ mod tests {
         })
         .join()
         .expect("the signalling calls' thread");
+    }
+
+    /// The resident set's growth over 100,000 calls of SIGNAL, each of
+    /// which must answer true, with a collection every 5,000 calls so the
+    /// Lisp heap is reused.
+    #[cfg(target_os = "linux")]
+    fn resident_growth_over_signals(
+        mut signal: impl FnMut(&mut Interpreter, &mut Env, &mut NativeRuntime) -> bool,
+    ) -> usize {
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let collect = |interpreter: &mut Interpreter, environment: &mut Env| {
+            crate::lisp::primitives::call(interpreter, "garbage-collect", &[], environment)
+                .expect("collect");
+        };
+        for _ in 0..2_000 {
+            assert!(signal(&mut interpreter, &mut environment, &mut runtime));
+        }
+        collect(&mut interpreter, &mut environment);
+        let before = resident_bytes();
+        for round in 0..100_000 {
+            assert!(signal(&mut interpreter, &mut environment, &mut runtime));
+            if round % 5_000 == 4_999 {
+                collect(&mut interpreter, &mut environment);
+            }
+        }
+        collect(&mut interpreter, &mut environment);
+        resident_bytes().saturating_sub(before)
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_signal_through_native_apply_leaks_nothing() {
+        // Fapply's SAFE_ALLOCA_LISP: twelve words, more than its stack
+        // keeps, given to a function that signals (car called with twelve
+        // arguments); the jump passes apply's frame, and the specpdl's
+        // unwinding frees the words.
+        let grown = std::thread::spawn(|| {
+            let arguments = Value::list((1..=12).map(Value::Integer));
+            resident_growth_over_signals(|interpreter, environment, runtime| {
+                runtime
+                    .invoke(
+                        interpreter,
+                        environment,
+                        call_apply_two as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[Value::symbol("car"), arguments],
+                    )
+                    .expect_err("car takes one argument")
+                    .condition_type()
+                    == "wrong-number-of-arguments"
+            })
+        })
+        .join()
+        .expect("the signalling calls' thread");
+        assert!(
+            grown <= 1 << 20,
+            "100,000 signals through apply grew the resident set by {grown} bytes"
+        );
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_signal_through_native_mapcar_leaks_nothing() {
+        // Fmapcar's SAFE_ALLOCA_LISP: forty results, more than its stack
+        // keeps, for a function that signals on the first (car of a
+        // fixnum); the jump passes mapcar's frame.
+        let grown = std::thread::spawn(|| {
+            let sequence = Value::list((1..=40).map(Value::Integer));
+            resident_growth_over_signals(|interpreter, environment, runtime| {
+                runtime
+                    .invoke(
+                        interpreter,
+                        environment,
+                        call_mapcar as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[Value::symbol("car"), sequence],
+                    )
+                    .expect_err("a fixnum has no car")
+                    .condition_type()
+                    == "wrong-type-argument"
+            })
+        })
+        .join()
+        .expect("the signalling calls' thread");
+        assert!(
+            grown <= 1 << 20,
+            "100,000 signals through mapcar grew the resident set by {grown} bytes"
+        );
+    }
+
+    extern "C" fn call_sort(sequence: NativeWord, predicate: NativeWord) -> NativeWord {
+        let index = super::super::abi::native_subrs()
+            .iter()
+            .position(|subroutine| subroutine.name == "sort")
+            .expect("sort belongs to the native ABI");
+        invoke_subr(index, &[sequence, predicate])
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_signal_through_a_rust_primitive_called_from_native_code_leaks_nothing() {
+        // A primitive written in Rust (Fsort, its forty elements in a Vec)
+        // receives its predicate's signal as an Err and returns, its frame
+        // dropping what it owns; only the subr dispatch's plain frames are
+        // passed by the jump that follows.
+        let grown = std::thread::spawn(|| {
+            let sequence = Value::list((1..=40).map(Value::Integer));
+            resident_growth_over_signals(|interpreter, environment, runtime| {
+                runtime
+                    .invoke(
+                        interpreter,
+                        environment,
+                        call_sort as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[sequence, Value::symbol("car")],
+                    )
+                    .expect_err("car takes one argument")
+                    .condition_type()
+                    == "wrong-number-of-arguments"
+            })
+        })
+        .join()
+        .expect("the signalling calls' thread");
+        assert!(
+            grown <= 1 << 20,
+            "100,000 signals through sort grew the resident set by {grown} bytes"
+        );
     }
 
     #[test]

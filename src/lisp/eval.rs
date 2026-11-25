@@ -42,7 +42,7 @@ mod resource_forms;
 pub(crate) mod roots;
 pub(crate) mod runtime;
 mod specpdl;
-pub(crate) use specpdl::{SpecpdlEntry, SpecpdlRef, UnwindAction};
+pub(crate) use specpdl::{LispArray, SpecpdlEntry, SpecpdlRef, UnwindAction};
 pub(crate) mod terminal;
 mod thread_context;
 pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
