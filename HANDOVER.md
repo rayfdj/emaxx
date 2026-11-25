@@ -198,6 +198,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   (931.6 before), `(setq last-command X)' 149.6 against 257.0 (1,020.6).  Round 387: stages R4 and R5, the
   dead and test-only machinery out, the reader's literals to its
   context, `put' a plist store (435.6 against 399.0, 561.6 before).
+  Round 392: stages R14 and R15 and GNU's clearing of marks; a cons
+  block holds 2,016 cells with no serial, the census reports the
+  sweeps' free counts, and the sweeps clear the mark bits, so an
+  allocation of a cons, a float or a small vector tests no epoch.
 - **In progress: A2.5, A4.7, C5.1, C5.3 and D43** (runtime ownership
   and thread access; the plan: docs/plans/runtime-ownership.md, stages
   0 to 9).  Round 388: stages 0 to 2; the runtime lock names its
@@ -20919,6 +20923,114 @@ setup_process_coding_systems's check now refuses). A 13-form
   (the deleted lock's own test); its notes of dropped results are the
   reapers' `let _ =' lines, which were there before and now go through
   the new spawn.
+- **Round 392: cons blocks without a serial, the sweeps' own free
+  counts, mark bits the sweep clears, and a stack scan that ends at
+  the stack (M2, stages R14 and R15 of A3.3 and A4.3, the owner's rule
+  applied to the mark bits, and a regression of round 389 repaired;
+  none closed).**  **The stack scan's range**, found by this round's
+  census test, which counted 1,999 new symbols for 2,000: on a thread
+  with no recorded stack bottom, which is every library test's and an
+  embedder's, the conservative scan ran to the top of the pthread
+  block and so read the thread's descriptor and glibc's static TLS.
+  Round 389 put the allocation frontier's cells there, and the end of
+  the frontier's symbol block, which is the first cell of the next
+  block, was read as a root and kept a dead symbol of an earlier
+  test's editor alive until the frontier left the block.  alloc.c's
+  mark_c_stack ends at stack_bottom and reads no TLS.  The range now
+  ends below the thread's descriptor and below each of the thread's
+  TLS blocks inside its stack block; the binary's main thread and the
+  Lisp threads record their own bottoms and scan as before.  One value
+  was alive only by the wide scan: the echo-area message read_char
+  keeps while an input method runs, a local of read_char in GNU found
+  on its stack; it is now a root, where in the binary's main thread it
+  had none.  **The serial**: every cons cell had an 8-byte serial
+  beside it for a weak reference that no runtime code used, only
+  tests; the serial, its bitmap and the weak reference are gone, and
+  the tests that used them witness reclamation as Lisp can, through
+  weak hash tables, and an address's reuse through a witness alone in
+  a fresh block.  A cons block holds 2,016 cells after 512 bytes of
+  bitmaps (1,344 before; GNU's holds 2,030), and two million live
+  conses take 31.9 MB of resident memory where they took 41.8 (GNU
+  32.2).  **The census**: `garbage-collect''s free columns are the
+  sweeps' own counts, as GNU's are, where every one read 0; the sizes
+  it prints stay GNU's (a symbol 48 bytes, a string 32), which Lisp
+  sees and the collection threshold is computed from, and the real
+  cell sizes and the blocks' metadata go into a physical record the
+  performance harness alone prints.  **The mark bits**: a block's mark
+  bits were cleared lazily, by a collection epoch kept in every block
+  and tested at every allocation, so that a mark phase with no sweep
+  after it (which some tests ran) could leave them; alloc.c has neither
+  the epoch nor the test.  For conses, floats and vector blocks the
+  epoch is gone: the mark phase sets a bit, the sweep clears every mark
+  it reads (sweep_conses' XUNMARK_CONS, sweep_floats, sweep_vectors),
+  allocation sets only the allocation bit, an image's blocks are loaded
+  unmarked, and a mark phase starts only inside a collection.  Thirteen
+  library tests that ran the mark phase alone run a collection and
+  witness what it kept; four of their assertions were of the marker's
+  internals, which a collection cannot show, and are gone (a second
+  mark of a root reaching nothing, the work list empty afterwards, the
+  order a cons's fields are taken in, the vector census during the
+  trace); the deep-list test still runs on a small stack, which a
+  recursive marker would overflow.  **A collection cannot be left
+  half-way**: with marks trusted, a Rust panic inside a collection that
+  a library embedder caught and followed with another collection would
+  free reachable objects; a collection now holds a guard from its
+  first mark to its last sweep, and an unwind through it ends the
+  process by abort, as emacs_abort does.  The check for a string Rust
+  has borrowed exclusively runs before the guard and before any mark,
+  so a collection it refuses has marked nothing and another may follow
+  it.  **Still to do, with the image's mark bitset** (the plan's R16):
+  strings, symbols and large vectors keep the collection's epoch in
+  their mark words, a load and a store at their allocation.  **Lisp
+  sees one change**: the free columns,
+  e.g. `(conses 16 1764 15042)' where the last was 0 (GNU
+  `(conses 16 1936 11311)').  **Counts** (before = round 391's
+  build): a cons allocation loop with its collections 2,373.4
+  instructions an iteration, 2,355.3 after (GNU 2,461.2), without
+  collections 2,200.7 to 2,195.5 (2,110.2); `make-symbol' 1,273.1 to
+  1,221.8 (1,965.1); `make-vector' 1,320.8 to 1,248.8 (1,596.5); a
+  float 613.4 to 588.6 (656.5); interning a new name 4,396.0 to
+  4,331.3 (2,552.4) and reading an uninterned one 3,376.2 to 3,274.8
+  (4,250.1); `looking-at' 1,130.6 to 1,128.6 and the call and
+  interpreter guards at or within half an instruction of their counts
+  before; on round 387's base, where the commits were first measured,
+  a `let' of `inhibit-quit' 360.6 to 351.6 and `put' one padding
+  instruction over (435.6 to 436.6); the byte-code loop's
+  code 1,280 bytes smaller, its eleven inlined allocations the pop or
+  bump, the counters, the cell and one bit.  The serial's removal alone
+  had cost the byte-code loop three instructions an iteration (the
+  lazy clearing's branch grew at each inlined allocation); none of five
+  ways of moving that branch out of line recovered them, and removing
+  the mechanism did.  The independent review (the one question: does
+  the round cheat or break something) read every path that sets or
+  clears a mark, and ran a 6,000-object heap of every kind through 200
+  collections, explicit and by threshold, with weak tables of each
+  weakness, finalizers that cons and resurrect, threads, timers and
+  process filters consing, killed buffers and reused addresses, with
+  the collector's own verifier on, and the same after a dump and a
+  load, on GNU, the build before and this one: no corruption, the
+  same answers, and collections falling where they fell before.  It
+  found no cheat and nothing broken, and a second reading, of the
+  guard alone, found the same.  A third, of the scan's two commits,
+  checked the bound for each kind of thread and stack, counted the
+  thread-locals that hold a Lisp word inline (the one above was the
+  only one the wide scan alone kept), and ran the collecting library
+  tests with the verifier on and threads collecting beside parked ones
+  on GNU, the build before and this one: no cheat, nothing broken.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,663 passed, 0 failed, 2 ignored (eight
+  library tests more); cli 30, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 1, package_lifecycle 5,
+  runtime_ownership 4; cli_parity 186 of 187 in the first run and 187
+  of 187 when run again whole.  The one failure was GNU's own answer:
+  in the case of a process made in a Lisp thread, GNU's child was not
+  reaped within the case's 0.7 s on the loaded machine, where GNU and
+  the builds of rounds 390, 391 and this one each give the usual
+  answer in 16 of 16 runs.  Clippy `-D warnings' and rustfmt clean.
+  The round audit reports no hard finding, 2,732 changed lines with 8
+  tests and 93 assertions added and 63 assertions removed or changed:
+  the conversions named above (the serial's and the mark-only tests')
+  and the four assertions of the marker's internals.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24461,6 +24573,20 @@ ert-tests as a whole 26,307 ms against 27,211.
   decide.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 392 and its review), the first
+  for the next round and the rest outside it.**  One line each: Lisp
+  words held in the Rust heap that no collection marks, in the binary
+  as in tests (the search cache's syntax tables, the syntax scan's
+  state, the echo area's face spans, the input events the tty frontend
+  has queued; GNU staticpros or marks each): the next round's subject;
+  after objects are freed the free count of symbols rises here and not
+  in GNU, which gives a wholly free symbol block back to the system
+  (the counts' values differ between the two as their blocks do); the
+  test of a collection refused for a borrowed string proves that
+  nothing was marked by the epoch alone, which conses, floats and
+  vectors no longer have; a failed debug assertion inside a collection
+  now ends the whole test process; the check that nothing is allocated
+  between the mark and the sweep is in debug builds only.
 - **Found after the scope lock (round 391 and its review), within the
   plan's later stages or outside the round.**  One line each: the gate
   of the helpers' frames reads text, so a `drop' in a branch never
