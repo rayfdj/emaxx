@@ -1172,6 +1172,13 @@ impl<'a, 'r> Scanner<'a, 'r> {
         if self.interp.quit_check_clear() {
             return Ok(());
         }
+        self.process_quit()
+    }
+
+    /// maybe_quit's handler, out of the scan's way.
+    #[cold]
+    #[inline(never)]
+    fn process_quit(&mut self) -> Result<(), LispError> {
         self.call_lisp(|interp, env| interp.maybe_quit(env))
     }
 

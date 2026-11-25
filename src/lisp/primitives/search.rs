@@ -753,8 +753,17 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
         if self.interp.quit_check_clear() {
             return Ok(());
         }
+        self.process_quit()
+    }
+}
+
+impl LispMatchEnv<'_, '_> {
+    /// maybe_quit's handler, out of the matcher's way: it runs with the
+    /// text kept and the match's gl_state a root.
+    #[cold]
+    #[inline(never)]
+    fn process_quit(&mut self) -> Result<(), LispError> {
         self.keep_text();
-        // Its handler runs with the match's gl_state a root.
         match self.gl.as_deref() {
             Some(gl) => {
                 let env = &mut *self.env;
