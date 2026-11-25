@@ -98,10 +98,11 @@ COMPAT_RUNTIME_GROUP = GroupSpec(
     "compat_runtime", COMPAT_RUNTIME_PREFIX, True, 1
 )
 TTY_GROUP = GroupSpec("tty", TTY_PREFIX, True, 1)
-# One test thread in every group: the Lisp allocator and collector are
-# the process's, as alloc.c's are, and presume one Lisp OS thread at a
-# time (a second interpreter running concurrently would allocate from
-# the same free list and have its cells swept from under it).
+# One test thread in every group, for scheduling: the groups' tests run
+# Lisp, which serializes on the runtime (GNU's global_lock, which a
+# test's thread holds until it exits), so a second worker in a group
+# would only wait for it and set off libtest's 60-second warnings.  More
+# threads are sound (docs/testing.md).
 BATCH_GROUP = GroupSpec("batch", BATCH_PREFIX, False, 1)
 LIGHTWEIGHT_GROUP = GroupSpec("lightweight", None, False, 1)
 

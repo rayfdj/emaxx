@@ -7,7 +7,9 @@ grouped_gate's policy; its inventory, selectors and outcome checks are retained.
 import dataclasses
 import grouped_gate as gate
 # Keep all official inventory, selectors, template flags and result checks.
-# Serialize both processes and libtest workers for this publication gate.
+# Serialize both processes and libtest workers for this publication gate:
+# the frozen run times it on the gate build (D31).  The schedule is for
+# that timing, not for soundness (docs/testing.md).
 gate.LIB_PHASES = tuple((dataclasses.replace(group, test_threads=1),)
                         for phase in gate.LIB_PHASES for group in phase)
 gate.EVAL_PHASES = tuple((dataclasses.replace(group, test_threads=1),)
