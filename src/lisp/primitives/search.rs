@@ -27,18 +27,19 @@ struct CacheEntry {
     posix: bool,
     /// `search-spaces-regexp' when the pattern was compiled.
     whitespace: Option<(Vec<u8>, bool)>,
-    /// The syntax table whose contents the pattern holds (`[:space:]',
-    /// `[:word:]'), as GNU's `syntax_table' field.
-    syntax_table: Option<CharTableRef>,
     pattern: Pattern,
 }
 
-/// A cell of searchbufs: its compiled pattern, if any, and the next cell
-/// in most-recently-used order.  A busy cell's pattern is lent to the
-/// search running it (GNU's `busy'), so a search Lisp code runs inside
-/// the matcher compiles its own copy into another cell.
+/// A cell of searchbufs: its compiled pattern, if any, the syntax table
+/// whose contents the pattern holds (`[:space:]', `[:word:]'), and the
+/// next cell in most-recently-used order.  A busy cell's pattern is lent
+/// to the search running it (GNU's `busy'), so a search Lisp code runs
+/// inside the matcher compiles its own copy into another cell; the cell
+/// keeps the table, as GNU's staticpro'd searchbufs[i].syntax_table, a
+/// root of every collection whether the cell is busy or not.
 struct SearchBuf {
     entry: Option<Box<CacheEntry>>,
+    syntax_table: Option<CharTableRef>,
     busy: bool,
     next: Option<u8>,
 }
@@ -811,12 +812,12 @@ fn compile_pattern(
         .map(|(bytes, multibyte, _)| (bytes, multibyte));
     let syntax_table = menv.syntax_table;
 
-    let matches = |entry: &CacheEntry| {
+    let matches = |entry: &CacheEntry, table: Option<CharTableRef>| {
         same_bytes(&entry.regexp, bytes)
             && entry.multibyte == multibyte
             && entry.translate == translate
             && entry.posix == posix
-            && entry.syntax_table.is_none_or(|table| table == syntax_table)
+            && table.is_none_or(|table| table == syntax_table)
             && match (&entry.whitespace, whitespace_bytes) {
                 (None, None) => true,
                 (Some((saved, saved_multibyte)), Some((now, now_multibyte))) => {
@@ -835,6 +836,7 @@ fn compile_pattern(
             cache.cells = (0..REGEXP_CACHE_SIZE)
                 .map(|index| SearchBuf {
                     entry: None,
+                    syntax_table: None,
                     busy: false,
                     next: (index + 1 < REGEXP_CACHE_SIZE).then_some((index + 1) as u8),
                 })
@@ -853,7 +855,7 @@ fn compile_pattern(
                         chosen = Some((previous, index, false));
                         break;
                     }
-                    Some(entry) if matches(entry) => {
+                    Some(entry) if matches(entry, cell.syntax_table) => {
                         chosen = Some((previous, index, true));
                         break;
                     }
@@ -923,7 +925,6 @@ fn compile_pattern(
             entry.translate = translate;
             entry.posix = posix;
             entry.whitespace = whitespace;
-            entry.syntax_table = syntax_table;
             entry.pattern = pattern;
             entry
         }
@@ -933,10 +934,11 @@ fn compile_pattern(
             translate,
             posix,
             whitespace,
-            syntax_table,
             pattern,
         }),
     };
+    SEARCHBUFS
+        .with(|cache| cache.borrow_mut().cells[usize::from(cell)].syntax_table = syntax_table);
     Ok(LentPattern {
         entry: std::mem::ManuallyDrop::new(entry),
         cell,
@@ -949,14 +951,20 @@ fn compile_pattern(
 pub(crate) fn clear_regexp_cache() {
     SEARCHBUFS.with(|cache| {
         for cell in &mut cache.borrow_mut().cells {
-            if !cell.busy
-                && cell
-                    .entry
-                    .as_ref()
-                    .is_some_and(|entry| entry.syntax_table.is_some())
-            {
+            if !cell.busy && cell.entry.is_some() && cell.syntax_table.is_some() {
                 cell.entry = None;
+                cell.syntax_table = None;
             }
+        }
+    });
+}
+
+/// syms_of_search's staticpro of each searchbufs[i].syntax_table: the
+/// cache's tables, marked by every collection on this thread.
+pub(crate) fn mark_regexp_cache(mark: &mut dyn FnMut(&Value)) {
+    SEARCHBUFS.with_borrow(|cache| {
+        for table in cache.cells.iter().filter_map(|cell| cell.syntax_table) {
+            mark(&Value::CharTable(table));
         }
     });
 }
@@ -966,10 +974,13 @@ fn release_pattern(lent: LentPattern) {
     drop(lent);
 }
 
-/// CELL holds ENTRY again and is not busy.
+/// CELL holds ENTRY again and is not busy; with none, no table either.
 fn release_cell(cell: u8, entry: Option<Box<CacheEntry>>) {
     let _ = SEARCHBUFS.try_with(|cache| {
         let cell = &mut cache.borrow_mut().cells[usize::from(cell)];
+        if entry.is_none() {
+            cell.syntax_table = None;
+        }
         cell.entry = entry;
         cell.busy = false;
     });
@@ -2484,4 +2495,80 @@ pub(crate) fn release_thread_state() {
             *bufs = SearchBufs::default();
         }
     });
+}
+
+#[cfg(test)]
+mod cache_root_tests {
+    use super::*;
+    use crate::test_support::{eval_lisp, initialized_upstream_batch_interpreter};
+
+    // Each step runs in a frame of its own, the stack below the test
+    // cleared before the collection that decides, so that no stale word
+    // keeps the witnessed table: only what the editor holds does.
+    #[inline(never)]
+    fn lisp(interp: &mut Interpreter, env: &mut Env, source: &str) -> Value {
+        eval_lisp(interp, env, source).expect("evaluate the test's Lisp")
+    }
+
+    /// A match in progress, its pattern lent from the cache, whose quit
+    /// check runs the debugger: it collects there.
+    #[inline(never)]
+    fn collect_in_a_match(interp: &mut Interpreter, env: &mut Env, at: usize) {
+        crate::lisp::alloc::clobber_stack();
+        // SAFETY: nothing runs Lisp before the quit check keeps the text.
+        let snapshot = unsafe { BufferSnapshot::take(interp) };
+        interp.set_symbol_value_key(cached_symbol!("quit-flag"), Value::T);
+        let mut menv = LispMatchEnv::new(interp, env, None);
+        menv.reads(&snapshot);
+        menv.setup_syntax(at);
+        let lent = compile_pattern(&mut menv, &Value::string("q[[:word:]]"), false)
+            .expect("compile the match's pattern");
+        assert!(menv.maybe_quit().is_ok(), "the debugger returned");
+        release_pattern(lent);
+    }
+
+    #[test]
+    fn a_cached_pattern_s_syntax_table_lives_through_a_match_s_collection() {
+        // search.c staticpros searchbufs[i].syntax_table: a pattern that
+        // read its syntax table holds it while cached, and a collection
+        // in another match (its debugger, here) keeps the table, which
+        // nothing else holds.
+        let mut interp = initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (setq cache-witness (make-hash-table :test 'eq :weakness 'key))
+                 (let ((table (make-syntax-table)))
+                   (modify-syntax-entry ?x " " table)
+                   (puthash table t cache-witness)
+                   (with-syntax-table table (string-match "[[:space:]]" "x")))
+                 (set-buffer (get-buffer-create "cache root"))
+                 (insert "abc")
+                 (setq debug-on-quit t
+                       debugger (lambda (&rest _)
+                                  (garbage-collect)
+                                  (setq cache-seen (hash-table-count cache-witness))
+                                  nil)))"#,
+        );
+        collect_in_a_match(&mut interp, &mut env, 0);
+        crate::lisp::alloc::clobber_stack();
+        assert_eq!(
+            lisp(&mut interp, &mut env, "cache-seen"),
+            Value::Integer(1),
+            "the cached pattern's table lived through the collection"
+        );
+        assert_eq!(
+            lisp(
+                &mut interp,
+                &mut env,
+                r#"(let (table)
+                     (maphash (lambda (key _) (setq table key)) cache-witness)
+                     (with-syntax-table table (char-syntax ?x)))"#,
+            ),
+            Value::Integer(i64::from(b' ')),
+            "and it is intact"
+        );
+    }
 }

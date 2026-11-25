@@ -521,12 +521,14 @@ fn call_with_facts_general(
 
 /// The thread's Lisp values held outside any interpreter (xdisp.c's
 /// staticpro'd echo area; the include-tag cache; read_char's local kept
-/// between the steps of a read): roots of every collection.
+/// between the steps of a read; search.c's staticpro'd regexp cache):
+/// roots of every collection.
 pub(crate) fn mark_thread_local_roots(mark: &mut dyn FnMut(&Value)) {
     crate::lisp::eval::terminal::mark_frame_route(mark);
     crate::lisp::types::mark_interned_symbol_roots(mark);
     display::mark_echo_area_roots(mark);
     super::interactive::mark_read_char_roots(mark);
+    super::search::mark_regexp_cache(mark);
 }
 
 /// decode_live_frame for the primitives outside dispatch: nil the
