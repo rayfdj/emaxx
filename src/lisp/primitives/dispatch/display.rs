@@ -8290,14 +8290,22 @@ pub(super) fn direct_following_char(
     Ok(following_char(interp))
 }
 
-/// The echo area's Lisp value, a root of every collection (xdisp.c
-/// staticpros `echo_area_buffer').
+/// The echo area's Lisp value and the faces of the messages it shows and
+/// last showed, roots of every collection: xdisp.c staticpros
+/// `echo_area_buffer' (both), whose text keeps its face properties.
 pub(crate) fn mark_echo_area_roots(mark: &mut dyn FnMut(&Value)) {
     ECHO_AREA_MESSAGE_VALUE.with_borrow(|value| {
         if let Some(value) = value {
             mark(value);
         }
     });
+    for message in [&ECHO_AREA_MESSAGE, &ECHO_AREA_LAST_DISPLAYED] {
+        message.with_borrow(|message| {
+            for (_, _, face) in message.iter().flat_map(|(_, spans)| spans) {
+                mark(face);
+            }
+        });
+    }
 }
 
 /// keymap.c Fkey_description: the single-key descriptions of PREFIX and
@@ -8923,6 +8931,75 @@ mod tests {
                 "detached={detached}"
             );
         }
+        set_echo_area_message(None);
+    }
+}
+
+#[cfg(test)]
+mod echo_root_tests {
+    use super::*;
+    use crate::test_support::{eval_lisp, initialized_upstream_batch_interpreter};
+
+    #[inline(never)]
+    fn lisp(interp: &mut Interpreter, env: &mut Env, source: &str) -> Value {
+        eval_lisp(interp, env, source).expect("evaluate the test's Lisp")
+    }
+
+    /// message3 shows a message whose face nothing else holds, and
+    /// read_char's input-arrival wipe empties the current message: the
+    /// last displayed one stays, for redisplay_preserve_echo_area.
+    #[inline(never)]
+    fn show_and_wipe(interp: &mut Interpreter, env: &mut Env) {
+        let message = lisp(
+            interp,
+            env,
+            r#"(let ((face (list :foreground "red")))
+                 (puthash face t echo-witness)
+                 (propertize "hi" 'face face))"#,
+        );
+        set_echo_area_message_value(message).expect("show the message");
+        expire_echo_area_message();
+    }
+
+    #[test]
+    fn the_last_displayed_message_s_face_lives_through_a_collection() {
+        // xdisp.c staticpros echo_area_buffer[0..1], whose text keeps its
+        // properties: the face of the message last shown lives while the
+        // echo area may show it again.
+        let mut interp = initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            "(setq echo-witness (make-hash-table :test 'eq :weakness 'key))",
+        );
+        show_and_wipe(&mut interp, &mut env);
+        crate::lisp::alloc::clobber_stack();
+        assert_eq!(
+            lisp(
+                &mut interp,
+                &mut env,
+                "(progn (garbage-collect) (hash-table-count echo-witness))"
+            ),
+            Value::Integer(1),
+            "the shown face lived through the collection"
+        );
+        let face = ECHO_AREA_LAST_DISPLAYED
+            .with_borrow(|slot| {
+                slot.as_ref()
+                    .and_then(|(_, spans)| spans.first().map(|s| s.2))
+            })
+            .expect("the last displayed message keeps its face");
+        interp.set_global_binding("echo-face", face);
+        assert_eq!(
+            lisp(
+                &mut interp,
+                &mut env,
+                r#"(equal echo-face '(:foreground "red"))"#
+            ),
+            Value::T,
+            "and it is intact"
+        );
         set_echo_area_message(None);
     }
 }
