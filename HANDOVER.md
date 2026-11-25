@@ -217,6 +217,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   execution lock is gone, helper threads start with the process's
   signals blocked, and a native helper signals from a frame that owns
   nothing; a frame further up that owns storage is still jumped over.
+  Round 393, outside the plan's stages: Lisp words held in the Rust
+  heap that no collection marked (the regexp cache's syntax tables,
+  gl_state, the echo area's faces, the tty's waiting events, the
+  symbols `mapatoms' has still to visit) are roots.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -21031,6 +21035,87 @@ setup_process_coding_systems's check now refuses). A 13-form
   tests and 93 assertions added and 63 assertions removed or changed:
   the conversions named above (the serial's and the mark-only tests')
   and the four assertions of the marker's internals.
+- **Round 393: Lisp words the collector never marked (M2, the
+  lifetimes of A2.5; none closed).**  **The hole**: Lisp objects held
+  in the Rust heap, behind a box, a vector or a reference count, were
+  reached by no mark, in the binary as in the tests; only another
+  reference kept each alive, and a collection at the wrong moment
+  freed an object still in use.  GNU staticpros or marks each of
+  them.  **Now roots**: the regexp cache's syntax tables (search.c
+  staticpros searchbufs' syntax_table); the kept gl_state's objects
+  (syntax.c staticpros gl_state.object, global_code,
+  current_syntax_table and old_prop), and a gl_state in use, around
+  each Lisp call its scan or match makes (the syntax-propertize call,
+  a word-boundary function, a quit's handler or debugger); the faces
+  of the echo area's two messages (GNU keeps the echo area in two
+  buffers it staticpros; here they are spans beside the text, and the
+  echo area as buffers is the display work's, D60 and D122); the Lisp
+  events waiting in the tty's keyboard buffer, which mark_kboards
+  marks in GNU; and the symbols `mapatoms' has still to visit: its
+  walk held a snapshot of the obarray, and a symbol uninterned during
+  the walk and collected was handed to the function freed.  **Cost**:
+  marking is collection work only, 530 instructions more in an
+  explicit collection of 27.2 million.  Two costs on the way were
+  taken back in commits of their own: rooting the state inside the
+  matcher's quit check cost `looking-at' 60 instructions a call until
+  the handler moved out of line, and keeping the table on the cache's
+  cell cost `string-match' 7 until it went back into the entry.
+  **Counts** (before = round 392's build): `looking-at' 1,128.6 to
+  1,127.6, `string-match' 1,251.6 unchanged, `re-search-forward'
+  1,972.6 to 1,973.6, `forward-sexp' 3,104.6 to 3,102.6 and 4,719.6 to
+  4,717.6 with syntax properties, `skip-syntax-forward' 1,593.6 and a
+  byte-compiled `mapatoms' 341.1 unchanged, the cons loop 2,355.3
+  unchanged.  **Evidence**: each of the five tests forces a collection
+  at the moment its object is held only there, with the collector's
+  verifier on, and failed before its fix; from Lisp, on the build
+  before, `mapatoms' handed its function a freed symbol; the others
+  have no reproduction in a batch run (no dead table's address was
+  reused in 2,000 tries of the cache's case).  **Lisp sees nothing
+  change** but that case; `mapatoms' still visits a symbol uninterned
+  during its walk, which GNU does not.  **Still to do, the next
+  round**: the completion functions' walk of the standard obarray
+  holds the same snapshot; a second terminal's waiting events are in a
+  plain vector while `delete-terminal' runs Lisp; eleven places where
+  a vector of Lisp words outlives a call into Lisp are to be read one
+  by one; and the walks themselves become GNU's, in place over the
+  obarray's buckets, which also ends the difference above.  The
+  independent review (the one question: does the round cheat or break
+  something) read each root for completeness and for marks of freed
+  objects, sent C-g through a terminal into a long match and a long
+  scan (plain, with `debug-on-quit', with a debugger that collects,
+  under `inhibit-quit'), changed syntax tables under the cache, and
+  walked obarrays whose function uninterns and collects, on GNU, the
+  build before and this one: no cheat and nothing broken.  On a
+  private obarray whose 200 symbols the function uninterns, the build
+  before printed corrupt names or died asking for 140 terabytes, and
+  this one prints the names.  It found the record of one test wrong:
+  the log that showed the gl_state test failing before its fix was of
+  an earlier version of the test.  The test did fail without the fix,
+  and it is rewritten in the round so that the table is held by the
+  state in use alone, its setup in a frame of its own that is cleared
+  before the collection: it fails twice without the rooting and passes
+  twice with it.  **Two parity cases were races of GNU's own**, and
+  one failed once in this round's validation: a pty child that answers
+  and exits had its output read when a loop of `process-live-p' and
+  `accept-process-output' ended, which can be before the child's last
+  output was read.  Under six busy loops GNU lost the output in 12 and
+  11 of 25 runs, and the builds of rounds 391 and 393 in 11 and 14.
+  One more wait on the exited process reads what it left, in GNU as
+  here (wait_reading_process_output reads what a process that is no
+  longer running has left), and with it each prints the output in 25
+  of 25 runs under the same load.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,668 passed, 0 failed, 2 ignored (five
+  library tests more), and its lightweight group again, 742 passed,
+  after the gl_state test was rewritten; cli 30, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 4; cli_parity 186 of 187 in
+  the first run, its one failure the parity case above, and 187 of 187
+  when run again whole at the commit that rewrites the two cases;
+  clippy `-D warnings' and rustfmt clean.  The round audit reports no
+  hard finding, 594 changed lines with 5 tests and 12 assertions
+  added; its one note of a dropped result is the scanner's call of
+  `internal--syntax-propertize', which was there and is only moved.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24590,6 +24675,18 @@ ert-tests as a whole 26,307 ms against 27,211.
   decide.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 393 and its review), the first
+  three for the next round and the rest outside it.**  One line each:
+  the completion functions' walk of the standard obarray holds a
+  snapshot as `mapatoms'' did; a second terminal's waiting events are
+  in a plain vector while `delete-terminal' runs Lisp; eleven places
+  where a vector of Lisp words outlives a call into Lisp are to be read
+  one by one; `mapatoms' differs from GNU both ways in what its walk
+  visits (a symbol uninterned during the walk is still visited, one
+  interned during it is not), as before the round; the regexp cache
+  finds a pattern by its case table's address, which a new table could
+  reuse, as GNU's unprotected `translate' can; the echo area is spans
+  beside a string and not GNU's two buffers (D60, D122).
 - **Found after the scope lock (round 392 and its review), the first
   for the next round and the rest outside it.**  One line each: Lisp
   words held in the Rust heap that no collection marks, in the binary
