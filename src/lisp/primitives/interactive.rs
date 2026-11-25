@@ -119,7 +119,7 @@ const PROCESS_FATAL_SIGNALS: [libc::c_int; 4] =
 /// The signals init_signals gives thread_fatal_action (SIGSEGV through
 /// init_sigsegv's handler): a fault of the thread they arrive on.
 #[cfg(unix)]
-const THREAD_FATAL_SIGNALS: [libc::c_int; 7] = [
+pub(crate) const THREAD_FATAL_SIGNALS: [libc::c_int; 7] = [
     libc::SIGILL,
     libc::SIGTRAP,
     libc::SIGFPE,

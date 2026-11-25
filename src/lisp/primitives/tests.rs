@@ -40389,3 +40389,57 @@ fn rust_bindings_are_undone_by_unbind_to_their_depth() {
     );
     assert_eq!(interp.specpdl_index(), base);
 }
+
+#[cfg(target_os = "linux")]
+#[test]
+fn helper_threads_block_process_signals() {
+    // A host helper thread blocks the signals a process receives, so they
+    // go to a thread that runs Lisp (sysdep.c:deliver_process_signal),
+    // and leaves a thread's own faults to deliver_fatal_thread_signal.
+    fn blocked() -> u64 {
+        let status =
+            fs::read_to_string("/proc/thread-self/status").expect("read the thread's status");
+        let mask = status
+            .lines()
+            .find_map(|line| line.strip_prefix("SigBlk:"))
+            .expect("the thread's blocked signals");
+        u64::from_str_radix(mask.trim(), 16).expect("a hexadecimal mask")
+    }
+    let bit = |signal: libc::c_int| 1u64 << (signal - 1);
+    let before = blocked();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    crate::lisp::primitives::spawn_helper_thread("signal-mask-probe", move || {
+        sender.send(blocked()).expect("report the helper's mask");
+    })
+    .expect("spawn a helper thread")
+    .join()
+    .expect("the helper thread");
+    let helper = receiver.recv().expect("the helper's mask");
+    for signal in [
+        libc::SIGCHLD,
+        libc::SIGALRM,
+        libc::SIGPROF,
+        libc::SIGIO,
+        libc::SIGINT,
+        libc::SIGTERM,
+        libc::SIGHUP,
+        libc::SIGWINCH,
+        libc::SIGUSR1,
+        libc::SIGUSR2,
+        libc::SIGPIPE,
+    ] {
+        assert_ne!(
+            helper & bit(signal),
+            0,
+            "signal {signal} reaches the helper"
+        );
+    }
+    for signal in crate::lisp::primitives::THREAD_FATAL_SIGNALS {
+        assert_eq!(
+            helper & bit(signal),
+            0,
+            "the helper blocks its fault {signal}"
+        );
+    }
+    assert_eq!(blocked(), before, "the caller's own mask is as it was");
+}

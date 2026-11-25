@@ -1157,12 +1157,47 @@ pub(crate) fn call_process(
 /// record_deleted_pid: CHILD, which nothing waits for, reaped whenever it
 /// exits, and TEMPFILE removed then.
 fn reap_deleted_child(mut child: SpawnedChild, tempfile: Option<CallProcessTempFile>) {
-    let _ = std::thread::Builder::new()
-        .name("process-reaper".into())
-        .spawn(move || {
-            let _ = child.wait();
-            drop(tempfile);
-        });
+    let _ = spawn_helper_thread("process-reaper", move || {
+        let _ = child.wait();
+        drop(tempfile);
+    });
+}
+
+/// A helper thread of the host's, running BODY, made with the signals a
+/// process receives blocked, as glibc makes its own helpers
+/// (gai_misc.c:__gai_create_helper_thread blocks them around
+/// pthread_create): a process signal then goes to a thread that runs
+/// Lisp, where sysdep.c:deliver_process_signal has it handled, and not
+/// to a helper that may be about to exit.  The faults a thread makes
+/// itself (init_signals' thread_fatal_action signals) stay unblocked, for
+/// deliver_fatal_thread_signal.  The calling thread's own mask is back as
+/// it was once the helper exists; the helper keeps the blocked one.
+pub(crate) fn spawn_helper_thread(
+    name: &str,
+    body: impl FnOnce() + Send + 'static,
+) -> std::io::Result<std::thread::JoinHandle<()>> {
+    #[cfg(unix)]
+    // SAFETY: the sets are this frame's; pthread_sigmask changes only the
+    // calling thread's mask, put back below.
+    let previous = unsafe {
+        let mut blocked: libc::sigset_t = std::mem::zeroed();
+        let mut previous: libc::sigset_t = std::mem::zeroed();
+        libc::sigfillset(&mut blocked);
+        for fault in super::interactive::THREAD_FATAL_SIGNALS {
+            libc::sigdelset(&mut blocked, fault);
+        }
+        libc::pthread_sigmask(libc::SIG_BLOCK, &blocked, &mut previous);
+        previous
+    };
+    let spawned = std::thread::Builder::new()
+        .name(name.to_owned())
+        .spawn(body);
+    #[cfg(unix)]
+    // SAFETY: the mask this thread had before the spawn.
+    unsafe {
+        libc::pthread_sigmask(libc::SIG_SETMASK, &previous, std::ptr::null_mut());
+    }
+    spawned
 }
 
 /// call_process_cleanup, leaving call_process before the child's end: its
@@ -4382,12 +4417,14 @@ fn start_dns_request(
     let slot = std::sync::Arc::new(std::sync::Mutex::new(None));
     let answer = std::sync::Arc::clone(&slot);
     let (lookup_host, lookup_service) = (host.to_vec(), service.to_vec());
-    std::thread::spawn(move || {
+    // getaddrinfo_a's helper thread, with glibc's signal mask.
+    spawn_helper_thread("getaddrinfo", move || {
         let result = getaddrinfo_addresses(&lookup_host, &lookup_service, family, socktype);
         if let Ok(mut slot) = answer.lock() {
             *slot = Some(result);
         }
-    });
+    })
+    .expect("start a getaddrinfo helper thread");
     let host = host.split(|byte| *byte == 0).next().unwrap_or_default();
     crate::lisp::eval::DnsRequest {
         host: host.to_vec(),

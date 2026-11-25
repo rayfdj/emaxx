@@ -2660,6 +2660,57 @@ pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
     );
 }
 
+/// A thread the runtime starts is a host helper made by
+/// `processes::spawn_helper_thread', with the signals a process receives
+/// blocked as glibc blocks them in its own helpers, so they go to a thread
+/// that runs Lisp (sysdep.c:deliver_process_signal).  This checks, on the
+/// runtime's sources with comments and literals removed (test modules and
+/// test files left out), that no other function calls `thread::spawn',
+/// `thread::Builder' or `thread::scope'.  It does not see a spawn through a
+/// renamed import or a crate that spawns threads of its own.
+pub(crate) fn runtime_threads_start_with_process_signals_blocked() {
+    let spawn = regex::Regex::new(r"\bthread\s*::\s*(?:spawn|Builder|scope)\b")
+        .expect("compile spawn pattern");
+    let root = repo_root();
+    let mut violations = Vec::new();
+    let mut helper_found = false;
+    for path in rust_files_below("src") {
+        let relative = path
+            .strip_prefix(root)
+            .expect("a source below the repository")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative.starts_with("src/bin/")
+            || relative.ends_with("/tests.rs")
+            || relative.ends_with("_tests.rs")
+            || relative.contains("/tests/")
+            || relative == "src/test_support.rs"
+            || relative == "src/anti_cheat.rs"
+        {
+            continue;
+        }
+        let text = without_test_modules(&code_only(
+            &fs::read_to_string(&path).expect("read a runtime source"),
+        ));
+        let helper = text
+            .find("pub(crate) fn spawn_helper_thread(")
+            .and_then(|at| balanced_block(&text, at).map(|body| (at, at + body.len())));
+        helper_found |= helper.is_some() && relative == "src/lisp/primitives/processes.rs";
+        for found in spawn.find_iter(&text) {
+            if helper.is_some_and(|(start, end)| start < found.start() && found.start() < end) {
+                continue;
+            }
+            let line = text[..found.start()].matches('\n').count() + 1;
+            violations.push(format!("{relative}:{line}: {}", found.as_str()));
+        }
+    }
+    assert!(helper_found, "processes.rs's spawn_helper_thread");
+    assert!(
+        violations.is_empty(),
+        "threads the runtime starts without spawn_helper_thread: {violations:#?}"
+    );
+}
+
 /// pdumper.c:dump_roots visits every staticpro'd slot.  Every root the
 /// mark phase visits (the `self.<field>' references of the root-marking
 /// function) must be written by the image (`dump_root_values' or
@@ -3099,6 +3150,10 @@ fn enforce_all_owned() -> Result<(), Vec<String>> {
             thread_locals_are_released_with_the_runtime_or_per_os_thread as fn(),
         ),
         (
+            "runtime_threads_start_with_process_signals_blocked",
+            runtime_threads_start_with_process_signals_blocked as fn(),
+        ),
+        (
             "gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration",
             gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration as fn(),
         ),
@@ -3239,6 +3294,11 @@ mod gate_tests {
     #[test]
     fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
         super::thread_locals_are_released_with_the_runtime_or_per_os_thread();
+    }
+
+    #[test]
+    fn runtime_threads_start_with_process_signals_blocked() {
+        super::runtime_threads_start_with_process_signals_blocked();
     }
 
     #[test]
