@@ -5512,9 +5512,15 @@ fn the_review_of_round_333_is_answered_as_gnu_answers() {
   (message "pipe proc %S" (set-process-window-size p 10 20)) (delete-process p))
 (let ((p (make-network-process :name "q2g" :server t :service t :host 'local)))
   (message "server %S" (set-process-window-size p 10 20)) (delete-process p))
+;; Polled without a wait, so `process-live-p' sees the exit before
+;; anything notifies it and the descriptor is still open; the wait
+;; then notifies the exit, which closes it.  A poll that waited made
+;; the first answer depend on when SIGCHLD arrived, in GNU as here.
 (let ((p (make-process :name "q2h" :command '("true") :connection-type 'pty)))
-  (while (process-live-p p) (accept-process-output p 0.05))
-  (message "exited pty child %S" (set-process-window-size p 10 20)))
+  (while (process-live-p p))
+  (message "exited pty child %S" (set-process-window-size p 10 20))
+  (accept-process-output nil 0.1)
+  (message "notified pty child %S" (set-process-window-size p 10 20)))
 (let ((p (make-process :name "q2i" :command '("sleep" "3") :connection-type 'pty)))
   (delete-process p)
   (message "deleted pty child %S" (set-process-window-size p 10 20))))"##,
