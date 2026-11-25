@@ -567,6 +567,31 @@ def run_phase(
     return records
 
 
+def cargo_stages(
+    cargo_targets: dict[str, list[str]],
+) -> list[tuple[str, tuple[str, ...], int]]:
+    """The full scope's cargo stages after the groups: the binaries' unit
+    tests, the integration targets, and the library's doctests (the
+    compile_fail proofs that a Runtime cannot cross threads, each beside a
+    passing test of the same shape)."""
+    integration_arguments = tuple(
+        argument
+        for target in cargo_targets["integrations"]
+        for argument in ("--test", target)
+    )
+    return [
+        ("bins", ("--bins",), len(cargo_targets["bins"])),
+        (
+            "integration",
+            integration_arguments,
+            len(cargo_targets["integrations"]),
+        ),
+        # rustdoc reports the merged doctests and the compile_fail ones
+        # apart, one result each.
+        ("doc", ("--doc",), 2),
+    ]
+
+
 def run_cargo_stage(
     name: str,
     arguments: Sequence[str],
@@ -801,19 +826,7 @@ def main(argv: Sequence[str] | None = None) -> int:
             cargo_targets = discover_cargo_test_targets(artifact_root)
             summary["cargo_test_targets"] = cargo_targets
             write_summary(summary_path, summary)
-            integration_arguments = tuple(
-                argument
-                for target in cargo_targets["integrations"]
-                for argument in ("--test", target)
-            )
-            for name, arguments, expected_results in (
-                ("bins", ("--bins",), len(cargo_targets["bins"])),
-                (
-                    "integration",
-                    integration_arguments,
-                    len(cargo_targets["integrations"]),
-                ),
-            ):
+            for name, arguments, expected_results in cargo_stages(cargo_targets):
                 summary["cargo_stages"].append(
                     run_cargo_stage(
                         name,

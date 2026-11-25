@@ -163,7 +163,10 @@ extern "C" fn main(_argc: libc::c_int, _argv: *const *const libc::c_char) -> ! {
 
 fn main_status() -> u8 {
     emaxx::lisp::init_standard_fds();
-    match try_main() {
+    // emacs.c:main's init_threads: the main thread holds the runtime from
+    // here, before any Lisp (uncontended, a compare-and-swap).
+    let runtime = emaxx::Runtime::lock();
+    match try_main(&runtime) {
         Ok(code) => code,
         Err(error) => {
             emaxx::errprintln!("{error}");
@@ -280,7 +283,7 @@ fn leading_option_value(argv: &[String], sstr: &str, lstr: &str, minlen: usize) 
     None
 }
 
-fn try_main() -> Result<u8, String> {
+fn try_main(runtime: &emaxx::Runtime) -> Result<u8, String> {
     emaxx::tune_allocator();
     let mut argv = std::env::args_os()
         .map(|arg| {
@@ -341,7 +344,7 @@ fn try_main() -> Result<u8, String> {
     .is_some()
         && !only_version
     {
-        if batch::startup_image_loads(dump_file.as_deref()) {
+        if batch::startup_image_loads(runtime, dump_file.as_deref()) {
             emaxx::lisp::write_standard_output(
                 format!("{}\n", batch::executable_fingerprint_hex()).as_bytes(),
             );
@@ -557,7 +560,7 @@ fn try_main() -> Result<u8, String> {
     // have exited and before `--version' prints.
     emaxx::lisp::set_initial_argv();
     if only_version {
-        match batch::version_banner(dump_file.as_deref()) {
+        match batch::version_banner(runtime, dump_file.as_deref()) {
             Ok(report) => {
                 // emacs.c's printf calls: the version line, the
                 // development line when there is one, and the five lines
@@ -593,15 +596,20 @@ fn try_main() -> Result<u8, String> {
     #[cfg(unix)]
     emaxx::lisp::init_process_nofile_limit();
     if noninteractive {
-        return batch::run_batch_process_with_large_stack(options, |outcome| match outcome {
-            BatchRunOutcome::Exit(code) => exit_flushing(code),
-            BatchRunOutcome::Restart => restart_current_process(),
-        });
+        return batch::run_batch_process_with_large_stack(
+            runtime,
+            options,
+            |outcome| match outcome {
+                BatchRunOutcome::Exit(code) => exit_flushing(code),
+                BatchRunOutcome::Restart => restart_current_process(),
+            },
+        );
     }
     #[cfg(all(target_os = "linux", target_env = "gnu"))]
     linux_startup::ignore_broken_pipe();
     // exit's close_output_streams, as for a batch run.
-    tty::run(&command_line_args, &options).map(|code| emaxx::lisp::close_output_streams(code) as u8)
+    tty::run(runtime, &command_line_args, &options)
+        .map(|code| emaxx::lisp::close_output_streams(code) as u8)
 }
 
 /// emacs.c:main's extension of the stack space available: RLIMIT_STACK's

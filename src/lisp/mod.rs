@@ -1,12 +1,23 @@
 //! Owned host entry points for the process-wide Lisp runtime.
 //!
 //! GC objects cannot escape an editor call or be retained while another OS
-//! thread collects the heap. Raw interpreter and value APIs are internal:
+//! thread collects the heap.  The entry points are public:
+//!
+//! ```
+//! use emaxx::lisp::run_ert_file;
+//! let runtime = emaxx::Runtime::lock();
+//! let _entry = run_ert_file;
+//! drop(runtime);
+//! ```
+//!
+//! and the raw interpreter and value types are not:
 //!
 //! ```compile_fail
-//! use emaxx::lisp::{eval::Interpreter, types::Value};
-//! let mut interpreter = Interpreter::new();
-//! let retained = Value::cons(Value::Nil, Value::Nil);
+//! use emaxx::lisp::run_ert_file;
+//! let runtime = emaxx::Runtime::lock();
+//! let _entry = run_ert_file;
+//! let _retained = emaxx::lisp::types::Value::Nil;
+//! drop(runtime);
 //! ```
 
 /// A fixed Qsymbol-style reference owned by the current editor entry.
@@ -1186,7 +1197,11 @@ fn restore_special_dynamic_bindings(
 /// `executable` is the editor binary GNU comp.el can launch for compiler
 /// children. An embedding application's executable need not implement the
 /// editor CLI, so its path must be supplied explicitly.
-pub fn run_ert_file(path: &Path, executable: &Path) -> Result<crate::compat::BatchReport, String> {
+pub fn run_ert_file(
+    _runtime: &crate::Runtime,
+    path: &Path,
+    executable: &Path,
+) -> Result<crate::compat::BatchReport, String> {
     runtime::with_runtime(|| {
         crate::batch::with_batch_stack(|| run_ert_file_owned(path, executable))
     })?

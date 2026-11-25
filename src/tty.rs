@@ -539,7 +539,11 @@ pub fn set_dev_tty(name: &str) {
     crate::lisp::eval::terminal::set_dev_tty(name);
 }
 
-pub fn run(command_line_args: &[String], options: &batch::BatchRunOptions) -> Result<i32, String> {
+pub fn run(
+    _runtime: &crate::Runtime,
+    command_line_args: &[String],
+    options: &batch::BatchRunOptions,
+) -> Result<i32, String> {
     crate::lisp::runtime::with_runtime(|| run_owned(command_line_args, options))
 }
 

@@ -27,31 +27,35 @@ fn run_el_test(filename: &str) {
     let (tx, rx) = mpsc::channel();
     let filename_for_thread = filename.to_string();
     std::thread::spawn(move || {
-        let report =
-            match lisp::run_ert_file(&path, std::path::Path::new(env!("CARGO_BIN_EXE_emaxx"))) {
-                Ok(report) => {
-                    let mut lines = Vec::new();
-                    for result in &report.results {
-                        lines.push(format!(
-                            "  {:?}: {} (expected={:?}) -- {}",
-                            result.status,
-                            result.name,
-                            result.expected,
-                            result.message.as_deref().unwrap_or("")
-                        ));
-                    }
-                    let issues = emaxx::compat::report_execution_issues(&report);
-                    lines.push(format!("  {:?}; issues: {issues:?}", report.summary));
-                    if report.summary.total == 0 {
-                        lines.push("  ERROR: upstream file executed no tests".into());
-                    }
-                    (report.summary.total > 0 && issues.is_empty(), lines)
+        let runtime = emaxx::Runtime::lock();
+        let report = match lisp::run_ert_file(
+            &runtime,
+            &path,
+            std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")),
+        ) {
+            Ok(report) => {
+                let mut lines = Vec::new();
+                for result in &report.results {
+                    lines.push(format!(
+                        "  {:?}: {} (expected={:?}) -- {}",
+                        result.status,
+                        result.name,
+                        result.expected,
+                        result.message.as_deref().unwrap_or("")
+                    ));
                 }
-                Err(error) => (
-                    false,
-                    vec![format!("  ERROR loading {filename_for_thread}: {error}")],
-                ),
-            };
+                let issues = emaxx::compat::report_execution_issues(&report);
+                lines.push(format!("  {:?}; issues: {issues:?}", report.summary));
+                if report.summary.total == 0 {
+                    lines.push("  ERROR: upstream file executed no tests".into());
+                }
+                (report.summary.total > 0 && issues.is_empty(), lines)
+            }
+            Err(error) => (
+                false,
+                vec![format!("  ERROR loading {filename_for_thread}: {error}")],
+            ),
+        };
         let _ = tx.send(report);
     });
 

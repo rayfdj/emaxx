@@ -1202,7 +1202,7 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
 /// evidence.  Refuse to run rather than annotate (finding 24).
 fn enforce_anti_cheat_gates() -> Result<(), String> {
     eprintln!("enforcing anti-cheat gates before the run...");
-    emaxx::anti_cheat::enforce_all().map_err(|violations| {
+    emaxx::anti_cheat::enforce_all(&emaxx::Runtime::lock()).map_err(|violations| {
         format!(
             "anti-cheat gates failed; no measured run can be produced from this tree:\n  {}",
             violations.join("\n  ")

@@ -308,6 +308,98 @@ pub(crate) fn release_while<R>(wait: impl FnOnce() -> R) -> R {
     result
 }
 
+/// The process's Lisp runtime as the calling OS thread holds it: GNU's
+/// global_lock, which emacs.c:main's init_threads takes for the main
+/// thread before any Lisp.  Every public function that runs Lisp takes a
+/// `&Runtime`, and a `Runtime` is neither `Send` nor `Sync`, so that a
+/// call can only come from the thread that holds it.  `lock' waits for
+/// another holder; on a thread that holds the runtime already it waits for
+/// nothing and leaves it held when the returned value goes.
+///
+/// An owned result of a call crosses to another thread:
+///
+/// ```
+/// let runtime = emaxx::Runtime::lock();
+/// let banner = emaxx::batch::version_banner(&runtime, None).expect("the banner");
+/// std::thread::spawn(move || drop(banner)).join().expect("the thread");
+/// ```
+///
+/// The runtime does not:
+///
+/// ```compile_fail
+/// let runtime = emaxx::Runtime::lock();
+/// let banner = emaxx::batch::version_banner(&runtime, None).expect("the banner");
+/// std::thread::spawn(move || drop(banner)).join().expect("the thread");
+/// std::thread::spawn(move || drop(runtime)).join().expect("the thread");
+/// ```
+///
+/// Another thread may use what a call made:
+///
+/// ```
+/// let runtime = emaxx::Runtime::lock();
+/// let banner = emaxx::batch::version_banner(&runtime, None).expect("the banner");
+/// std::thread::scope(|scope| {
+///     scope.spawn(|| banner.len());
+/// });
+/// ```
+///
+/// but not call with this thread's runtime:
+///
+/// ```compile_fail
+/// let runtime = emaxx::Runtime::lock();
+/// let banner = emaxx::batch::version_banner(&runtime, None).expect("the banner");
+/// std::thread::scope(|scope| {
+///     scope.spawn(|| banner.len());
+///     scope.spawn(|| emaxx::batch::version_banner(&runtime, None));
+/// });
+/// ```
+pub struct Runtime {
+    /// Whether this value took the runtime, and gives it back when it goes.
+    acquired: bool,
+    _holder_only: std::marker::PhantomData<*const ()>,
+}
+
+impl Runtime {
+    /// Take the runtime for this OS thread, once no other one holds it
+    /// (thread.c:acquire_global_lock); at once on a thread that holds it.
+    /// Uncontended, taking it makes no futex wait.
+    pub fn lock() -> Self {
+        let entered = ENTERED.get();
+        if entered.tenure || entered.boundary {
+            return Self {
+                acquired: false,
+                _holder_only: std::marker::PhantomData,
+            };
+        }
+        if RUNTIME.acquire(PATIENCE, &mut report_wait) {
+            RUNTIME.release(false);
+            // Do not recover a poisoned heap after a panic escapes the runtime.
+            panic!("Lisp runtime panicked while active");
+        }
+        ENTERED.set(Entered {
+            tenure: true,
+            ..entered
+        });
+        Self {
+            acquired: true,
+            _holder_only: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        if self.acquired {
+            ENTERED.set(Entered {
+                tenure: false,
+                ..ENTERED.get()
+            });
+            release_thread_state();
+            RUNTIME.release(std::thread::panicking());
+        }
+    }
+}
+
 /// The outermost scoped entry on an OS thread. It holds the runtime for
 /// its call unless the thread's tenure already does.
 struct Scope {

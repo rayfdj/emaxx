@@ -68,9 +68,13 @@ impl From<EmacsTermination> for BatchRunOutcome {
     }
 }
 
-/// Run the batch interpreter on a guarded stack on the calling OS thread.
-pub fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
-    lisp::runtime::with_runtime(|| with_batch_stack(|| run_batch(options)))?
+/// Run the batch interpreter on a guarded stack on the calling OS thread,
+/// which RUNTIME shows holds the runtime.
+pub fn run_batch_with_large_stack(
+    runtime: &crate::Runtime,
+    options: BatchRunOptions,
+) -> Result<BatchRunOutcome, String> {
+    lisp::runtime::with_runtime(|| with_batch_stack(|| run_batch(runtime, options)))?
 }
 
 /// Run the batch CLI with its interpreter alive through FINISH.
@@ -79,6 +83,7 @@ pub fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOu
 /// freeing the Lisp heap. FINISH owns process termination; if it returns,
 /// ordinary Rust Drop still releases the interpreter.
 pub fn run_batch_process_with_large_stack(
+    _runtime: &crate::Runtime,
     options: BatchRunOptions,
     finish: impl FnOnce(BatchRunOutcome) -> Result<u8, String>,
 ) -> Result<u8, String> {
@@ -130,9 +135,12 @@ pub(crate) fn with_batch_stack<R>(body: impl FnOnce() -> R) -> Result<R, String>
     .map_err(|_| "batch runtime panicked".to_string())
 }
 
-pub fn run_batch(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
+pub fn run_batch(
+    runtime: &crate::Runtime,
+    options: BatchRunOptions,
+) -> Result<BatchRunOutcome, String> {
     let actions = batch_actions(&options);
-    run_batch_with_actions(options, actions)
+    run_batch_with_actions(runtime, options, actions)
 }
 
 fn batch_actions(options: &BatchRunOptions) -> Vec<BatchAction> {
@@ -147,6 +155,7 @@ fn batch_actions(options: &BatchRunOptions) -> Vec<BatchAction> {
 }
 
 pub fn run_batch_with_actions(
+    _runtime: &crate::Runtime,
     options: BatchRunOptions,
     actions: Vec<BatchAction>,
 ) -> Result<BatchRunOutcome, String> {
@@ -455,7 +464,7 @@ pub(crate) fn initialize_interactive_interpreter(
 /// `initialized', from an image (`--dump-file', or the executable's own
 /// `<name>.pdmp' beside it).  A named image that cannot be loaded is
 /// fatal there, as in GNU.
-pub fn startup_image_loads(dump_file: Option<&Path>) -> bool {
+pub fn startup_image_loads(_runtime: &crate::Runtime, dump_file: Option<&Path>) -> bool {
     lisp::runtime::with_runtime(|| {
         let _symbols = crate::lisp::types::symbols::EditorSymbolScope::enter();
         let mut interpreter = Interpreter::new();
@@ -478,7 +487,10 @@ pub fn executable_fingerprint_hex() -> String {
 /// `emacs-copyright' and repository details; a process without an image
 /// (temacs) reports the C constants.  An unusable variable is the
 /// message GNU writes to stderr before exiting with status 1.
-pub fn version_banner(dump_file: Option<&Path>) -> Result<String, String> {
+pub fn version_banner(
+    _runtime: &crate::Runtime,
+    dump_file: Option<&Path>,
+) -> Result<String, String> {
     lisp::runtime::with_runtime(|| version_banner_owned(dump_file))
 }
 

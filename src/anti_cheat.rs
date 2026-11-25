@@ -3395,7 +3395,7 @@ pub(crate) fn builtin_arities_match_fresh_regeneration() {
 /// this before it will write a summary (finding 24).  Each gate still has
 /// a thin `#[test]' wrapper below, so `cargo test anti_cheat' behaves as
 /// before.
-pub fn enforce_all() -> Result<(), Vec<String>> {
+pub fn enforce_all(_runtime: &crate::Runtime) -> Result<(), Vec<String>> {
     crate::lisp::runtime::with_runtime(enforce_all_owned)
 }
 

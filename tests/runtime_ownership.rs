@@ -31,13 +31,14 @@ fn public_editor_calls_serialize_allocation_collection_and_shutdown() {
                         )],
                         ..Default::default()
                     };
-                    let result = run_batch_process_with_large_stack(options, |outcome| {
+                    let runtime = emaxx::Runtime::lock();
+                    let result = run_batch_process_with_large_stack(&runtime, options, |outcome| {
                         assert_eq!(outcome, BatchRunOutcome::Exit(0));
                         assert_eq!(active.fetch_add(1, Ordering::SeqCst), 0);
                         // This callback runs before its interpreter is dropped.
                         // A nested public call must keep that same ownership.
                         assert!(
-                            emaxx::batch::version_banner(None)
+                            emaxx::batch::version_banner(&runtime, None)
                                 .expect("nested owned editor call")
                                 .starts_with("GNU Emacs ")
                         );
@@ -61,8 +62,11 @@ fn public_ert_entry_reports_top_level_errors_as_owned_host_data() {
     let path = std::env::temp_dir().join(format!("emaxx-ert-error-{}.el", std::process::id()));
     std::fs::write(&path, "(error \"ERT load error must remain visible\")\n")
         .expect("write error control");
-    let result =
-        emaxx::lisp::run_ert_file(&path, std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")));
+    let result = emaxx::lisp::run_ert_file(
+        &emaxx::Runtime::lock(),
+        &path,
+        std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")),
+    );
     std::fs::remove_file(&path).expect("remove error control");
     let message = result.expect_err("a load error must not become an empty passing inventory");
     // Only this owned String leaves the runtime and crosses an OS thread.
@@ -80,8 +84,11 @@ fn public_ert_entry_preserves_complete_inventory_and_unexpected_failures() {
          (ert-deftest ownership-visible-failure () (should (= (+ 19 23) 43)))\n",
     )
     .expect("write outcome control");
-    let result =
-        emaxx::lisp::run_ert_file(&path, std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")));
+    let result = emaxx::lisp::run_ert_file(
+        &emaxx::Runtime::lock(),
+        &path,
+        std::path::Path::new(env!("CARGO_BIN_EXE_emaxx")),
+    );
     std::fs::remove_file(&path).expect("remove outcome control");
     let report = result.expect("the file loads and both tests execute");
     assert_eq!(report.summary.total, 2);
@@ -116,7 +123,8 @@ fn editor_state_left_by_one_os_thread_is_not_read_after_another_collects() {
             eval: vec![form.to_owned()],
             ..Default::default()
         };
-        let result = run_batch_process_with_large_stack(options, |outcome| {
+        let runtime = emaxx::Runtime::lock();
+        let result = run_batch_process_with_large_stack(&runtime, options, |outcome| {
             assert_eq!(outcome, BatchRunOutcome::Exit(0), "{form}");
             Ok(0)
         });
