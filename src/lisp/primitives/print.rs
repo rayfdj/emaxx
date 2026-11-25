@@ -1054,21 +1054,10 @@ fn read_one_from_reader(
                 return Err(error);
             }
         };
-        Ok((
-            value,
-            reader.emitted_reader_forms(),
-            reader.characters_consumed(),
-        ))
+        Ok((value, reader.characters_consumed()))
     })();
-    let (value, needs_materialization, consumed) =
-        read.map_err(|error| reader_end_of_file(interp, error))?;
+    let (value, consumed) = read.map_err(|error| reader_end_of_file(interp, error))?;
     let value = value.ok_or_else(|| end_of_file_error(interp))?;
-    // Allocate identity-bearing literals before resolving references into them.
-    let value = if needs_materialization {
-        interp.materialize_read_object_literals(value, env)?
-    } else {
-        value
-    };
     Ok((value, consumed))
 }
 
@@ -1335,68 +1324,11 @@ fn read_one_positioned_form(
                 return Err(error);
             }
         };
-        let consumed = reader.characters_consumed();
-        Ok((value, consumed, reader.emitted_reader_forms()))
+        Ok((value, reader.characters_consumed()))
     })();
-    let (value, consumed, needs_materialization) =
-        read.map_err(|error| reader_end_of_file(interp, error))?;
+    let (value, consumed) = read.map_err(|error| reader_end_of_file(interp, error))?;
     let value = value.ok_or_else(|| end_of_file_error(interp))?;
-    // GNU's reader constructs `#s(...)', `#^[...]', and bool-vector objects
-    // before read-positioning-symbols returns.  In particular, the byte
-    // compiler must receive an actual hash table constant rather than
-    // Emaxx's parser-private ReaderForm marker.  The reader builds them
-    // itself unless a circular label made it leave placeholders.
-    let value = if needs_materialization {
-        interp.materialize_read_object_literals(value, env)?
-    } else {
-        value
-    };
     Ok((value, consumed))
-}
-
-pub(crate) fn record_literal_items(value: &Value) -> Option<Vec<Value>> {
-    let Kind::ReaderForm(form) = value.kind() else {
-        return None;
-    };
-    let crate::lisp::types::ReaderForm::Record { slots } = form.as_ref() else {
-        return None;
-    };
-    Some(
-        std::iter::once(Value::Nil)
-            .chain(slots.iter().cloned())
-            .collect(),
-    )
-}
-
-pub(crate) fn record_literal_slot_data(value: &Value) -> Value {
-    if let Ok(items) = value.to_vec()
-        && let [Kind::Symbol(symbol), inner] = items
-            .as_slice()
-            .iter()
-            .map(|v| v.kind())
-            .collect::<Vec<_>>()
-            .as_slice()
-        && symbol.is_named("quote")
-    {
-        return inner.value();
-    }
-    *value
-}
-
-pub(crate) fn record_literal_aref(
-    object: &Value,
-    items: &[Value],
-    idx: usize,
-    idx_value: &Value,
-) -> Result<Value, LispError> {
-    let slot = items.get(idx + 1).cloned().ok_or_else(|| {
-        LispError::SignalValue(Value::list([
-            Value::Symbol("args-out-of-range".into()),
-            *object,
-            *idx_value,
-        ]))
-    })?;
-    Ok(record_literal_slot_data(&slot))
 }
 
 pub(crate) fn read_from_callable_source(
@@ -1438,8 +1370,8 @@ impl crate::lisp::reader::ReadContext for CallableReader<'_> {
         crate::lisp::reader::ReaderStream::intern_symbol(self, name, false)
     }
 
-    fn build(&mut self, form: crate::lisp::types::ReaderForm) -> Result<Value, LispError> {
-        self.interp.build_read_object(form, self.env)
+    fn build(&mut self, literal: crate::lisp::reader::ReadLiteral) -> Result<Value, LispError> {
+        self.interp.build_read_object(literal, self.env)
     }
 
     fn load_file_name(&mut self) -> Value {
@@ -1505,28 +1437,22 @@ fn read_callable_source(
     env: &mut Env,
     locate_symbols: bool,
 ) -> Result<Value, LispError> {
-    let (value, needs_materialization) = {
+    let value = {
         let mut stream = CallableReader {
             interp,
             source: *source,
             env,
         };
         let mut reader = crate::lisp::reader::Reader::from_stream(&mut stream, locate_symbols);
-        let value = reader.read().and_then(|value| {
+        reader.read().and_then(|value| {
             reader.finish_stream()?;
             Ok(value)
-        });
-        (value, reader.emitted_reader_forms())
+        })
     };
     // end_of_file_error names `load-true-file-name' whatever the stream.
-    let value = value
+    value
         .map_err(|error| reader_end_of_file(interp, error))?
-        .ok_or_else(|| end_of_file_error(interp))?;
-    if needs_materialization {
-        interp.materialize_read_object_literals(value, env)
-    } else {
-        Ok(value)
-    }
+        .ok_or_else(|| end_of_file_error(interp))
 }
 
 pub(crate) fn read_from_lisp_source(
@@ -1537,31 +1463,7 @@ pub(crate) fn read_from_lisp_source(
     read_from_lisp_source_raw(interp, source, env)
 }
 
-// GNU's reader constructs real hash tables for `#s(hash-table ...)' input;
-// emaxx's reader leaves a quoted literal form behind, which is fine for
-// loaded code but wrong for `read' consumers that treat the result as data
-// (e.g. `eieio-persistent-read').  Convert those literals into hash-table
-// records after reading.
-pub(crate) fn materialize_read_hash_table_literals(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    let mut seen = HashSet::new();
-    materialize_hash_table_literals_inner(interp, value, env, &mut seen)
-}
-
 const CHAR_TABLE_STANDARD_SLOTS: usize = 68;
-
-// Reader forms become the actual root/subtable graph. Each object is
-// published before its fields so repeated references keep their identity.
-pub(crate) fn materialize_read_char_table_literals(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut Env,
-) -> Result<Value, LispError> {
-    materialize_char_table_literals_inner(interp, value, env, &mut HashMap::new())
-}
 
 /// lread.c's char-table and sub-char-table construction (`#^[...]' and
 /// `#^^[...]'), from fields the reader has read.
@@ -1606,185 +1508,6 @@ pub(crate) fn char_table_from_read_fields(
     Ok(table)
 }
 
-fn materialize_char_table_literals_inner(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut Env,
-    seen: &mut HashMap<usize, Value>,
-) -> Result<Value, LispError> {
-    if let Some(copy) = seen.get(&value.word()) {
-        return Ok(*copy);
-    }
-    if let Kind::ReaderForm(form) = value.kind() {
-        let (copy, fields, skip) = match form.as_ref() {
-            crate::lisp::types::ReaderForm::CharTable { fields } => {
-                if !(CHAR_TABLE_STANDARD_SLOTS
-                    ..=crate::lisp::alloc::vectors::char_tables::CHAR_TABLE_MAX_SLOTS)
-                    .contains(&fields.len())
-                {
-                    return Err(LispError::ReadError("Invalid size char-table".into()));
-                }
-                (
-                    Value::CharTable(crate::lisp::types::CharTableRef::new(
-                        Value::Nil,
-                        Value::Nil,
-                        fields.len() - CHAR_TABLE_STANDARD_SLOTS,
-                    )),
-                    fields,
-                    0,
-                )
-            }
-            crate::lisp::types::ReaderForm::SubCharTable { fields } => {
-                let depth = fields[0].as_integer()? as usize;
-                let minimum = fields[1].as_integer()? as u32;
-                (
-                    Value::SubCharTable(crate::lisp::types::SubCharTableRef::new(
-                        depth,
-                        minimum,
-                        Value::Nil,
-                    )),
-                    fields,
-                    2,
-                )
-            }
-            _ => return Ok(*value),
-        };
-        seen.insert(value.word(), copy);
-        for (index, field) in fields.iter().skip(skip).enumerate() {
-            let field = interp.materialize_read_record_literals(field, env)?;
-            let field = materialize_read_hash_table_literals(interp, &field, env)?;
-            let field = materialize_char_table_literals_inner(interp, &field, env, seen)?;
-            match copy.kind() {
-                Kind::CharTable(table) => table.set_slot(index, field),
-                Kind::SubCharTable(table) => table.set_slot(index, field),
-                _ => unreachable!(),
-            }
-        }
-        return Ok(copy);
-    }
-    seen.insert(value.word(), *value);
-    match value.kind() {
-        Kind::Vector(vector) => {
-            for (index, field) in vector.slots().enumerate() {
-                vector.set(
-                    index,
-                    materialize_char_table_literals_inner(interp, &field, env, seen)?,
-                );
-            }
-        }
-        Kind::Cons(cell) => {
-            cell.car.set(materialize_char_table_literals_inner(
-                interp,
-                &cell.car.get(),
-                env,
-                seen,
-            )?);
-            cell.cdr.set(materialize_char_table_literals_inner(
-                interp,
-                &cell.cdr.get(),
-                env,
-                seen,
-            )?);
-        }
-        Kind::CharTable(table) => {
-            for (index, field) in table.slots().enumerate() {
-                table.set_slot(
-                    index,
-                    materialize_char_table_literals_inner(interp, &field, env, seen)?,
-                );
-            }
-        }
-        Kind::SubCharTable(table) => {
-            for (index, field) in table.slots().enumerate() {
-                table.set_slot(
-                    index,
-                    materialize_char_table_literals_inner(interp, &field, env, seen)?,
-                );
-            }
-        }
-        _ => {}
-    }
-    Ok(*value)
-}
-
-fn quoted_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
-    let items = value.to_vec().ok()?;
-    let kinds = items.iter().map(|v| v.kind()).collect::<Vec<_>>();
-    let [Kind::Symbol(head), literal] = kinds.as_slice() else {
-        return None;
-    };
-    if !head.is_named("quote") {
-        return None;
-    }
-    match *literal {
-        Kind::ReaderForm(form) => match form.as_ref() {
-            crate::lisp::types::ReaderForm::HashTable { fields } => Some(fields.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn bare_hash_table_literal_fields(value: &Value) -> Option<Vec<Value>> {
-    match value.kind() {
-        Kind::ReaderForm(form) => match form.as_ref() {
-            crate::lisp::types::ReaderForm::HashTable { fields } => Some(fields.clone()),
-            _ => None,
-        },
-        _ => None,
-    }
-}
-
-fn materialize_hash_table_literals_inner(
-    interp: &mut Interpreter,
-    value: &Value,
-    env: &mut Env,
-    seen: &mut HashSet<usize>,
-) -> Result<Value, LispError> {
-    if let Some(fields) = quoted_hash_table_literal_fields(value) {
-        return hash_table_from_literal_fields(interp, &fields, env, seen);
-    }
-    if let Some(fields) = bare_hash_table_literal_fields(value) {
-        return hash_table_from_literal_fields(interp, &fields, env, seen);
-    }
-    if let Kind::Vector(vector) = value.kind() {
-        if !seen.insert(vector.identity()) {
-            return Ok(*value);
-        }
-        let slots = vector.slots().collect::<Vec<_>>();
-        for (index, slot) in slots.iter().enumerate() {
-            vector.set(
-                index,
-                materialize_hash_table_literals_inner(interp, slot, env, seen)?,
-            );
-        }
-        return Ok(*value);
-    }
-    let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
-        return Ok(*value);
-    };
-    let ptr = car_cell.cell_id();
-    if !seen.insert(ptr) {
-        return Ok(*value);
-    }
-    let car = car_cell.get();
-    let new_car = materialize_hash_table_literals_inner(interp, &car, env, seen)?;
-    car_cell.set(new_car);
-    let cdr = cdr_cell.get();
-    let new_cdr = materialize_hash_table_literals_inner(interp, &cdr, env, seen)?;
-    cdr_cell.set(new_cdr);
-    Ok(*value)
-}
-
-fn hash_table_from_literal_fields(
-    interp: &mut Interpreter,
-    fields: &[Value],
-    env: &mut Env,
-    _seen: &mut HashSet<usize>,
-) -> Result<Value, LispError> {
-    hash_table_from_plist(interp, fields, env, true)
-}
-
 /// lread.c:hash_table_from_plist over the fields of a `#s(hash-table ...)'
 /// the reader has just read, its data already the objects they read as.
 pub(crate) fn hash_table_from_read_fields(
@@ -1792,11 +1515,10 @@ pub(crate) fn hash_table_from_read_fields(
     fields: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    hash_table_from_plist(interp, fields, env, false)
+    hash_table_from_plist(interp, fields, env)
 }
 
-/// lread.c:hash_table_from_plist; MATERIALIZE finishes reader forms left in
-/// the data by a read that deferred them.  plist_get finds each parameter's
+/// lread.c:hash_table_from_plist.  plist_get finds each parameter's
 /// first value by EQ; `test', `weakness' and `purecopy' go to
 /// Fmake_hash_table, with `:size' the number of DATA pairs, and each pair
 /// is Fputhash'd in order.
@@ -1804,7 +1526,6 @@ fn hash_table_from_plist(
     interp: &mut Interpreter,
     fields: &[Value],
     env: &mut Env,
-    materialize: bool,
 ) -> Result<Value, LispError> {
     let plist_get = |name: &str| {
         let prop = Value::symbol(name);
@@ -1842,14 +1563,6 @@ fn hash_table_from_plist(
     let table = call(interp, "make-hash-table", &params, env)?;
     let object = check_hash_table(&table)?;
     for &[key, value] in items.as_chunks::<2>().0 {
-        let (key, value) = if materialize {
-            (
-                interp.materialize_read_object_literals(key, env)?,
-                interp.materialize_read_object_literals(value, env)?,
-            )
-        } else {
-            (key, value)
-        };
         hash_table_put(interp, object, key, value, env)?;
     }
     Ok(table)

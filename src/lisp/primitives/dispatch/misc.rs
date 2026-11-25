@@ -234,19 +234,6 @@ pub(super) fn bare_symbol_identity(
     None
 }
 
-pub(super) fn bare_symbol_name(interp: &Interpreter, env: &Env, value: &Value) -> Option<String> {
-    if let Ok(symbol) = value.as_symbol() {
-        return Some(symbol.to_string());
-    }
-    if symbols_with_pos_enabled(interp, env)
-        && let Some((bare, _)) = symbol_with_pos_parts(interp, value)
-        && let Ok(symbol) = bare.as_symbol()
-    {
-        return Some(symbol.to_string());
-    }
-    None
-}
-
 fn symbol_property_by_eq(
     interp: &Interpreter,
     env: &Env,

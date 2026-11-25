@@ -190,8 +190,9 @@ struct EmergencyReset {
     published: std::sync::atomic::AtomicI32,
 }
 
-// SAFETY: only the main thread writes a slot, and never the published
-// one; readers take the published slot once (see emergency_reset).
+// SAFETY: only the OS thread that holds the Lisp runtime writes a slot
+// (`arm_emergency_reset' takes it), and never the published one; readers
+// take the published slot once (see emergency_reset).
 #[cfg(unix)]
 unsafe impl Sync for EmergencyReset {}
 
@@ -228,16 +229,18 @@ pub(crate) struct ResetState<'a> {
 }
 
 /// Publish STATE as what a fatal signal resets the terminal with; called
-/// on the main thread when Emacs's modes take effect and at each update.
+/// by the thread that runs Lisp when Emacs's modes take effect and at each
+/// update.
 #[cfg(unix)]
 pub(crate) fn arm_emergency_reset(state: &ResetState<'_>) {
     use std::sync::atomic::Ordering;
+    crate::lisp::runtime::ensure_held();
     let slot = if EMERGENCY_RESET.published.load(Ordering::Acquire) == 0 {
         1
     } else {
         0
     };
-    // SAFETY: only the main thread fills slots, and SLOT is not the
+    // SAFETY: only the runtime's holder fills slots, and SLOT is not the
     // published one, so no reader holds it.
     let target = unsafe { &mut *EMERGENCY_RESET.slots[slot].get() };
     let length = state.bytes.len().min(EMERGENCY_RESET_BYTES);

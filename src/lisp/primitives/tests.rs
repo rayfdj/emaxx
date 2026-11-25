@@ -1646,6 +1646,178 @@ fn the_matcher_calls_syntax_propertize_as_gnu() {
 }
 
 #[test]
+fn matchers_read_inhibit_changing_match_data_s_c_variable_as_gnu() {
+    // search.c's Vinhibit_changing_match_data, which the symbol forwards
+    // to: let-bound around looking-at, posix-looking-at, string-match,
+    // re-search-forward, search-forward, re-search-backward and
+    // looking-back, set with setq and back, and once `makunbound' has made
+    // the symbol plain (data.c:set_internal), when a setq no longer
+    // reaches the C variable the matchers read and the match data change
+    // again.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil)
+              (all (lambda ()
+                     (goto-char 1)
+                     (list (looking-at "fo\\(o\\)") (match-data t)
+                           (posix-looking-at "foo\\|fo") (match-data t)
+                           (string-match "b\\(a\\)" "xbar") (match-data t)
+                           (re-search-forward "ba\\(.\\)" nil t) (match-data t)
+                           (search-forward "z" nil t) (match-data t)
+                           (re-search-backward "\\(o\\)o" nil t) (match-data t)
+                           (looking-back "b" 1) (match-data t)))))
+          (with-temp-buffer
+            (insert "foo bar baz")
+            (set-match-data '(0 0))
+            (let ((inhibit-changing-match-data t))
+              (push (list 'let (funcall all)) r))
+            (push (list 'after-let (match-data t)) r)
+            (set-match-data '(0 0))
+            (setq inhibit-changing-match-data t)
+            (push (list 'setq (funcall all)) r)
+            (setq inhibit-changing-match-data nil)
+            (push (list 'setq-nil (funcall all)) r)
+            ;; makunbound makes the symbol plain: the C variable keeps nil.
+            (makunbound 'inhibit-changing-match-data)
+            (setq inhibit-changing-match-data t)
+            (set-match-data '(0 0))
+            (push (list 'detached inhibit-changing-match-data (funcall all)) r)
+            (let ((inhibit-changing-match-data nil))
+              (set-match-data '(0 0))
+              (push (list 'detached-let (funcall all)) r)))
+          (nreverse r))"#,
+        r##"((let (t (0 0) t (0 0) 1 (0 0) 8 (0 0) 12 (0 0) 2 (0 0) nil (0 0))) (after-let (0 0)) (setq (t (0 0) t (0 0) 1 (0 0) 8 (0 0) 12 (0 0) 2 (0 0) nil (0 0))) (setq-nil (t (1 4 3 4 #<killed buffer>) t (1 4 #<killed buffer>) 1 (1 3 2 3) 8 (5 8 7 8 #<killed buffer>) 12 (11 12 #<killed buffer>) 2 (2 4 2 3 #<killed buffer>) nil (2 4 2 3 #<killed buffer>))) (detached t (t (1 4 3 4 #<killed buffer>) t (1 4 #<killed buffer>) 1 (1 3 2 3) 8 (5 8 7 8 #<killed buffer>) 12 (11 12 #<killed buffer>) 2 (2 4 2 3 #<killed buffer>) nil (2 4 2 3 #<killed buffer>))) (detached-let (t (1 4 3 4 #<killed buffer>) t (1 4 #<killed buffer>) 1 (1 3 2 3) 8 (5 8 7 8 #<killed buffer>) 12 (11 12 #<killed buffer>) 2 (2 4 2 3 #<killed buffer>) nil (2 4 2 3 #<killed buffer>))))"##,
+        "inhibit-changing-match-data",
+    );
+}
+
+#[test]
+fn matches_read_syntax_classes_from_the_buffer_s_table_and_properties_as_gnu() {
+    // RE_SETUP_SYNTAX_TABLE_FOR_OBJECT: \sw, \s-, \s(, \s), \s_, \s.
+    // and the word and symbol boundaries read the buffer's syntax table
+    // (the standard one, a buffer-local one, one with-syntax-table puts
+    // in place) and, only with `parse-sexp-lookup-properties' set, the
+    // `syntax-table' text properties, in re-search-forward, looking-at
+    // and string-match.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil))
+          (with-temp-buffer
+            (insert "foo_bar (baz) qu-ux été_x\n")
+            (let ((rec (lambda (tag)
+                         (push (list tag
+                                     (progn (goto-char 1) (re-search-forward "\\sw+" nil t)) (match-data t)
+                                     (progn (goto-char 1) (re-search-forward "\\s-+\\s(" nil t)) (match-data t)
+                                     (progn (goto-char 1) (re-search-forward "\\s_\\sw" nil t)) (match-data t)
+                                     (progn (goto-char 1) (re-search-forward "\\bba" nil t))
+                                     (progn (goto-char 1) (re-search-forward "\\<qu\\w*\\>" nil t))
+                                     (progn (goto-char 1) (re-search-forward "\\_<qu-ux\\_>" nil t))
+                                     (progn (goto-char 1) (re-search-forward "\\Bar\\b" nil t))
+                                     (progn (goto-char 10) (looking-at "\\sw+\\s)"))
+                                     (progn (goto-char 16) (looking-at "\\sw+\\s.\\sw"))
+                                     (string-match "\\s_\\sw+\\'" "a_b") (string-match "\\<b" "a b_b")
+                                     (progn (goto-char 1) (re-search-forward "é\\sw*\\_>" nil t)))
+                               r))))
+              (funcall rec 'standard)
+              ;; A buffer-local syntax table: `_' a word constituent, `-' a symbol one.
+              (let ((table (make-syntax-table)))
+                (modify-syntax-entry ?_ "w" table)
+                (modify-syntax-entry ?- "_" table)
+                (modify-syntax-entry ?\( "." table)
+                (set-syntax-table table)
+                (funcall rec 'local)
+                ;; with-syntax-table over it, then back.
+                (with-syntax-table (let ((other (make-syntax-table)))
+                                     (modify-syntax-entry ?u "." other)
+                                     (modify-syntax-entry ?\s "w" other)
+                                     other)
+                  (funcall rec 'with))
+                (funcall rec 'local-again)
+                ;; syntax-table text properties read when parse-sexp-lookup-properties.
+                (put-text-property 4 5 'syntax-table (string-to-syntax "."))
+                (put-text-property 17 18 'syntax-table (string-to-syntax "w"))
+                (funcall rec 'props-ignored)
+                (setq-local parse-sexp-lookup-properties t)
+                (funcall rec 'props)
+                (set-syntax-table (standard-syntax-table))
+                (funcall rec 'props-standard))))
+          (nreverse r))"#,
+        r##"((standard 4 (1 4 #<killed buffer>) 10 (8 10 #<killed buffer>) 6 (4 6 #<killed buffer>) 7 17 20 8 t nil 1 2 nil) (local 8 (1 8 #<killed buffer>) nil (1 8 #<killed buffer>) 19 (17 19 #<killed buffer>) 12 17 20 8 t nil nil 2 26) (with 4 (1 4 #<killed buffer>) nil (1 4 #<killed buffer>) 6 (4 6 #<killed buffer>) 7 nil nil nil t nil 1 4 nil) (local-again 8 (1 8 #<killed buffer>) nil (1 8 #<killed buffer>) 19 (17 19 #<killed buffer>) 12 17 20 8 t nil nil 2 26) (props-ignored 8 (1 8 #<killed buffer>) nil (1 8 #<killed buffer>) 19 (17 19 #<killed buffer>) 12 17 20 8 t nil nil 2 26) (props 4 (1 4 #<killed buffer>) nil (1 4 #<killed buffer>) nil (1 4 #<killed buffer>) 7 20 20 8 t nil nil 2 26) (props-standard 4 (1 4 #<killed buffer>) 10 (8 10 #<killed buffer>) 26 (24 26 #<killed buffer>) 7 20 20 8 t nil 1 2 nil))"##,
+        "syntax classes in matches",
+    );
+}
+
+#[test]
+fn case_folding_reads_the_canon_table_and_the_registers_keep_search_regs_as_gnu() {
+    // char_table_translate through the case_canon_table itself: case
+    // folding of non-ASCII letters in re-search-forward, search-forward,
+    // looking-at and string-match, and of an ASCII pair changed by
+    // set-case-syntax-pair in a buffer's own case table.  The match
+    // registers lent to each match: the match data after looking-at,
+    // string-match and a counted re-search-forward, around
+    // save-match-data, under inhibit-changing-match-data, and after the
+    // matcher's own signal mid-match (its failure stack overflowing in a
+    // string and in a buffer), which leaves them as they were.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil))
+          (with-temp-buffer
+            (insert "abc Été X-ray y-ray XYZ\n")
+            (let ((case-fold-search t))
+              ;; Non-ASCII and ASCII case folding through the canon table.
+              (goto-char 1)
+              (push (list 'fold (re-search-forward "éTÉ" nil t) (match-data t)) r)
+              (goto-char 1)
+              (push (list 'fold-plain (search-forward "ÉTé" nil t) (match-data t)) r)
+              (goto-char 6)
+              (push (list 'fold-looking (looking-at "ÉTÉ x") (match-data t)) r)
+              (push (list 'fold-string (string-match "étÉ" "xÉTé") (match-data t)) r)
+              ;; An ASCII pair changed in a copy of the case table.
+              (let ((table (copy-case-table (standard-case-table))))
+                (set-case-syntax-pair ?X ?y table)
+                (set-case-table table)
+                (goto-char 1)
+                (push (list 'pair (re-search-forward "x-ray" nil t) (match-data t)
+                            (progn (goto-char 1) (re-search-forward "Y-RAY" nil t)) (match-data t)
+                            (progn (goto-char 1) (search-forward "yYz" nil t))
+                            (string-match "xyz" "XYZ") (string-match "x" "y")
+                            (progn (goto-char 13) (looking-at "x-")))
+                      r)
+                (set-case-table (standard-case-table))))
+            ;; Match data after each kind of match, save-match-data and
+            ;; inhibit-changing-match-data.
+            (let ((case-fold-search nil))
+              (goto-char 1)
+              (looking-at "\\(a\\)\\(b\\)")
+              (push (list 'after-looking (match-data t)) r)
+              (save-match-data
+                (string-match "\\(z\\)" "xyz")
+                (push (list 'inner (match-data t)) r))
+              (push (list 'restored (match-data t)) r)
+              (let ((inhibit-changing-match-data t))
+                (push (list 'inhibited (looking-at "abc") (re-search-forward "ray" nil t)
+                            (string-match "y" "xyz") (match-data t))
+                      r))
+              (goto-char 1)
+              (re-search-forward "\\(r\\)a\\(y\\)" nil t 2)
+              (push (list 'count-2 (match-data t) (point)) r)
+              ;; A signal from the matcher mid-match leaves the match data.
+              (push (list 'overflow
+                          (condition-case e (string-match "\\(?:a\\|b\\)*c" (make-string 200000 ?a)) (error e))
+                          (match-data t)
+                          (condition-case e
+                              (save-excursion (goto-char (point-max)) (insert (make-string 200000 ?a))
+                                              (goto-char 25) (looking-at "\\(?:a\\|b\\)*c"))
+                            (error e))
+                          (match-data t)
+                          (progn (delete-region 25 (point-max)) (buffer-size)))
+                    r)
+              (goto-char 1)
+              (push (list 'after-overflow (looking-at "ab\\(c\\)") (match-data t)) r)))
+          (nreverse r))"#,
+        r##"((fold 8 (5 8 #<killed buffer>)) (fold-plain 8 (5 8 #<killed buffer>)) (fold-looking nil (5 8 #<killed buffer>)) (fold-string 1 (1 4)) (pair 14 (9 14 #<killed buffer>) 14 (9 14 #<killed buffer>) 24 0 0 nil) (after-looking (1 3 1 2 2 3 #<killed buffer>)) (inner (2 3 2 3)) (restored (1 3 1 2 2 3 #<killed buffer>)) (inhibited t 14 1 (1 3 1 2 2 3 #<killed buffer>)) (count-2 (17 20 17 18 19 20 #<killed buffer>) 20) (overflow (error "Stack overflow in regexp matcher") (17 20 17 18 19 20) (error "Stack overflow in regexp matcher") (17 20 17 18 19 20) 24) (after-overflow t (1 4 3 4 #<killed buffer>)))"##,
+        "case tables and match registers",
+    );
+}
+
+#[test]
 fn buffer_matches_read_the_text_s_halves_wherever_the_gap_stands_as_gnu() {
     // looking_at_1, search_buffer_re and search_buffer_non_re read the
     // accessible text as BEGV_ADDR to GPT_ADDR and GAP_END_ADDR to
@@ -3116,35 +3288,29 @@ fn record_literal_detection_does_not_traverse_vector_storage() {
     // Even a cyclic payload leaves the object class unchanged. The former
     // raw mutable slice did not enforce a borrow or detect traversal.
     vector_storage.set(0, vector);
-    assert!(record_literal_items(&vector).is_none());
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    assert_eq!(
+        call(&mut interp, "recordp", &[vector], &mut env).expect("recordp"),
+        Value::Nil
+    );
 }
 
 #[test]
 fn character_table_literal_materializes_nested_bytecode_decoder() {
-    let decoder = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-        crate::lisp::types::ReaderForm::Closure {
-            kind: crate::lisp::types::ReaderClosureKind::ByteCode,
-            slots: vec![
-                Value::Integer(0),
-                Value::String(String::new().into()),
-                Value::vector([]),
-                Value::Integer(0),
-            ],
-        },
-    ));
-    let mut fields = vec![Value::Nil; 70];
-    fields[2] = Value::symbol("char-code-property-table");
-    fields[68] = Value::symbol("name");
-    fields[69] = decoder;
-    let literal = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-        crate::lisp::types::ReaderForm::CharTable { fields },
-    ));
-
+    // The interpreter's reader builds the table and its nested decoder as
+    // their syntax closes: the purpose in slot 2, the extras `name' and
+    // the byte-code decoder after the 68 standard slots.
+    let text = format!(
+        "#^[nil nil char-code-property-table {} name #[0 \"\" [] 0]]",
+        vec!["nil"; 65].join(" ")
+    );
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     let Kind::CharTable(table_id) =
-        materialize_read_char_table_literals(&mut interp, &literal, &mut env)
+        crate::lisp::read_next_load_form(&mut interp, &text, &mut 0, &mut env)
             .expect("materialize a character table with a bytecode decoder")
+            .expect("a character table")
             .kind()
     else {
         panic!("character-table syntax must produce a typed table");
@@ -3673,14 +3839,10 @@ fn subr_frontier_recordp_does_not_expose_hash_table_runtime_storage() {
     assert_upstream_primitive_contract(&format!("(prin1 {contract})"), "(nil t)");
 
     let mut interp = Interpreter::new();
-    let form = Reader::new(contract)
-        .read()
+    let mut env = crate::lisp::types::Env::new();
+    let form = crate::lisp::read_next_load_form(&mut interp, contract, &mut 0, &mut env)
         .expect("record predicate contract should parse")
         .expect("record predicate contract should contain a form");
-    let mut env = crate::lisp::types::Env::new();
-    let form = interp
-        .materialize_read_object_literals(form, &mut env)
-        .expect("construct reader objects before evaluation");
     assert_eq!(
         interp
             .eval(&form, &mut env)
@@ -3700,14 +3862,10 @@ fn subr_frontier_direct_vector_evaluation_materializes_nested_record_literals() 
     );
 
     let mut interp = Interpreter::new();
-    let form = Reader::new(contract)
-        .read()
+    let mut env = crate::lisp::types::Env::new();
+    let form = crate::lisp::read_next_load_form(&mut interp, contract, &mut 0, &mut env)
         .expect("nested record vector contract should parse")
         .expect("nested record vector contract should contain a form");
-    let mut env = crate::lisp::types::Env::new();
-    let form = interp
-        .materialize_read_object_literals(form, &mut env)
-        .expect("construct reader objects before evaluation");
     assert_eq!(
         interp
             .eval(&form, &mut env)
@@ -7000,6 +7158,9 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
              (setq purify-flag 'zz-pure
                    post-gc-hook '(zz-post-gc)
                    process-environment '("ZZ=1"))
+             ;; A timer is timer.el's: the image carries it in
+             ;; `timer-list', its time absolute.
+             (run-at-time 1000 5 'car nil)
              (let ((processed command-line-processed))
                (list (condition-case error-data {dump_form}
                        (error (list (car error-data) (cadr error-data))))
@@ -7030,8 +7191,7 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         interp.known_symbol_names().into_iter().collect();
     let dumped_symbol_count = source_names.len();
     // Every root group of the loadup state prints the same from the
-    // restored interpreter (the timer list's due times are relative); taken
-    // before the programs below, which update lexical cells. Capture these
+    // restored interpreter; taken before the programs below, which update lexical cells. Capture these
     // before printing even the context result: print.c:print_prepare binds
     // print-escape-nonascii for prin1-to-string's buffer, advancing the
     // writer's binding counter after the image has already been written.
@@ -7078,6 +7238,11 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
                  (sort contracts (lambda (a b) \
                                    (string-lessp (car a) (car b))))))",
         "(pdumper-stats)",
+        "(let (found) \
+           (dolist (timer timer-list) \
+             (when (eq (timer--function timer) 'car) (push timer found))) \
+           (list (length found) (timer--args (car found)) \
+                 (timer--repeat-delay (car found)) (car found)))",
     ];
     let mut expected = Vec::new();
     for program in programs {
@@ -7091,6 +7256,11 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         let printed = call(&mut interp, "prin1-to-string", &[value], &mut env).expect("print");
         expected.push(string_like(&printed).expect("printed").text);
     }
+    // The timer `run-at-time' made, once, with its function's arguments
+    // and repeat; the restored one prints the same (the loop below).
+    let scheduled = expected.last().expect("the timer program");
+    assert!(scheduled.starts_with("(1 (nil) 5 [nil "), "{scheduled}");
+    assert!(scheduled.contains(" 5 car (nil) nil "), "{scheduled}");
     let writer_loaded_a_dump = interp.dump_loaded_p();
     drop(interp);
 
@@ -7148,9 +7318,6 @@ fn dump_emacs_portable_restores_context_and_reports_native_image_limit() {
         source_groups.iter().zip(&target_groups)
     {
         assert_eq!(slot, target_slot);
-        if *slot == RootSlot::TimerList {
-            continue;
-        }
         let target_text = call(
             &mut restored,
             "prin1-to-string",
@@ -22644,11 +22811,9 @@ fn describe_vector_groups_equal_ranges_and_shares_standard_output_with_describer
 
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
-    let form = Reader::new(bare_program)
-        .read()
+    let form = crate::lisp::read_next_load_form(&mut interp, bare_program, &mut 0, &mut env)
         .expect("vector description contract should parse")
         .expect("vector description contract should contain a form");
-    interp.intern_symbols_in_value(&form);
     assert_eq!(
         interp
             .eval(&form, &mut env)
@@ -26510,6 +26675,577 @@ fn buffer_creation_and_kill_cons_their_objects_and_markers() {
             [0, 0, buffer + 5 * marker, 0, 6, 0, 1],
             [1, 0, buffer + 2 * marker, 0, 5, 0, 1],
             [1, 0, 5, 0, 0, 0, 0],
+        ]
+    );
+}
+
+#[test]
+fn the_evaluators_c_variables_store_bind_and_convert_as_gnu() {
+    // The C variables eval.c, lread.c, fns.c, data.c, undo.c, keyboard.c,
+    // search.c and syntax.c read (Vquit_flag, Vinhibit_quit,
+    // Vthrow_on_input, Voverriding_plist_environment, Vload_path,
+    // max_lisp_eval_depth, debug_on_next_call, symbols_with_pos_enabled,
+    // undo_inhibit_record_point, attempt_orderly_shutdown_on_fatal_signal,
+    // Vcase_fold_search, parse_sexp_lookup_properties): set, let and
+    // default-value of each, a DEFVAR_BOOL's store kept as t or nil, a
+    // DEFVAR_INT's store refused unless an integer, and what boundp,
+    // special-variable-p and local-variable-if-set-p answer.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil))
+          (dolist (v '(inhibit-quit throw-on-input overriding-plist-environment load-path
+                       case-fold-search))
+            (let ((old (symbol-value v)))
+              (set v 'probe-x)
+              (push (list v (symbol-value v) (default-value v)
+                          (eval `(let ((,v 'probe-y)) (list ,v (symbol-value ',v) (default-value ',v))) t)
+                          (symbol-value v))
+                    r)
+              (set v old)))
+          (dolist (v '(symbols-with-pos-enabled undo-inhibit-record-point
+                       attempt-orderly-shutdown-on-fatal-signal parse-sexp-lookup-properties))
+            (let ((old (symbol-value v)))
+              (push (list v old
+                          (eval `(let ((,v 'probe-y)) (list ,v (default-value ',v))) t)
+                          (progn (set v 'probe-z) (symbol-value v))
+                          (progn (set v nil) (symbol-value v)))
+                    r)
+              (set v old)))
+          (dolist (v '(symbols-with-pos-enabled undo-inhibit-record-point
+                       attempt-orderly-shutdown-on-fatal-signal))
+            (let ((old (default-value v)))
+              (push (list v (progn (set-default v 7) (list (default-value v) (symbol-value v))))
+                    r)
+              (set-default v old)))
+          (push (list (condition-case e (setq max-lisp-eval-depth 'x) (error e))
+                      (condition-case e (setq max-lisp-eval-depth 1.5) (error e))
+                      (let ((max-lisp-eval-depth 3000))
+                        (list max-lisp-eval-depth (default-value 'max-lisp-eval-depth)))
+                      max-lisp-eval-depth
+                      (let ((inhibit-quit t))
+                        (setq quit-flag t)
+                        (prog1 (list quit-flag (default-value 'quit-flag)) (setq quit-flag nil)))
+                      quit-flag)
+                r)
+          (push (mapcar (lambda (v) (list v (boundp v) (special-variable-p v)
+                                          (local-variable-if-set-p v)))
+                        '(quit-flag inhibit-quit throw-on-input overriding-plist-environment load-path
+                          max-lisp-eval-depth debug-on-next-call symbols-with-pos-enabled
+                          undo-inhibit-record-point attempt-orderly-shutdown-on-fatal-signal
+                          case-fold-search parse-sexp-lookup-properties))
+                r)
+          (nreverse r))"#,
+        r#"((inhibit-quit probe-x probe-x (probe-y probe-y probe-y) probe-x) (throw-on-input probe-x probe-x (probe-y probe-y probe-y) probe-x) (overriding-plist-environment probe-x probe-x (probe-y probe-y probe-y) probe-x) (load-path probe-x probe-x (probe-y probe-y probe-y) probe-x) (case-fold-search probe-x t (probe-y probe-y t) probe-x) (symbols-with-pos-enabled nil (t t) t nil) (undo-inhibit-record-point nil (t t) t nil) (attempt-orderly-shutdown-on-fatal-signal t (t t) t nil) (parse-sexp-lookup-properties t (t nil) t nil) (symbols-with-pos-enabled (t t)) (undo-inhibit-record-point (t t)) (attempt-orderly-shutdown-on-fatal-signal (t t)) ((wrong-type-argument integerp x) (wrong-type-argument integerp 1.5) (3000 3000) 1600 (t t) nil) ((quit-flag t t nil) (inhibit-quit t t nil) (throw-on-input t t nil) (overriding-plist-environment t t nil) (load-path t t nil) (max-lisp-eval-depth t t nil) (debug-on-next-call t t nil) (symbols-with-pos-enabled t t nil) (undo-inhibit-record-point t t nil) (attempt-orderly-shutdown-on-fatal-signal t t nil) (case-fold-search t t t) (parse-sexp-lookup-properties t t t)))"#,
+        "evaluator C variables",
+    );
+}
+
+#[test]
+fn the_evaluators_c_variables_follow_the_current_buffers_binding_as_gnu() {
+    // A buffer-local binding of an evaluator C variable is what C reads
+    // while that buffer is current (set_buffer_internal_2 swaps the
+    // binding into the C variable): a load search, a property read
+    // through overriding-plist-environment, the nesting limit and a
+    // search's case folding in the buffer, the defaults elsewhere, and
+    // the defaults again after kill-local-variable; undo-inhibit-record-point
+    // is a permanent local kill-all-local-variables leaves.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((dir (make-temp-file "t1-lp" t))
+               (_ (with-temp-file (expand-file-name "t1-probe-lib.el" dir)
+                    (insert "(provide 't1-probe-lib)\n")))
+               (b (get-buffer-create "t1-b"))
+               (lp0 load-path)
+               (r nil))
+          (defalias 't1-rec (lambda (k) (if (> k 0) (1+ (t1-rec (1- k))) 0)))
+          (with-current-buffer b
+            (setq-local load-path (list dir))
+            (setq-local overriding-plist-environment '((t1-sym t1-prop 42)))
+            (setq-local max-lisp-eval-depth 100)
+            (setq-local inhibit-quit 'b-local)
+            (setq-local case-fold-search nil)
+            (setq-local undo-inhibit-record-point t))
+          (push (list (null (locate-library "t1-probe-lib")) (get 't1-sym 't1-prop) inhibit-quit
+                      case-fold-search max-lisp-eval-depth undo-inhibit-record-point
+                      (condition-case e (t1-rec 150) (error (car e))))
+                r)
+          (with-current-buffer b
+            (push (list (equal (locate-library "t1-probe-lib")
+                               (expand-file-name "t1-probe-lib.el" dir))
+                        (get 't1-sym 't1-prop) inhibit-quit case-fold-search (string-match "a" "A")
+                        max-lisp-eval-depth undo-inhibit-record-point
+                        (condition-case e (t1-rec 150) (error (car e)))
+                        (equal (default-value 'load-path) lp0) (default-value 'inhibit-quit)
+                        (local-variable-p 'inhibit-quit) (local-variable-p 'max-lisp-eval-depth))
+                  r)
+            (set-buffer (get-buffer-create "t1-other"))
+            (push (list inhibit-quit max-lisp-eval-depth (get 't1-sym 't1-prop)
+                        (buffer-local-value 'inhibit-quit b) (buffer-local-value 'max-lisp-eval-depth b))
+                  r))
+          (with-current-buffer b
+            (kill-local-variable 'load-path)
+            (kill-local-variable 'overriding-plist-environment)
+            (kill-local-variable 'max-lisp-eval-depth)
+            (kill-local-variable 'inhibit-quit)
+            (kill-local-variable 'case-fold-search)
+            (push (list (null (locate-library "t1-probe-lib")) (get 't1-sym 't1-prop) inhibit-quit
+                        case-fold-search (string-match "a" "A") max-lisp-eval-depth
+                        (condition-case e (t1-rec 150) (error (car e)))
+                        (local-variable-p 'inhibit-quit) undo-inhibit-record-point)
+                  r)
+            (kill-all-local-variables)
+            (push (list undo-inhibit-record-point (local-variable-p 'undo-inhibit-record-point)) r))
+          (kill-buffer b)
+          (kill-buffer "t1-other")
+          (delete-directory dir t)
+          (nreverse r))"#,
+        r#"((t nil nil t 1600 nil 150) (t 42 b-local nil nil 100 t excessive-lisp-nesting t nil t t) (nil 1600 nil b-local 100) (t nil nil t 0 1600 150 nil t) (nil nil))"#,
+        "buffer-local evaluator C variables",
+    );
+}
+
+#[test]
+fn the_evaluators_c_variables_notify_watchers_and_bind_per_thread_as_gnu() {
+    // A variable watcher hears set, let and unlet of an evaluator C
+    // variable (notify_variable_watchers) and a buffer-local store with
+    // its buffer; a thread's let is its own until it yields back
+    // (specbind's rebind at a thread switch), its nesting limit
+    // included; debug-on-next-call calls the debugger at the next call
+    // with the flag already cleared (call_debugger).
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((r nil) (log nil) (wb (get-buffer-create "t1c-w")))
+          (defalias 't1c-rec (lambda (k) (if (> k 0) (1+ (t1c-rec (1- k))) 0)))
+          (dolist (v '(inhibit-quit load-path max-lisp-eval-depth debug-on-next-call
+                       throw-on-input case-fold-search))
+            (add-variable-watcher v (lambda (s n o w) (push (list s n o w) log))))
+          (setq inhibit-quit nil)
+          (let ((load-path '("/t1c"))) (setq load-path '("/t1c2")))
+          (setq max-lisp-eval-depth 1700)
+          (setq max-lisp-eval-depth 1600)
+          (let ((throw-on-input 'x)) nil)
+          (with-current-buffer wb (setq case-fold-search nil))
+          (setq-default case-fold-search t)
+          (dolist (v '(inhibit-quit load-path max-lisp-eval-depth debug-on-next-call
+                       throw-on-input case-fold-search))
+            (dolist (w (get-variable-watchers v)) (remove-variable-watcher v w)))
+          (kill-buffer wb)
+          (push (mapcar (lambda (e) (list (nth 0 e) (if (stringp (car-safe (nth 1 e))) 'paths (nth 1 e))
+                                          (nth 2 e) (if (bufferp (nth 3 e)) 'buffer (nth 3 e))))
+                        (nreverse log))
+                r)
+          (let* ((th (make-thread (lambda ()
+                                    (let ((inhibit-quit 'thread) (max-lisp-eval-depth 120))
+                                      (thread-yield)
+                                      (list inhibit-quit max-lisp-eval-depth
+                                            (condition-case e (t1c-rec 200) (error (car e)))))))))
+            (thread-yield)
+            (push (list inhibit-quit max-lisp-eval-depth) r)
+            (push (thread-join th) r)
+            (push (list inhibit-quit max-lisp-eval-depth (condition-case e (t1c-rec 200) (error (car e))))
+                  r))
+          (let* ((dlog nil)
+                 (debugger (lambda (&rest args) (push (list (car args) debug-on-next-call) dlog) nil)))
+            (setq debug-on-next-call t)
+            (car '(1))
+            (push (list (nreverse dlog) debug-on-next-call) r))
+          (nreverse r))"#,
+        r#"(((inhibit-quit nil set nil) (load-path paths let nil) (load-path paths set nil) (load-path paths set nil) (load-path paths unlet nil) (max-lisp-eval-depth 1700 set nil) (max-lisp-eval-depth 1600 set nil) (throw-on-input x let nil) (throw-on-input nil set nil) (throw-on-input nil unlet nil) (case-fold-search nil set buffer) (case-fold-search t set nil)) (nil 1600) (thread 120 excessive-lisp-nesting) (nil 1600 200) (((t nil) (exit nil)) nil))"#,
+        "evaluator C variables, watchers and threads",
+    );
+}
+
+#[test]
+fn makunbound_leaves_the_evaluators_c_variables_to_c_as_gnu() {
+    // data.c:set_internal storing Qunbound into a forwarded symbol makes
+    // it SYMBOL_PLAINVAL: the symbol is void, then a plain variable, and
+    // the C variable keeps its last value, which is what C goes on
+    // reading (the nesting limit, quit handling, a property read, the
+    // debugger's entry, case folding, positioned symbols' eq, a load's
+    // search of Vload_path).
+    assert_oracle_contract_matches_interpreter(
+        r#"(progn
+          (defalias 't1d-rec (lambda (k) (if (> k 0) (1+ (t1d-rec (1- k))) 0)))
+          (list (progn (makunbound 'max-lisp-eval-depth) (boundp 'max-lisp-eval-depth))
+                (condition-case e max-lisp-eval-depth (error e))
+                (progn (setq max-lisp-eval-depth 'not-a-number) max-lisp-eval-depth)
+                (progn (setq max-lisp-eval-depth 10) max-lisp-eval-depth)
+                (condition-case e (t1d-rec 200) (error (car e)))
+                (let ((max-lisp-eval-depth 20)) (condition-case e (t1d-rec 200) (error (car e))))
+                (progn (makunbound 'inhibit-quit) (setq inhibit-quit t)
+                       (condition-case nil (progn (setq quit-flag t) (t1d-rec 3) 'no-quit) (quit 'quit)))
+                (progn (makunbound 'quit-flag) (setq quit-flag t)
+                       (prog1 (condition-case nil (progn (t1d-rec 3) 'no-quit) (quit 'quit))
+                         (setq quit-flag nil)))
+                (progn (makunbound 'overriding-plist-environment)
+                       (setq overriding-plist-environment '((t1d-sym t1d-prop 9)))
+                       (get 't1d-sym 't1d-prop))
+                (progn (makunbound 'throw-on-input) (list (boundp 'throw-on-input) (setq throw-on-input 3)))
+                (let ((dlog nil))
+                  (makunbound 'debug-on-next-call)
+                  (let ((debugger (lambda (&rest args) (push (car args) dlog) nil)))
+                    (setq debug-on-next-call t) (car '(1)))
+                  (list debug-on-next-call dlog))
+                (progn (makunbound 'case-fold-search)
+                       (list (boundp 'case-fold-search) (string-match "a" "A")
+                             (progn (setq case-fold-search nil) (string-match "a" "A"))
+                             (with-temp-buffer (list (boundp 'case-fold-search) (string-match "a" "A")))))
+                (progn (makunbound 'symbols-with-pos-enabled) (setq symbols-with-pos-enabled t)
+                       (eq (position-symbol 'a 5) 'a))
+                (progn (makunbound 'attempt-orderly-shutdown-on-fatal-signal)
+                       (boundp 'attempt-orderly-shutdown-on-fatal-signal))))"#,
+        r#"(nil (void-variable max-lisp-eval-depth) not-a-number 10 200 200 quit no-quit nil (nil 3) (t nil) (nil 0 0 (t 0)) nil nil)"#,
+        "makunbound of evaluator C variables",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((dir (make-temp-file "t1d-lp" t)))
+          (with-temp-file (expand-file-name "t1d-lib.el" dir) (insert "(provide 't1d-lib)\n"))
+          (prog1
+              (list (progn (makunbound 'load-path) (boundp 'load-path))
+                    (progn (setq load-path (list dir)) (equal load-path (list dir)))
+                    (condition-case e (progn (load "t1d-lib" nil t) (featurep 't1d-lib)) (error (car e)))
+                    (null (locate-library "t1d-lib")))
+            (delete-directory dir t)))"#,
+        r#"(nil t file-missing nil)"#,
+        "makunbound of load-path",
+    );
+}
+
+#[test]
+fn the_kboard_variables_store_bind_and_notify_as_gnu() {
+    // keyboard.h's DEFVAR_KBOARD variables, the current kboard's fields:
+    // bound, special, never local; set, let, set-default and a watcher's
+    // set and let; a thread's let; make-local-variable refused; and the
+    // command loop's stores of last-command and its kin after a command
+    // of a keyboard macro, inside a let of last-command too.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((vars '(overriding-terminal-local-map last-command real-last-command
+                      keyboard-translate-table last-repeatable-command prefix-arg
+                      last-prefix-arg defining-kbd-macro last-kbd-macro system-key-alist
+                      window-system default-minibuffer-frame input-decode-map
+                      local-function-key-map))
+              (r nil) (log nil))
+          (push (mapcar (lambda (v) (list v (boundp v) (special-variable-p v)
+                                          (local-variable-if-set-p v)
+                                          (let ((x (symbol-value v)))
+                                            (if (or (null x) (symbolp x) (numberp x)) x (type-of x)))
+                                          (eq (symbol-value v) (default-value v))))
+                        vars)
+                r)
+          (push (list (progn (setq last-command 'probe-a) last-command)
+                      (let ((last-command 'probe-b)) (list last-command (default-value 'last-command)))
+                      last-command
+                      (progn (set-default 'prefix-arg 4) prefix-arg)
+                      (let ((real-last-command 'rl)) (setq real-last-command 'rl2) real-last-command)
+                      real-last-command)
+                r)
+          (add-variable-watcher 'last-command (lambda (s n o w) (push (list n o w) log)))
+          (setq last-command 'w1)
+          (let ((last-command 'w2)) nil)
+          (with-temp-buffer (setq last-command 'w3))
+          (remove-variable-watcher 'last-command (car (get-variable-watchers 'last-command)))
+          (push (mapcar (lambda (e) (list (car e) (cadr e) (bufferp (nth 2 e)))) (nreverse log)) r)
+          (let ((th (make-thread (lambda () (let ((last-command 'thread)) (thread-yield) last-command)))))
+            (thread-yield)
+            (push (list last-command (thread-join th) last-command) r))
+          (with-temp-buffer
+            (push (list (condition-case e (make-local-variable 'last-command) (error e))
+                        (local-variable-p 'last-command))
+                  r))
+          (setq last-command nil prefix-arg nil)
+          (nreverse r))"#,
+        r#"(((overriding-terminal-local-map t t nil nil t) (last-command t t nil nil t) (real-last-command t t nil nil t) (keyboard-translate-table t t nil char-table t) (last-repeatable-command t t nil nil t) (prefix-arg t t nil nil t) (last-prefix-arg t t nil nil t) (defining-kbd-macro t t nil nil t) (last-kbd-macro t t nil nil t) (system-key-alist t t nil nil t) (window-system t t nil nil t) (default-minibuffer-frame t t nil nil t) (input-decode-map t t nil cons t) (local-function-key-map t t nil cons t)) (probe-a (probe-b probe-b) probe-a 4 rl2 nil) ((w1 set nil) (w2 let nil) (w1 set nil) (w3 set nil)) (w3 thread w3) ((error "Symbol last-command may not be buffer-local") nil))"#,
+        "KBOARD variables",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(with-current-buffer (window-buffer)
+          (insert "abcdef") (goto-char 1)
+          (list (progn (execute-kbd-macro (kbd "C-f C-f"))
+                       (list (point) last-command real-last-command last-repeatable-command))
+                (progn (setq last-command 'probe-set) (execute-kbd-macro (kbd "C-f")) last-command)
+                (let ((last-command 'probe-let)) (execute-kbd-macro (kbd "C-b")) last-command)
+                (list (point) last-command real-last-command)))"#,
+        r#"((3 forward-char forward-char forward-char) forward-char backward-char (3 forward-char backward-char))"#,
+        "KBOARD variables after commands",
+    );
+}
+
+#[test]
+fn nil_and_t_are_symbols_with_plists_as_gnu() {
+    // lispsym's first two symbols: their plists, function cells and
+    // value cells, intern and read of their names, printing, keymap keys
+    // and eq hash keys; and Funintern of "nil" and "t", after which
+    // intern and read make new symbols of those names that are not nil
+    // and t.
+    assert_oracle_contract_matches_interpreter(
+        r#"(list (get nil 'foo) (progn (put nil 't2-prop 1) (get nil 't2-prop))
+              (plist-get (symbol-plist nil) 't2-prop)
+              (progn (put t 't2-prop 2) (list (get t 't2-prop) (plist-get (symbol-plist t) 't2-prop)))
+              (symbol-function nil) (symbol-function t) (fboundp nil) (fboundp t)
+              (boundp nil) (boundp t) (eq (intern "nil") nil) (eq (intern "t") t)
+              (eq (intern-soft "nil") nil) (intern-soft "nil")
+              (eq (read "nil") nil) (eq (car (read-from-string "(t)")) t)
+              (symbol-name nil) (symbol-name t) (prin1-to-string (list nil t 'nil))
+              (format "%S %s" nil t) (type-of nil) (type-of t) (symbolp nil) (keywordp t)
+              (condition-case e (set nil 1) (error e)) (condition-case e (setq t 1) (error e))
+              (condition-case e (fset nil 'car) (error e))
+              (let ((m (make-sparse-keymap)))
+                (define-key m [t] 'ignore) (define-key m [nil] 'forward-char)
+                (list (lookup-key m [t]) (lookup-key m [nil]) (keymapp m)))
+              (let ((h (make-hash-table :test 'eq)))
+                (puthash nil 1 h) (puthash t 2 h)
+                (list (gethash nil h) (gethash t h) (gethash (intern "nil") h)))
+              (progn (put nil 't2-prop nil) (put t 't2-prop nil)
+                     (list (get nil 't2-prop) (get t 't2-prop))))"#,
+        r#"(nil 1 1 (2 2) nil nil nil nil t t t t t nil t nil "nil" "t" "(nil t nil)" "nil t" symbol symbol t nil (setting-constant nil) (setting-constant t) (setting-constant nil) (ignore forward-char t) (1 2 1) (nil nil))"#,
+        "nil and t",
+    );
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((old-nil nil))
+          (list (unintern "nil" obarray)
+                (eq (intern-soft "nil") nil)
+                (let ((new (intern "nil")))
+                  (list (eq new nil) (symbolp new) (symbol-name new) (null new)
+                        (prin1-to-string new) (eq new (intern "nil"))
+                        (eq (read "nil") nil) (eq (read "nil") new)))
+                (eq old-nil nil) (null old-nil) (unintern "t" obarray)
+                (let ((nt (intern "t"))) (list (eq nt t) (eq (read "t") t) (eq (read "t") nt)))))"#,
+        r#"(t t (nil t "nil" nil "nil" t nil t) t t t (nil nil t))"#,
+        "nil and t uninterned",
+    );
+}
+
+#[test]
+fn host_objects_type_print_name_and_hash_as_gnu() {
+    // A mutex, a condition variable, a thread, an obarray, a window
+    // configuration and a pipe process: type-of, the printed form's
+    // head, their names, eq hash keys before and after a collection, and
+    // a condition variable's mutex.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let* ((m (make-mutex "t3-m")) (cv (make-condition-variable m "t3-cv"))
+               (th (make-thread #'ignore "t3-th"))
+               (ob (obarray-make)) (wc (current-window-configuration))
+               (p (make-pipe-process :name "t3-p" :buffer nil :noquery t))
+               (h (make-hash-table :test 'eq))
+               (objects (list m cv th ob wc p)))
+          (thread-join th)
+          (dolist (o objects) (puthash o t h))
+          (prog1
+              (list (mapcar #'type-of objects)
+                    (mapcar (lambda (o) (car (split-string (prin1-to-string o) " "))) objects)
+                    (mutex-name m) (condition-name cv) (thread-name th) (process-name p)
+                    (mapcar (lambda (o) (gethash o h)) objects)
+                    (eq (condition-mutex cv) m)
+                    (progn (garbage-collect) (mapcar (lambda (o) (gethash o h)) objects)))
+            (delete-process p)))"#,
+        r##"((mutex condition-variable thread obarray window-configuration process) ("#<mutex" "#<condvar" "#<thread" "#<obarray" "#<window-configuration>" "#<process") "t3-m" "t3-cv" "t3-th" "t3-p" (t t t t t t) t (t t t t t t))"##,
+        "host objects",
+    );
+}
+
+#[test]
+fn host_object_constructors_count_their_vector_cells() {
+    // memory-use-counts' vector-cells consed by make-mutex,
+    // make-condition-variable with its mutex, obarray-make and
+    // current-window-configuration, less what an empty function conses.
+    // GNU allocates thread.h's, lisp.h's and window.c's structs (Lisp_Mutex
+    // 9 words after the header, a condition variable 17 with its mutex,
+    // Lisp_Obarray 2, a configuration 121 with its saved windows); here
+    // each is a host record (6 cells) and a configuration conses 60: the
+    // records of the mirrors plan's R6 and R8 are what change these.
+    let program = r#"(let ((delta (lambda (f)
+                       (garbage-collect)
+                       (let* ((a (memory-use-counts)) (x (funcall f)) (b (memory-use-counts)) (r nil))
+                         (ignore x)
+                         (while b (push (- (pop b) (pop a)) r))
+                         (nreverse r)))))
+          (let ((base (funcall delta (lambda () nil))))
+            (mapcar (lambda (f) (let ((d (funcall delta f)) (r nil) (b base))
+                                  (while d (push (- (pop d) (pop b)) r))
+                                  (nth 2 (nreverse r))))
+                    (list (lambda () (make-mutex))
+                          (lambda () (make-condition-variable (make-mutex)))
+                          (lambda () (obarray-make))
+                          (lambda () (current-window-configuration))))))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "(9 17 2 121)");
+    assert_interpreter_prints(program, "(6 12 6 60)", "host object counts");
+}
+
+#[test]
+fn mapatoms_and_all_completions_walk_while_the_callback_interns() {
+    // A mapatoms callback and an all-completions predicate that intern
+    // new symbols: the walks end, and the symbols they interned are in
+    // the obarray afterwards.  Whether the walk itself meets them (GNU's
+    // map_obarray walks the buckets live and meets them) is not recorded.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((n 0) (seen nil))
+          (mapatoms (lambda (s) (when (= n 0) (dotimes (k 50) (intern (format "t4-new-%d" k))))
+                      (setq n (1+ n))
+                      (when (string-prefix-p "t4-new-" (symbol-name s)) (setq seen t))))
+          (intern "t4-cand-0")
+          (let ((c 0))
+            (all-completions "t4-cand" obarray
+                             (lambda (s) (when (= c 0) (dotimes (k 20) (intern (format "t4-cand-y%d" k))))
+                               (setq c (1+ c)) t))
+            (list (length (all-completions "t4-new-" obarray))
+                  (length (all-completions "t4-cand" obarray))
+                  (> n 0) (> c 0))))"#,
+        r#"(50 21 t t)"#,
+        "mapatoms while interning",
+    );
+}
+
+#[test]
+fn garbage_collect_reports_nine_kinds_as_gnu() {
+    // alloc.c:garbage_collect's value: the nine kinds in GNU's order,
+    // each with its size, its used count and (but for string-bytes,
+    // vectors and buffers) its free count, every count a natural number.
+    assert_oracle_contract_matches_interpreter(
+        r#"(let ((g (garbage-collect)))
+          (list (length g) (mapcar #'car g)
+                (mapcar #'length g)
+                (let ((ok t))
+                  (dolist (e g) (dolist (x (cdr e)) (unless (and (integerp x) (>= x 0)) (setq ok nil))))
+                  ok)
+                (let ((c (assq 'conses g))) (list (nth 1 c) (length c)))))"#,
+        r#"(9 (conses symbols strings string-bytes vectors vector-slots floats intervals buffers) (4 4 4 3 3 4 4 4 3) t (16 4))"#,
+        "garbage-collect",
+    );
+}
+
+#[test]
+fn an_unbound_ert_test_leaves_its_body_to_the_collector() {
+    // ert-make-test-unbound removes the test's `ert--test' property
+    // (cl-remprop): nothing then holds the test's body, and a weak-key
+    // table that held it is empty after a collection, as in GNU (the
+    // evaluator kept a copy of the registry, which held it, until the
+    // mirrors plan's R5).  The test object itself is not witnessed:
+    // whether a stale word on the stack keeps it differs from run to run.
+    let program = r#"(progn
+          (require 'ert)
+          (defvar t6-w (make-hash-table :test 'eq :weakness 'key))
+          (defalias 't6-define
+            (lambda ()
+              (eval '(ert-deftest t6-probe-test () (should (equal (list 1 2) (list 1 2)))) t)
+              (puthash (ert-test-body (get 't6-probe-test 'ert--test)) 'body t6-w)
+              nil))
+          (defalias 't6-unbind (lambda () (ert-make-test-unbound 't6-probe-test) nil))
+          (t6-define)
+          (let ((before (list (ert-test-boundp 't6-probe-test) (hash-table-count t6-w))))
+            (t6-unbind)
+            (dotimes (_ 3) (garbage-collect))
+            (list before (ert-test-boundp 't6-probe-test) (get 't6-probe-test 'ert--test)
+                  (hash-table-count t6-w))))"#;
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), "((t 1) nil nil 0)");
+    // Here the body could survive the collection through a word an
+    // earlier frame of the same top-level form left on the stack (a
+    // `--eval' of the program keeps it, a `-l' does not).  So each step
+    // is a top-level evaluation of its own, and the stack below them is
+    // overwritten before the collection: what keeps the body then is
+    // only what the evaluator holds.
+    #[inline(never)]
+    fn step(interp: &mut Interpreter, text: &str) -> String {
+        let mut env = Env::new();
+        let form = crate::lisp::read_next_load_form(interp, text, &mut 0, &mut env)
+            .expect("the step parses")
+            .expect("a form");
+        let value = interp.eval(&form, &mut env).expect("the step runs");
+        let printed = call(interp, "prin1-to-string", &[value], &mut env).expect("print");
+        string_like(&printed).expect("printed").text
+    }
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let setup = program
+        .split_once("          (t6-define)")
+        .expect("the definitions")
+        .0;
+    assert_eq!(step(&mut interp, &format!("{setup} t)")), "t");
+    assert_eq!(
+        step(
+            &mut interp,
+            "(progn (t6-define) (list (ert-test-boundp 't6-probe-test) (hash-table-count t6-w)))"
+        ),
+        "(t 1)"
+    );
+    assert_eq!(
+        step(
+            &mut interp,
+            "(progn (t6-unbind) (list (ert-test-boundp 't6-probe-test) (get 't6-probe-test 'ert--test)))"
+        ),
+        "(nil nil)"
+    );
+    crate::lisp::alloc::clobber_stack();
+    assert_eq!(
+        step(
+            &mut interp,
+            "(progn (dotimes (_ 3) (garbage-collect)) (hash-table-count t6-w))"
+        ),
+        "0",
+        "unbound ERT test"
+    );
+}
+
+#[test]
+fn put_of_an_ert_test_property_is_an_ordinary_plist_store() {
+    // fns.c:Fput is plist_put on the bare symbol, whatever the property
+    // and value: under `ert--test' a record of another type is stored,
+    // and an uninterned symbol's test is its own.  (Until the mirrors
+    // plan's R5 such a put went to the evaluator's test registry, which
+    // refused any record but an `ert-test' and stored by name.)
+    let program = r#"(progn
+          (require 'ert)
+          (list (condition-case err (put 'zz-r5-a 'ert--test (record 'foo 1)) (error err))
+                (get 'zz-r5-a 'ert--test)
+                (let ((s (make-symbol "zz-r5-b")))
+                  (put s 'ert--test (make-ert-test :name s :body (lambda () t)))
+                  (list (ert-test-boundp s) (intern-soft "zz-r5-b")))))"#;
+    let expected = "(#s(foo 1) #s(foo 1) (t nil))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    assert_interpreter_prints(program, expected, "put of ert--test");
+}
+
+#[test]
+fn the_report_lists_a_redefined_test_once_and_an_unbound_one_not_at_all() {
+    // The embedder's report reads ert.el's tests when it is made, as
+    // `(ert-select-tests t t)' lists them: by name, a redefined test with
+    // its last definition's tags and expected result, a test made unbound
+    // absent.
+    let program = r#"(progn
+          (require 'ert)
+          (ert-deftest zz-r5-redef-b () :tags '(one) t)
+          (ert-deftest zz-r5-redef-a () t)
+          (let ((noninteractive nil))
+            (ert-deftest zz-r5-redef-b () :tags '(two) :expected-result :failed t))
+          (ert-deftest zz-r5-redef-c () t)
+          (ert-make-test-unbound 'zz-r5-redef-c)
+          (mapcar (lambda (test)
+                    (list (ert-test-name test) (ert-test-tags test)
+                          (ert-test-expected-result-type test)))
+                  (ert-select-tests "^zz-r5-redef-" t)))"#;
+    let expected = "((zz-r5-redef-a nil :passed) (zz-r5-redef-b (two) :failed))";
+    assert_upstream_primitive_contract(&format!("(prin1 {program})"), expected);
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Env::new();
+    let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
+        .expect("the program parses")
+        .expect("a form");
+    let listed = interp.eval(&form, &mut env).expect("the program runs");
+    let printed = call(&mut interp, "prin1-to-string", &[listed], &mut env).expect("print");
+    assert_eq!(string_like(&printed).expect("printed").text, expected);
+    let discovered = interp
+        .discovered_tests()
+        .into_iter()
+        .filter(|test| test.name.starts_with("zz-r5-redef-"))
+        .collect::<Vec<_>>();
+    assert_eq!(
+        discovered,
+        vec![
+            crate::compat::DiscoveredTest {
+                name: "zz-r5-redef-a".into(),
+                tags: Vec::new(),
+                expected_result: ":passed".into(),
+            },
+            crate::compat::DiscoveredTest {
+                name: "zz-r5-redef-b".into(),
+                tags: vec!["two".into()],
+                expected_result: ":failed".into(),
+            },
         ]
     );
 }

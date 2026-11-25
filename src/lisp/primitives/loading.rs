@@ -1096,7 +1096,7 @@ fn read_next_eval_form(
     env: &mut Env,
 ) -> Result<Option<Value>, LispError> {
     let shorthands = read_symbol_shorthands(interp)?;
-    let (value, consumed, needs_materialization) = {
+    let (value, consumed) = {
         let mut context = crate::lisp::eval::LispReadContext::current(interp, env);
         let reader = match source.input_from(*offset) {
             LispReaderInput::Encoded(bytes, multibyte) => {
@@ -1118,18 +1118,10 @@ fn read_next_eval_form(
                 return Err(error);
             }
         };
-        (value, reader.position(), reader.emitted_reader_forms())
+        (value, reader.position())
     };
     *offset += consumed;
-    value
-        .map(|value| {
-            if needs_materialization {
-                interp.materialize_read_object_literals(value, env)
-            } else {
-                Ok(value)
-            }
-        })
-        .transpose()
+    Ok(value)
 }
 
 /// readevalloop's `internal-interpreter-environment' specbind: run BODY
@@ -1235,9 +1227,8 @@ fn eval_buffer_via_load_read_function(
 ) -> Result<Value, LispError> {
     // readevalloop with `load-read-function' over a buffer it does not
     // make current: each form read at the buffer's point, past the
-    // separators, and evaluated.  Deliberately NO `intern_symbols_in_value'
-    // here: GNU interns nothing beyond what that reader interned, so a
-    // deliberately `unintern'-ed symbol it returns stays dead.
+    // separators, and evaluated.  Nothing is interned beyond what that
+    // reader interned, so an `unintern'-ed symbol it returns stays so.
     let stream = interp.buffer_value(buffer_id).expect("live buffer object");
     let mut result = Value::Nil;
     loop {

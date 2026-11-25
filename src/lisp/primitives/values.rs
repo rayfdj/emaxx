@@ -290,25 +290,6 @@ fn equal_atoms(
                     .zip(right.words())
                     .all(|(left, right)| left.get() == right.get())
         }
-        // A record and the reader's form of a record literal.
-        (Kind::LispRecord(record), _) | (_, Kind::LispRecord(record)) => {
-            let form = if matches!(o1.kind(), Kind::LispRecord(_)) {
-                o2
-            } else {
-                o1
-            };
-            match record_literal_items(&form) {
-                Some(items) => {
-                    let fields = &items[1..];
-                    record.len() == fields.len()
-                        && slots(
-                            &mut record.slots(),
-                            &mut fields.iter().map(record_literal_slot_data),
-                        )?
-                }
-                None => false,
-            }
-        }
         (Kind::Record(left_id), Kind::Record(right_id)) => {
             let (Some(left), Some(right)) =
                 (interp.find_record(left_id), interp.find_record(right_id))
@@ -672,11 +653,6 @@ pub(crate) fn sequence_length_value(value: &Value) -> Result<i64, LispError> {
         Kind::BoolVector(vector) => Ok(vector.len() as i64),
         Kind::Closure(lambda) => Ok(lambda.public_len() as i64),
         Kind::LispRecord(record) => Ok(record.len() as i64),
-        // The reader's record literal: its slots, without a copy of them.
-        Kind::ReaderForm(form) => match form.as_ref() {
-            crate::lisp::types::ReaderForm::Record { slots } => Ok(slots.len() as i64),
-            _ => Err(LispError::WrongTypeArgument("sequencep".into(), *value)),
-        },
         // fns.c:list_length counts the tails in place (FOR_EACH_TAIL and
         // CHECK_LIST_END), without a copy of the elements.
         Kind::Cons(_) => {

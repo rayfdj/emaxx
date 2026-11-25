@@ -947,6 +947,37 @@ fn load_refuses_what_pdumper_load_refuses() {
 }
 
 #[test]
+fn an_image_naming_a_removed_root_slot_is_refused() {
+    // Root code 50 was the native timer list; GNU's timers are timer.el's
+    // `timer-list', which the obarray carries.  Another build's image is
+    // refused by its fingerprint first; one that names the code anyway is
+    // refused too, not read into another slot.
+    assert_eq!(RootSlot::from_u32(50), None);
+    // Code 48 was the ERT test registry, a test now being its symbol's
+    // `ert--test' property.
+    assert_eq!(RootSlot::from_u32(48), None);
+    let mut interp = Interpreter::new();
+    let bytes = dump(&mut interp, vec![(RootSlot::QuitFlag, Value::T)]);
+    let header = validate_header(&bytes).expect("a valid header");
+    let quit_flag = (RootSlot::QuitFlag as u32).to_le_bytes();
+    let at = (0..header.emacs_relocs.nr_entries)
+        .map(|index| (header.emacs_relocs.offset + index * EMACS_RELOC_LEN as u32) as usize)
+        .find(|at| bytes[at + 4..at + 8] == quit_flag)
+        .expect("the quit-flag root's relocation");
+    let mut renamed = bytes.clone();
+    renamed[at + 4..at + 8].copy_from_slice(&50_u32.to_le_bytes());
+    match load_image(&renamed, &mut Interpreter::new()) {
+        Err(LoadError::Error(message)) => {
+            assert!(message.starts_with("unknown root slot"), "{message}");
+        }
+        Err(other) => panic!("refused for another reason: {other:?}"),
+        Ok(image) => panic!("an unknown root slot was read: {:?}", image.roots),
+    }
+    let image = load_image(&bytes, &mut Interpreter::new()).expect("the image as written loads");
+    assert_eq!(image.roots, vec![(RootSlot::QuitFlag, Value::T)]);
+}
+
+#[test]
 fn supported_image_starts_in_a_fresh_process_with_new_process_values() {
     use std::os::unix::fs::DirBuilderExt;
     // A supported C-state image, not ordinary loadup or a native image.
@@ -2255,7 +2286,7 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
     }
     // A bare interpreter with state in the groups a fresh one leaves
     // empty: a second buffer, keys, a detached forwarded variable, a
-    // charset with an alias, a timer, an ert test, a labeled restriction
+    // charset with an alias, an ert test, a labeled restriction
     // in the current buffer, a fringe bitmap, a composition, a face.
     let mut interp = Interpreter::new();
     let mut env = crate::lisp::types::Env::new();
@@ -2271,6 +2302,8 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             (define-key p "\M-q" 'ignore)
             (define-key m "\C-c" 'car)
             (setq zz-image-child m zz-image-parent p))
+          (put 'zz-test 'ert--test
+               (record 'ert-test 'zz-test nil '(should t) nil :passed '(fast) "zz.el"))
           t)"#;
     // As in the ordinary reader, publish the names in the interpreter's
     // obarray before evaluation. That real image root owns the symbols
@@ -2285,14 +2318,17 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
         SymbolName::intern_str("zz-detached"),
         Value::list([Value::Integer(1)]),
     );
-    interp.schedule_timer_after(Value::symbol("car"), vec![Value::Nil], 1000.0, Some(5.0));
-    interp.ert_tests.push(crate::lisp::eval::ErtTestDefinition {
-        name: "zz-test".into(),
-        body: Value::list([Value::symbol("should"), Value::T]),
-        source_file: Some("zz.el".into()),
-        tags: vec!["fast".into()],
-        expected_result: ":passed".into(),
-    });
+    // An ERT test is its symbol's `ert--test' property, which the
+    // obarray carries; there is no registry group.
+    let source_tests = interp.discovered_tests();
+    assert_eq!(
+        source_tests,
+        vec![crate::compat::DiscoveredTest {
+            name: "zz-test".into(),
+            tags: vec!["fast".into()],
+            expected_result: ":passed".into(),
+        }]
+    );
     interp
         .composition_states
         .push(crate::lisp::eval::CompositionState {
@@ -2329,11 +2365,6 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             .iter()
             .any(|(slot, text)| *slot == RootSlot::BufferAlist && text.contains("zz-second"))
     );
-    assert!(
-        source_printed
-            .iter()
-            .any(|(slot, text)| *slot == RootSlot::TimerList && text.contains("car"))
-    );
     let mut target = Interpreter::new();
     let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     for (slot, _) in &source_groups {
@@ -2342,19 +2373,13 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             "root group {slot:?} is in the image"
         );
     }
-    // Every group prints the same from the restored interpreter (the
-    // timer's due time is the seconds still to wait, which passed).
+    // Every group prints the same from the restored interpreter.
     let target_groups = target.dump_root_groups();
     for ((slot, source_text), (target_slot, target_value)) in
         source_printed.iter().zip(&target_groups)
     {
         assert_eq!(slot, target_slot);
         let target_text = printed(&mut target, target_value);
-        if *slot == RootSlot::TimerList {
-            assert!(target_text.starts_with("([car (nil) "), "{target_text}");
-            assert!(target_text.ends_with(" 5.0 car])"), "{target_text}");
-            continue;
-        }
         assert_eq!(&target_text, source_text, "root group {slot:?}");
     }
     // The buffers behind the alist are live in the target, in order.
@@ -2383,6 +2408,7 @@ fn image_carries_the_root_groups_as_pdumper_c_dumps_the_static_roots() {
             },
         )
         .expect("install the dumped symbol cells");
+    assert_eq!(target.discovered_tests(), source_tests);
     // Actual Lisp roots carry both maps; the restored child shares the
     // parent's cons cells. Collection must preserve both while reachable.
     let form = crate::lisp::reader::Reader::new(
@@ -3235,6 +3261,79 @@ fn image_buffers_hold_the_images_standard_tables_or_their_own() {
 }
 
 #[test]
+fn image_carries_inhibit_changing_match_data_s_c_variable() {
+    // search.c's Vinhibit_changing_match_data is staticpro'd: the image
+    // carries the C variable's value, which a forwarded symbol shares and
+    // a symbol `makunbound' made plain does not, and the loaded process's
+    // matchers read it.
+    fn eval(interp: &mut Interpreter, source: &str) -> Value {
+        let form = crate::lisp::reader::Reader::new(source)
+            .read()
+            .expect("the form parses")
+            .expect("a form");
+        interp
+            .eval(&form, &mut crate::lisp::types::Env::new())
+            .unwrap_or_else(|error| panic!("{source}: {error:?}"))
+    }
+    for detached in [false, true] {
+        let mut source = Interpreter::new();
+        if detached {
+            eval(&mut source, "(makunbound 'inhibit-changing-match-data)");
+        }
+        eval(&mut source, "(setq inhibit-changing-match-data 'set)");
+        assert_eq!(
+            source.inhibit_changing_match_data(),
+            if detached {
+                Value::Nil
+            } else {
+                Value::symbol("set")
+            }
+        );
+        let mut ctx = DumpContext::new(false, source.main_thread_record_id());
+        if let Err(error) = write_image(&mut ctx, &source, RootSource::Interpreter) {
+            match error {
+                super::context::DumpError::Unsupported(unsupported) => {
+                    panic!("unsupported: {}", unsupported.message)
+                }
+                super::context::DumpError::Lisp(error) => panic!("dump: {error:?}"),
+            }
+        }
+        let bytes = ctx.buffer().to_vec();
+        let mut target = Interpreter::for_image();
+        let image =
+            load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
+        target
+            .install_image(
+                &image,
+                crate::lisp::eval::PdumperLoadRecord {
+                    filename: "icmd.pdmp".into(),
+                    load_time: std::time::Duration::ZERO,
+                    dump_size: bytes.len() as u64,
+                },
+            )
+            .expect("install the image's symbols");
+        target
+            .init_after_pdump_load()
+            .expect("initialize the loaded process");
+        let answer = eval(
+            &mut target,
+            r#"(progn (set-match-data '(0 0))
+                      (list (string-match "b" "abc") (match-data) inhibit-changing-match-data))"#,
+        );
+        let match_data = if detached {
+            Value::list([Value::Integer(1), Value::Integer(2)])
+        } else {
+            Value::list([Value::Integer(0), Value::Integer(0)])
+        };
+        assert_eq!(
+            answer,
+            Value::list([Value::Integer(1), match_data, Value::symbol("set")]),
+            "detached {detached}"
+        );
+    }
+}
+
+#[test]
 fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
     // search.c's Vcase_fold_search and syntax.c's
     // parse_sexp_lookup_properties are C variables the image does not
@@ -3260,7 +3359,7 @@ fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
                (set-buffer (get-buffer-create "cv-folding"))
                (set (make-local-variable 'case-fold-search) t)))"#,
     );
-    assert!(!source.case_fold_search_active() && source.parse_sexp_lookup_properties);
+    assert!(!source.case_fold_search_active() && source.parse_sexp_lookup_properties());
     let mut ctx = DumpContext::new(false, source.main_thread_record_id());
     if let Err(error) = write_image(&mut ctx, &source, RootSource::Interpreter) {
         match error {
@@ -3273,7 +3372,7 @@ fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
     let bytes = ctx.buffer().to_vec();
     let mut target = Interpreter::for_image();
     // The loading process's own words hold the C initial values.
-    assert!(target.case_fold_search_active() && !target.parse_sexp_lookup_properties);
+    assert!(target.case_fold_search_active() && !target.parse_sexp_lookup_properties());
     let image = load_image(&bytes, &mut target).unwrap_or_else(|error| panic!("load: {error:?}"));
     target
         .install_image(
@@ -3289,7 +3388,7 @@ fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
         .init_after_pdump_load()
         .expect("initialize the loaded process");
     assert!(!target.case_fold_search_active());
-    assert!(target.parse_sexp_lookup_properties);
+    assert!(target.parse_sexp_lookup_properties());
     let answer = eval(
         &mut target,
         r#"(list (string-match "abc" "ABC")
@@ -3300,5 +3399,5 @@ fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
         answer,
         Value::list([Value::Nil, Value::Integer(0), Value::Nil])
     );
-    assert!(target.parse_sexp_lookup_properties);
+    assert!(target.parse_sexp_lookup_properties());
 }

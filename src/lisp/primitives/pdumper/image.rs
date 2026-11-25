@@ -267,10 +267,9 @@ impl DumpHeader {
 #[repr(u8)]
 pub(crate) enum DumpType {
     Cons = 1,
-    /// The common string header (also reads the former host-string wire type).
+    /// The common string header.
     String = 2,
-    /// Legacy mutable-string wire type; restored by the common string loader.
-    StringObject = 3,
+    // Former string wire type 3 is unsupported: every string is type 2.
     /// One of alloc.c's two static empty-string roots, identified by its flag.
     EmptyString = 30,
     Symbol = 4,
@@ -340,7 +339,6 @@ impl DumpType {
         Some(match value {
             1 => Self::Cons,
             2 => Self::String,
-            3 => Self::StringObject,
             30 => Self::EmptyString,
             4 => Self::Symbol,
             5 => Self::Vector,
@@ -562,9 +560,11 @@ pub(crate) enum RootSlot {
     AlternativeFontRegistryAlist = 45,
     FringeBitmaps = 46,
     Compositions = 47,
-    ErtTests = 48,
+    // Former ERT test registry root code 48 is unsupported: a test is its
+    // symbol's `ert--test' property, which the obarray carries.
     LabeledRestrictions = 49,
-    TimerList = 50,
+    // Former native timer root code 50 is unsupported: GNU's timers are
+    // timer.el's `timer-list'.
     LastThreadError = 51,
     FontSelectionOrder = 52,
     /// PDUMPER_REMEMBER_SCALAR: the native state a loaded session starts
@@ -586,6 +586,12 @@ pub(crate) enum RootSlot {
     Prin1ToStringBuffer = 63,
     /// minibuf.c's staticpro'd Vminibuffer_list.
     MinibufferList = 64,
+    /// buffer.c's staticpro'd Vcase_fold_search (DEFVAR_LISP), the C
+    /// variable's own value, which a symbol `makunbound' detached keeps.
+    CaseFoldSearch = 65,
+    /// search.c's staticpro'd Vinhibit_changing_match_data (DEFVAR_LISP),
+    /// as `CaseFoldSearch'.
+    InhibitChangingMatchData = 66,
 }
 
 impl RootSlot {
@@ -635,9 +641,7 @@ impl RootSlot {
             45 => Self::AlternativeFontRegistryAlist,
             46 => Self::FringeBitmaps,
             47 => Self::Compositions,
-            48 => Self::ErtTests,
             49 => Self::LabeledRestrictions,
-            50 => Self::TimerList,
             51 => Self::LastThreadError,
             52 => Self::FontSelectionOrder,
             54 => Self::RememberedScalars,
@@ -650,6 +654,8 @@ impl RootSlot {
             62 => Self::EmacsMuleCharsetList,
             63 => Self::Prin1ToStringBuffer,
             64 => Self::MinibufferList,
+            65 => Self::CaseFoldSearch,
+            66 => Self::InhibitChangingMatchData,
             _ => return None,
         })
     }

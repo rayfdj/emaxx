@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 use crate::compat::{self, BatchReport, FileStatus, TestStatus};
 use crate::lisp;
 use crate::lisp::eval::Interpreter;
+#[cfg(test)]
 use crate::lisp::reader::Reader;
 use crate::lisp::types::{EmacsTermination, Env, Kind, LispError, LispErrorKind, Value};
 
@@ -214,41 +215,18 @@ fn run_batch_actions(
                 }
             }
             BatchAction::Eval(expression) => {
-                let forms = Reader::new(expression)
-                    .read_all()
-                    .map_err(|error| format!("parse --eval expression `{expression}`: {error}"))?;
-                for form in forms {
-                    // GNU's reader interns as it reads, so `--eval' leaves
-                    // every symbol in the form it evaluates in the obarray.
-                    // (Not every symbol in the STRING: startup.el:2669 reads
-                    // one form and silently discards any trailing ones, which
-                    // Emaxx's read_all loop does not -- a separate, older
-                    // divergence.)  Walking per form rather than all forms up
-                    // front is the faithful choice: an early form asking about
-                    // a symbol only a later form mentions answers nil in GNU
-                    // too.  The file
-                    // loader and `eval-region' replicate that with this walk
-                    // (lisp/mod.rs:947, loading.rs:401); `--eval' did not, so
-                    // `emacs --batch --eval "(progn 'foo (intern-soft \"foo\"))"'
-                    // answered nil where GNU answers foo -- for ordinary
-                    // symbols as well as keywords.
-                    interpreter.intern_symbols_in_value(&form);
-                    match interpreter
-                        .materialize_read_object_literals(form, eval_env)
-                        .and_then(|form| interpreter.eval(&form, eval_env))
-                        .map_err(LispError::into_kind)
-                    {
-                        Ok(_) => {}
-                        Err(LispErrorKind::Terminate(termination)) => {
-                            return Ok(Ok(termination.into()));
-                        }
-                        Err(error) => return Ok(Err(LispError::from(error))),
-                    }
-                    if let Some(termination) = interpreter.take_pending_termination() {
+                // startup.el's command-line-1: `(read-from-string STR)',
+                // whose reader interns as it reads in the current obarray,
+                // then `(eval EXPR t)' of the form read.
+                match eval_command_line_expression(interpreter, expression, eval_env)
+                    .map_err(LispError::into_kind)
+                {
+                    Ok(_) => {}
+                    Err(LispErrorKind::Terminate(termination)) => {
                         return Ok(Ok(termination.into()));
                     }
+                    Err(error) => return Ok(Err(LispError::from(error))),
                 }
-                continue;
             }
             BatchAction::Funcall(function) => {
                 let form = Value::list([Value::Symbol(function.clone().into())]);
@@ -274,6 +252,24 @@ fn run_batch_actions(
     // exits through `kill-emacs'.  Reaching this point means every action
     // evaluated without a termination request.
     Ok(Ok(BatchRunOutcome::Exit(0)))
+}
+
+/// command-line-1's `--eval': the first form of EXPRESSION, read by
+/// `read-from-string', evaluated lexically.  Its check of what follows,
+/// `(string-match-p "[\s\t\n]*\\'" str-expr end)', is a search that
+/// always matches, so whatever follows the form is neither read nor
+/// refused.
+fn eval_command_line_expression(
+    interpreter: &mut Interpreter,
+    expression: &str,
+    env: &mut Env,
+) -> Result<Value, LispError> {
+    let string = Value::String(expression.into());
+    let read_data = lisp::primitives::call(interpreter, "read-from-string", &[string], env)?;
+    let (form, _) = read_data
+        .cons_values()
+        .expect("read-from-string returns (OBJECT . END)");
+    lisp::primitives::call(interpreter, "eval", &[form, Value::T], env)
 }
 
 /// keyboard.c:top_level_1's handler for an error leaving the actions:
@@ -1658,15 +1654,17 @@ mod tests {
 
     fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
         let permit = crate::test_support::acquire_host_test_permit();
-        thread::Builder::new()
+        let continuation = thread::Builder::new()
             .stack_size(128 * 1024 * 1024)
             .spawn(move || {
                 let _permit = permit;
                 crate::test_support::note_host_permit_moved_to_this_thread();
                 test();
             })
-            .expect("spawn large-stack test thread")
-            .join()
+            .expect("spawn large-stack test thread");
+        // The test goes on on the large stack: lend it this thread's
+        // runtime while waiting, as thread-join gives global_lock up.
+        crate::lisp::runtime::release_while(|| continuation.join())
             .expect("join large-stack test thread");
     }
 
@@ -1695,6 +1693,56 @@ mod tests {
                 .to_string(),
             "(\"arbitrary/workload\" 37 2 9)"
         );
+    }
+
+    #[test]
+    fn embedder_eval_evaluates_its_first_form_as_command_line_1_does() {
+        // startup.el's command-line-1: `(read-from-string STR)', then
+        // `(eval EXPR t)'; its check of the text after the form is a
+        // search that always matches.  GNU 30.2's answers, recorded from
+        //   emacs -Q --batch --eval "$COLLECT" --eval "$EXPRESSION" \
+        //     --eval '(let ((standard-output t))
+        //               (princ (concat (nreverse zz-eval-out))))'
+        // with COLLECT the first action below: "1" and exit 0 for each of
+        // the first two, and for an empty --eval nothing and exit 255,
+        // the end-of-file error that batch's top-level handler ends with
+        // (kill-emacs -1).  What `princ' prints is collected through
+        // `standard-output'.
+        let collect = "(setq zz-eval-out nil standard-output (lambda (c) (push c zz-eval-out)))";
+        for (expression, printed, exit_code) in [
+            ("(princ 1) (princ 2)", "1", 0),
+            ("(princ 1)  \t\n ", "1", 0),
+            ("", "", -1),
+        ] {
+            let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
+            let actions = vec![
+                BatchAction::Eval(collect.into()),
+                BatchAction::Eval(expression.into()),
+            ];
+            assert_eq!(
+                run_initialized_batch(&mut interpreter, &BatchRunOptions::default(), &actions)
+                    .expect("the actions run"),
+                BatchRunOutcome::Exit(exit_code),
+                "the embedder for {expression:?}"
+            );
+            let collected = interpreter
+                .symbol_value("zz-eval-out")
+                .expect("the collector is bound");
+            let mut env = Env::new();
+            let collected =
+                lisp::primitives::call(&mut interpreter, "reverse", &[collected], &mut env)
+                    .and_then(|chars| {
+                        lisp::primitives::call(&mut interpreter, "concat", &[chars], &mut env)
+                    })
+                    .expect("the characters printed");
+            assert_eq!(
+                lisp::primitives::string_like(&collected)
+                    .expect("a string")
+                    .text,
+                printed,
+                "the embedder for {expression:?}"
+            );
+        }
     }
 
     #[test]

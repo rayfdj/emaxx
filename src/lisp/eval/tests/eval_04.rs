@@ -1433,9 +1433,16 @@ fn loaded_timer_queue_fires_during_waits() {
 
 #[test]
 fn timer_callbacks_finish_with_defsubsts_from_their_unloaded_feature() {
-    assert_eq!(
-        eval_str_with_upstream_batch(
-            r#"(progn
+    // GNU 30.2: a source-loaded timer callback that unloads its feature
+    // and then calls the feature's defsubst signals void-function, which
+    // `debug-on-error' gives the batch debugger, which ends the process
+    // with (kill-emacs -1), status 255; the feature and the defsubst are
+    // gone.  The evaluator
+    // kept such a definition until the callback returned until the
+    // mirrors plan's R5.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Env::new();
+    let program = r#"(progn
                  (load "seq" nil nil)
                  (require 'loadhist)
                  (require 'timer)
@@ -1453,9 +1460,31 @@ fn timer_callbacks_finish_with_defsubsts_from_their_unloaded_feature() {
                          (list emaxx-timer-unload-result
                                (featurep 'emaxx-timer-unload)
                                (fboundp 'emaxx-timer-unload-helper)))
-                     (delete-file file))))"#
+                     (delete-file file))))"#;
+    let form = crate::lisp::read_next_load_form(&mut interp, program, &mut 0, &mut env)
+        .expect("the program parses")
+        .expect("a form");
+    let error = interp
+        .eval(&form, &mut env)
+        .expect_err("the callback's call of the unloaded defsubst signals");
+    assert!(
+        matches!(
+            error.kind(),
+            crate::lisp::types::LispErrorKind::Terminate(termination)
+                if termination.exit_code == -1 && !termination.restart
         ),
-        Value::list([Value::Symbol("finished".into()), Value::Nil, Value::Nil])
+        "{error:?}"
+    );
+    interp.take_pending_termination();
+    interp.set_symbol_value_cell("debug-on-error", Value::Nil);
+    assert_eq!(
+        eval_str_with(
+            &mut interp,
+            "(list emaxx-timer-unload-result
+                   (featurep 'emaxx-timer-unload)
+                   (fboundp 'emaxx-timer-unload-helper))"
+        ),
+        Value::list([Value::Nil, Value::Nil, Value::Nil])
     );
 }
 

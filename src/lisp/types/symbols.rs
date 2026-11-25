@@ -7,7 +7,7 @@
 //! instruction. Interpreter states retain their owner for GC and parked calls.
 
 use super::obarray::{Buckets, StandardBuckets, text_key};
-use super::{ProcessTable, SymbolName, Value};
+use super::{SymbolName, Value};
 use crate::lisp::alloc::vectors::hash_tables::DescriptorPool;
 use std::cell::{Cell, RefCell};
 use std::collections::HashSet;
@@ -972,7 +972,8 @@ struct Symbols {
     hash_tests: RefCell<DescriptorPool>,
     /// data.c's C variable symbols_with_pos_enabled, the editor's as its
     /// obarray is: lisp.h's EQ reads it wherever it runs, and native code
-    /// is given its address (comp.c's relocation).
+    /// is given its address (comp.c's relocation), as its symbol's forward
+    /// is (Lisp_Boolfwd).
     symbols_with_pos_enabled: Cell<bool>,
 }
 
@@ -989,9 +990,42 @@ impl Default for Symbols {
     }
 }
 
-// Internal heap operations that do not create an editor retain their existing
-// process owner. Editor entry points always install a separate owner below.
-static HOST_SYMBOLS: ProcessTable<Rc<Symbols>> = ProcessTable::new();
+/// The obarray of internal heap operations that make no editor (editor
+/// entry points always install an owner of their own below).  alloc.c's
+/// Vobarray is a global under global_lock; this one is the runtime's, kept
+/// with it (`runtime::with_host_symbols'), and only the OS thread that
+/// holds the runtime reaches it.
+pub(crate) struct HostSymbols(Rc<Symbols>);
+
+// SAFETY: a HostSymbols moves between OS threads only inside the runtime's
+// state, under its lock, and its count changes only on the thread that
+// holds the runtime: the clones `host_symbols' hands out are that
+// thread's, and the runtime's release asserts that none is left
+// (`is_unshared'), so none outlives a tenure.
+unsafe impl Send for HostSymbols {}
+
+impl HostSymbols {
+    pub(crate) fn new() -> Self {
+        Self(Rc::default())
+    }
+
+    /// No clone of the table is alive.
+    pub(crate) fn is_unshared(&self) -> bool {
+        Rc::strong_count(&self.0) == 1
+    }
+
+    /// An owner that shares the table.
+    #[cfg(test)]
+    pub(crate) fn share(&self) -> SymbolOwner {
+        SymbolOwner(Rc::clone(&self.0))
+    }
+}
+
+/// The host obarray, for the OS thread that holds the runtime (taking it
+/// if this thread does not).
+fn host_symbols() -> Rc<Symbols> {
+    crate::lisp::runtime::with_host_symbols(|host| Rc::clone(&host.0))
+}
 
 type KeySlots = [Cell<Option<SymbolName>>; KEY_NAMES.len()];
 
@@ -1036,7 +1070,7 @@ pub(crate) fn symbols_with_pos_enabled() -> bool {
 #[cold]
 #[inline(never)]
 fn host_symbols_with_pos_enabled() -> bool {
-    HOST_SYMBOLS.with_borrow(|symbols| symbols.symbols_with_pos_enabled.get())
+    crate::lisp::runtime::with_host_symbols(|host| host.0.symbols_with_pos_enabled.get())
 }
 
 impl Drop for Symbols {
@@ -1056,9 +1090,9 @@ fn with_current<R>(body: impl FnOnce(&Symbols) -> R) -> R {
     ACTIVE.with_borrow(|active| match active {
         Some(symbols) => body(symbols),
         None => {
-            // Release ProcessTable's initialization borrow before BODY can
-            // resolve another symbol through the same host owner.
-            let symbols = HOST_SYMBOLS.with_borrow(Rc::clone);
+            // Release the runtime's state before BODY can resolve another
+            // symbol through the same host owner.
+            let symbols = host_symbols();
             body(&symbols)
         }
     })
@@ -1074,7 +1108,7 @@ impl Default for SymbolOwner {
         ACTIVE.with_borrow(|active| {
             Self(match active {
                 Some(symbols) => Rc::clone(symbols),
-                None => HOST_SYMBOLS.with_borrow(Rc::clone),
+                None => host_symbols(),
             })
         })
     }
@@ -1429,9 +1463,10 @@ pub(crate) fn intern_all_keys() {
     }
 }
 
-/// Qsymbol references belong to each editor, like GNU's process references.
-/// The existing terminal forwarding adapter consumes these until keyboard
-/// bindings use an allocated Lisp_Fwd redirect. No symbol-id lookup is needed.
+/// Qsymbol references belong to each editor, like GNU's process references:
+/// whether SYMBOL is this editor's symbol of a KBOARD variable.  The
+/// evaluator knows one by its forward (`SymbolCell::is_kboard_forwarded').
+#[cfg(test)]
 pub(crate) fn is_keyboard_variable(symbol: &SymbolName) -> bool {
     const KEYS: [SymbolKey; KEYBOARD_VARIABLES.len()] = {
         let mut keys = [SymbolKey(0); KEYBOARD_VARIABLES.len()];
@@ -1445,7 +1480,9 @@ pub(crate) fn is_keyboard_variable(symbol: &SymbolName) -> bool {
     with_current(|symbols| KEYS.iter().any(|key| key.get(symbols) == *symbol))
 }
 
-/// The variables keyboard.h keeps in each terminal's KBOARD.
+/// The variables keyboard.h keeps in each terminal's KBOARD, in the order
+/// of struct kboard's fields (`terminal::Kboard', whose index of each is
+/// its Lisp_Kboard_Objfwd offset).
 pub(crate) const KEYBOARD_VARIABLES: [&str; 14] = [
     "overriding-terminal-local-map",
     "last-command",
@@ -1458,9 +1495,9 @@ pub(crate) const KEYBOARD_VARIABLES: [&str; 14] = [
     "last-kbd-macro",
     "system-key-alist",
     "window-system",
-    "default-minibuffer-frame",
-    "input-decode-map",
     "local-function-key-map",
+    "input-decode-map",
+    "default-minibuffer-frame",
 ];
 
 fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {
@@ -1500,7 +1537,7 @@ fn mark_names(symbols: &Symbols, mark: &mut dyn FnMut(&Value)) {
 }
 
 pub(super) fn mark_scope_roots(mark: &mut dyn FnMut(&Value)) {
-    let host = HOST_SYMBOLS.with_borrow(Rc::clone);
+    let host = host_symbols();
     mark_names(&host, mark);
     ACTIVE.with_borrow(|active| {
         if let Some(symbols) = active {

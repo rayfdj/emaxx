@@ -34,7 +34,7 @@ A round's review answers whether the round cheats or breaks something; it does
 not survey the neighbourhood of the change. Current user instructions take
 precedence over this plan as over everything here.
 
-### M2: structure and performance — 6 of 30 done
+### M2: structure and performance — 7 of 30 done
 
 **Baseline of 23 November 2026**, on `394d57de` (round 366's source) under
 Rust 1.100.0, with GNU 30.2 on this host as the oracle.
@@ -157,6 +157,15 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   plan (docs/plans/d14-symbols.md: one name for the host text, identity
   carried as text and the comparisons with literals made symbols and
   keys, the host text deleted) belongs to A3.6 and is not done.
+- **How a mechanism GNU does not have is judged** (the owner's rule,
+  restated 25 November 2026): Emaxx does a thing GNU's way.  A way of
+  its own stays only where Rust's soundness forces it, with the
+  constraint and its measured cost recorded, or where it is clearly and
+  strictly better in every respect; one that costs anything GNU's does
+  not pay is removed, not tuned.  Applied first to the allocator's
+  mark bits, which a block's epoch cleared lazily at an allocation
+  (a test on every allocation that alloc.c does not make): they are to
+  be cleared by the sweep, as sweep_conses does.
 - **How the exit test is judged on a noisy host** (decided 24
   November 2026): each workload's median at or under 1.00 of GNU in
   the diagnostic run, and the bound of 1.03 applied to each workload
@@ -175,6 +184,28 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   `string-match' 1,323.6 (GNU 1,148.0).  Round 384: the text is
   buffer_text and point and the bounds keep their bytes; `looking-at'
   1,237.6, `char-after' 368.6 (GNU 260.0).
+- **Done: D13** (round 386).  `looking-at' at a failing position costs
+  1,130.6 instructions against GNU's 1,147.0 (1,387.6 at round 380),
+  `string-match' 1,250.6 against 1,148.0.  The rest of the buffers plan
+  (its stages S6 to S11: the C slots and Lisp fields as fields, the
+  holders, the ids out, the registry gone, GNU's size and census, the
+  per-buffer variables) belongs to A3.6 and B19 and is not done.
+- **In progress: A2.3, A3.4 and A3.8** (mirrors, registries and the
+  image; the plan: docs/plans/mirrors-registries.md, stages R0 to R18).
+  Round 385: its first three stages; the evaluator's twelve C variables
+  and the kboard's fourteen are their symbols' values alone.
+  `(setq inhibit-quit X)' costs 171.6 instructions against GNU's 248.0
+  (931.6 before), `(setq last-command X)' 149.6 against 257.0 (1,020.6).  Round 387: stages R4 and R5, the
+  dead and test-only machinery out, the reader's literals to its
+  context, `put' a plist store (435.6 against 399.0, 561.6 before).
+- **In progress: A2.5, A4.7, C5.1, C5.3 and D43** (runtime ownership
+  and thread access; the plan: docs/plans/runtime-ownership.md, stages
+  0 to 9).  Round 388: stages 0 to 2; the runtime lock names its
+  holder, an editor is built only by the thread holding it, and the
+  tests' gates take one order.  Round 389: stages 3 and 4; the
+  allocation frontier and the host obarray are the runtime's, so no OS
+  thread allocates without it; two test threads run without D43's
+  crash when the fixture image exists.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -20433,6 +20464,321 @@ setup_process_coding_systems's check now refuses). A 13-form
   (the same checks reading the text's caches through the new path);
   its two notes of new state are the character cache, moved into the
   text's boxed caches, and the match's slot for the shared bytes.
+- **Round 385: the evaluator's C variables and the kboard's are their
+  symbols' values alone (M2, the first stages of A2.3, A3.4 and A3.8;
+  none closed).**  The first three stages of the plan of mirrors,
+  registries and the image (docs/plans/mirrors-registries.md), with
+  the review's fix.  **The tests first**: GNU 30.2's answers for the
+  twelve C variables the evaluator reads and the fourteen KBOARD
+  variables under `setq', `let', a buffer-local binding and a switch,
+  `kill-local-variable', `makunbound' and the C effect after it, a
+  watcher, a thread's binding and an image; for nil and t; for the
+  host objects' censuses, types and printing; for `mapatoms' while its
+  callback interns; and for `garbage-collect''s shape.  **The C
+  variables**: `inhibit-quit', `quit-flag', `throw-on-input',
+  `max-lisp-eval-depth', `debug-on-next-call', `load-path',
+  `symbols-with-pos-enabled', `overriding-plist-environment',
+  `undo-inhibit-record-point', `attempt-orderly-shutdown-on-fatal-signal',
+  `case-fold-search' and `parse-sexp-lookup-properties' were each kept
+  twice, in a field of the evaluator and in the symbol, a store to one
+  copied into the other; each is now one C variable in a block the
+  interpreter owns, its symbol forwarding to it as DEFVAR_LISP's,
+  DEFVAR_INT's and DEFVAR_BOOL's do (the block is a separate
+  allocation, since a forward into the interpreter's own state would
+  alias every exclusive borrow of it; it lives as long as the
+  interpreter and never moves).  **The kboard**: the fourteen KBOARD
+  variables were a map of the terminal's; they are the fields of the
+  current terminal's kboard, a `let' of one undone into the kboard it
+  was made on, as specbind's SPECPDL_LET on a Kboard_Objfwd is.  A
+  symbol's flags are read as one word, so that a plain value and a
+  DEFVAR_LISP forward are told apart by one compare, and byte code's
+  variable reference reads such a forward in line.  **The review's
+  fix**: a C variable's symbol that `makunbound' had detached and a
+  later `setq' had given a value was forwarded again when an image was
+  loaded (the evaluator would not start after a dump with
+  `debug-on-next-call' so set, lost `inhibit-quit''s value, or took
+  the recursion limit from the symbol); a symbol the image records as
+  not forwarded is now installed plain, as pdumper's redirect is, and
+  its C variable keeps the dumped C value.  **Lisp sees these changes,
+  each now GNU's, all after a dump and a load**: a detached or void
+  `max-lisp-eval-depth' leaves the C limit (the nesting error comes
+  at 87 frames as GNU's, at 1,587 before); a detached
+  `case-fold-search' leaves searches folding; a detached
+  `parse-sexp-lookup-properties' and a detached `cons-cells-consed' or
+  `strings-consed' keep their plain values.  **Counts** (callgrind, the
+  release build; before = round 384's build): `(setq inhibit-quit X)'
+  in a byte-compiled loop 931.6 instructions, 171.6 after (GNU 248.0);
+  a `let' of it 1,312.6 to 360.6 (630.0); its reference 134.6 to 132.6
+  (251.0); `(setq last-command X)' 1,020.6 to 149.6 (257.0), a `let' of
+  it 1,338.6 to 1,029.6 (583.0), its reference 285.6 to 225.6 (265.0);
+  a `let' of `case-fold-search' 1,830.6 to 1,790.6 (1,291.0).  The
+  guards: the interpreted loop 2,753.0 to 2,760.0 and the lexical
+  recursion 358.1 to 359.1, six and one of them alignment padding (the
+  executed instructions 2,707.0 to 2,708.0 and unchanged); the dynamic
+  recursion 634.0 to 636.1 (GNU 636.2), 1.2 of it register moves in the
+  loop's return; `looking-at' 1,237.6 to 1,241.6, one load more for
+  `case-fold-search' through the block and register moves;
+  `set-buffer' 705.6 to 704.6, the byte-code calls 446.9 to 443.6, the
+  window accessors 318.4 to 319.9 (padding).  The independent review
+  (the one question: does the round cheat or break something) read the
+  block's lifetime, the forwards, the kboard's ownership and tracing,
+  the image's install and the fast read, and ran probes on GNU, the
+  build before and this one: every operation on the twelve and the
+  fourteen variables interpreted and byte-compiled, in threads, with
+  watchers and across buffers; each C effect (the recursion limit,
+  quits held and taken, from timers, process filters and C-g through a
+  terminal, the debugger at the next call, `load-path' searches,
+  folding and the syntax scanners, the command loop's variables in a
+  keyboard macro); values held only in a C variable or a kboard across
+  collections; a second terminal's kboard; and images.  It found no
+  cheat and one break, the image case above, which its second reading
+  found fixed with nothing else changed.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,622 passed, 0 failed, 2 ignored
+  (eighteen library tests more); cli 30, cli_parity 187 (three more),
+  ert_runner 3, native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 2,869
+  changed lines with 21 tests and 68 assertions added and 4 changed
+  (the image tests' field reads of `parse-sexp-lookup-properties',
+  now the C variable's accessor); its note of new state is the
+  accessor of the existing fatal-signal flag, now built on every host.
+- **Round 386: a match reads the case and syntax state as search.c
+  does, and `inhibit-changing-match-data' is its C variable (M2, D13
+  done; A3.6 not closed).**  Three commits after the buffers plan's
+  fifth stage.  **The canonicalize table**: the matcher translates a
+  character through the buffer's case_canon_table itself, as
+  char_table_translate does (CHAR_TABLE_REF, the `ascii' sub-table for
+  an ASCII character, the entry kept only when it is a character),
+  where it filled a per-thread cache of each table's ASCII entries for
+  every match; the plain search's translations and the fast
+  case-folding comparison read the tables the same way, as boyer_moore's
+  TRANSLATE does.  **The registers**: the match registers are a box the
+  match takes from the interpreter and gives back however it ends,
+  where they were moved out and an empty set left in their place; a
+  search run from Lisp inside a match gets a box of its own.  **The
+  matcher's buffer** refers to the match's snapshot instead of copying
+  its parts.  **RE_SETUP**: a match sets up the syntax state only when
+  an earlier match's needs releasing or `parse-sexp-lookup-properties'
+  is set, an inlined test with the work out of line, as GNU's
+  RE_SETUP is.  **`inhibit-changing-match-data'** is search.c's
+  DEFVAR_LISP, one C variable its symbol forwards to (with the
+  evaluator's others, its own slot in the image), and the matchers read
+  it, where each search looked its binding up.  **Lisp sees two
+  changes, each now GNU's**: a `syntax-propertize' callout that changes
+  the case table in the middle of a match is seen by the rest of that
+  match (the cached copy was read); after `makunbound' of
+  `inhibit-changing-match-data' and a `setq' of it, matches change the
+  match data, the C variable having stayed nil, and so they do after
+  an image is loaded (an image dumped so would not start, and a void
+  variable's later `let' inhibited them).  **Counts** (callgrind, the
+  release build; before = round 385's build): `looking-at' at a failing
+  position 1,241.6 instructions, 1,130.6 after, against GNU's 1,147.0,
+  so D13 is done (about 250 over when recorded; 1,387.6 at round 380);
+  `string-match' 1,318.6 to 1,250.6 (GNU 1,148.0);
+  `re-search-forward' 1,953.6 to 1,971.6 (GNU 2,445.0), its plain
+  search reading the case tables for its few translations as GNU's
+  does; `char-after' 368.6 and `goto-char' 138.6 unchanged; the call
+  and interpreter guards unchanged.  The independent reviews (the one
+  question each: does the round cheat or break something) read each
+  commit and ran probes on GNU, the build before and this one: case
+  folding over ten letter sets (é, the three sigmas, ǅ, ß, the dotted
+  and dotless i, k, ﬀ, Cherokee) through every search primitive with
+  the standard table, a buffer's own, `with-case-table' and an
+  indirect buffer's, and with canon entries that are not characters;
+  callouts that change the case table or search; a quit's debugger
+  searching in a terminal; the syntax state across six sequences of
+  matches with and without syntax properties, in buffers and strings;
+  `inhibit-changing-match-data' under every binding operation and
+  matcher, across collections and in images; the earlier stages'
+  random edits, destructive callouts and region-end matches again.
+  Every answer was GNU's or, where GNU's differed before, the build
+  before's.  They found no cheat and nothing broken.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,626 passed, 0 failed, 2 ignored (four
+  library tests more); cli 30, cli_parity 187, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 606 changed
+  lines with 4 tests and 7 assertions added and 2 changed (two
+  debug-only checks now under `cfg(debug_assertions)' over a debug-only
+  view, the same checks); its other notes are the match's slot for the
+  shared bytes and the registers taken from their box (an `Option'
+  taken, no error dropped).
+- **Round 387: dead and test-only machinery leaves the runtime, every
+  reader reads in the Lisp world, and `put' is a plist store (M2,
+  stages R4 and R5 of A2.3, A3.8 and A4.2; none closed).**  **Out of
+  the runtime**: a counter of function rebindings nothing read; a
+  native timer queue that only a test scheduled (timers are timer.el's
+  `timer-list', as GNU's), and with it the image's root slot for it and
+  the bound a process wait took from it; a string wire type the image
+  writer never produced; a cons snapshot only tests used, now theirs;
+  stale comments.  **The reader**: a literal the reader meets (`#s', a
+  `#[' function, a `#^[' char-table, a `#&' bool-vector) goes to the
+  reading context as a value, as lread.c builds it; the placeholder
+  object kind a context-free read left for a later walk to replace, and
+  the two walks, are gone, and a read with no context reports such a
+  literal as invalid syntax.  The library embedder's `--eval' reads its
+  first form with `read-from-string' and evaluates it as startup.el's
+  command-line-1 does (the editor binary already ran startup.el).
+  **`put'** stores into the symbol's plist and nothing else, where it
+  also copied every `ert--test' property into a registry of the
+  interpreter's that the library embedder's report read; that report
+  and the test runner now find the tests on the symbols, as ert.el's
+  `ert-select-tests' does.  An adapter that deferred the unbinding of a
+  `defsubst' an `unload-feature' removed inside a timer callback is
+  gone; the upstream test that motivated it (eshell-tests-unload.el)
+  passes without it.  **Lisp sees these changes, each now GNU's**:
+  `(put 'x 'ert--test (record 'foo 1))' returns the record (it
+  signaled wrong-type-argument); a test on an uninterned symbol is read
+  back from the symbol (`ert-test-boundp' t, was nil); an unbound
+  test's body is freed by the collector; a `defsubst' a feature's
+  unload removes inside a timer callback is unbound in that callback;
+  the library embedder's `--eval' evaluates only its first form, where
+  it evaluated all of them.  The compatibility report's discovered
+  tests are unchanged: for each of the 519 frozen files the list of
+  8,224 tests in all is the same, name for name and in order, before
+  and after.  The image's format changes (two root slots fewer); an
+  image of the build before is refused as GNU refuses another build's
+  dump.  **Counts** (callgrind, the release build; before = round
+  385's build): `put' 561.6 instructions, 435.6 after (GNU 399.0); the
+  call and interpreter guards unchanged (the interpreted loop 2,760.0
+  to 2,753.0, alignment padding).  The independent review (the one
+  question: does the round cheat or break something) ran probes on
+  GNU, the build before and this one: forty-nine literal texts through
+  every kind of read, with circular and shared structure, malformed
+  ones and their errors; printed objects read back, a file of literals
+  loaded, evaluated, byte-compiled and its output loaded, native
+  compilation; an image of literal-made objects and a timer; the
+  embedder's `--eval' cases; timers, `sit-for', `sleep-for',
+  `accept-process-output' with timers due and not; `put', `get' and
+  `symbol-plist' on every kind of symbol and ERT's selection,
+  redefinition and deletion; the defsubst probe and its upstream test;
+  and the inventory on five frozen files again.  Every answer was
+  GNU's or the build before's, except one break, which the round fixes:
+  the embedder's `--eval' first signaled "Trailing garbage" after its
+  first form, where GNU's command-line-1, whose check always matches,
+  never does.  It found no cheat; the anti-cheat scan of the thread
+  visitor, re-anchored where the reader's arm left, still covers every
+  arm that names a thread field.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,630 passed, 0 failed, 2 ignored (four
+  library tests more); cli 30, cli_parity 187, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 2,706
+  changed lines with 4 tests and 38 assertions added and 20 changed
+  (assertions on the reader's placeholder objects, the timer queue and
+  the ERT registry rewritten against what replaces them, and two now
+  expecting GNU's answers); its other notes are two defaults moved with
+  the ERT code, a test literal moved between helpers, and the
+  anti-cheat scan of the thread visitor re-anchored, which the review
+  read.
+- **Round 388: the runtime lock names its holder, and an editor is
+  built only by the OS thread that holds it (M2, the first stages of
+  A2.5, A4.7, C5.1, C5.3 and D43; none closed).**  The first three
+  stages of the plan of runtime ownership and thread access
+  (docs/plans/runtime-ownership.md).  **The ordinary configuration**:
+  `cargo test' runs one test thread, as the gate and CI do, where
+  `.cargo/config.toml' set two with a comment saying the tests shared
+  no interpreter state (D43 is that they do); docs/testing.md says what
+  the gate runs.  **The lock**: the process lock every public entry
+  takes, Emaxx's thread.c global_lock, now records the thread holding
+  it and how many wait; a thread that calls into the runtime outside a
+  public entry holds it until the thread exits (a tenure, as
+  run_thread holds global_lock while its thread runs Lisp), a scoped
+  entry inside a tenure taking nothing and registering its own stack
+  base; a waiter that has waited 60 seconds prints one line naming the
+  holder; the result a scoped entry hands out must be `Send', and the
+  build fails if one of eleven heap handle types becomes `Send' or
+  `Sync'.  **Editors**: building an editor (new, from an image, a clone,
+  the image template's copy) takes the lock, so library tests that
+  build editors take it in turn.  The tests' own gates take their
+  places in one order (host permits, the runtime, the boot
+  environment, the process-test permit within its writers, the
+  template, the fixture lock), except the process-test permit itself,
+  which a test can take while running GNU on a thread of its own and
+  then join a thread that builds the editor; and a test that waits for
+  the large-stack thread it starts lends that thread the lock and takes
+  it back, as thread-join gives global_lock up while it waits.
+  Allocation outside an editor does not take the lock yet (the next
+  stage), so the tests still need one test thread: with two, the
+  runtime's tests still crash where they share the allocator's free
+  lists.  **Behaviour and counts**: nothing Lisp sees changes, and the
+  call, interpreter and allocation guards are unchanged (a cons
+  allocation loop without collections 2,212.8 instructions an
+  iteration before and after; the lock costs once a process).  The
+  independent review (the one question: does the round cheat or break
+  something) read the lock's states, its release on every path and
+  its waiters, every caller of the lending helpers (244 test sites,
+  none keeping a Lisp value across the join), and the order of the
+  gates, ran the runtime's, the support code's, the thread, timer,
+  process-filter and mutex tests and the gate's skipped tests from the
+  round's test binary, and probes of threads, mutexes, condition
+  variables, timers, process filters and the command line on the build
+  before and this one, which answered alike.  It found no cheat and
+  nothing broken.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,639 passed, 0 failed, 2 ignored (nine
+  library tests more); cli 30, cli_parity 187, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 735 changed
+  lines with 9 tests and 44 assertions added; its notes of new state
+  are the lock, the thread's entry flags and the tenure (GNU's
+  global_lock, current_thread and run_thread's hold), and of changed
+  infrastructure the test-thread setting and the test support's boot.
+- **Round 389: the allocation frontier and the host obarray are the
+  runtime's (M2, stages 3 and 4 of A2.5, C5.3 and D43; none closed).**
+  **The frontier**: the allocator's free lists and bump regions for
+  conses, floats, symbols and string headers, its current string-data
+  blocks and its vector free lists were process statics any OS thread
+  could reach; they are now nineteen cells of the thread that holds the
+  runtime, each named after its alloc.c global (cons_free_list and the
+  current block's next and end, and the same for floats, symbols and
+  strings; current_sblock; vector_free_lists and
+  last_inserted_vector_free_idx), returned to the runtime under its
+  lock whenever the thread releases it (a scoped entry's end, the
+  thread's exit, a lend to a joined thread) and installed when it takes
+  it.  A thread that does not hold the runtime finds its cells empty,
+  and every path that would make a block or a large object takes the
+  runtime first, so no OS thread allocates from the shared heap
+  without it, as no thread conses in GNU without global_lock; a region
+  a thread is handed and leaves is reclaimed by the next sweep, which
+  only the holder makes.  **The host obarray**, which heap operations
+  without an editor intern into, was a process static whose unsafe
+  `Sync' claimed one Lisp thread at a time; it is the runtime's now,
+  reached only holding it, and that claim and two unsafe `Send' impls
+  of the SQLite states, which nothing sent, are gone.  **Lisp sees
+  nothing change**; the library tests run on two test threads without
+  the crash D43 recorded, when the fixture image exists (without it, a
+  test permit still unordered with the runtime can deadlock two tests,
+  and tests that read the allocation counters without the runtime can
+  count another thread's allocations: the next stage's).  **Counts**
+  (before = round 386's build): a cons allocation loop 2,342.1
+  instructions an iteration and 2,342.0 after; without collections
+  2,212.8 both; `make-symbol' 1,283.3 to 1,281.3; a vector 1,245.7 to
+  1,246.8 (alignment padding; one real instruction fewer); a float
+  605.6 to 604.6; the call and interpreter guards unchanged; the
+  release build reaches each cell with one `%fs:'-relative instruction.
+  The independent review (the one question: does the round cheat or
+  break something) read every allocation path for a thread without the
+  runtime, every release path for the frontier's return, the sweep
+  against handed regions, and the host obarray's new owner, ran the
+  allocator's, the types', the image's, the thread and template tests
+  and a two-thread run from the round's test binary, the thread, timer
+  and allocation probes and the command line on the build before and
+  this one, which answered alike, and checked the counts and the
+  machine code.  It found no cheat and nothing broken.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,646 passed, 0 failed, 2 ignored (seven
+  library tests more); cli 30, cli_parity 187, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 1,037
+  changed lines with 7 tests and 23 assertions added; its notes of new
+  state are the frontier's cells, which replace the allocator's
+  statics one for one.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -23847,7 +24193,141 @@ ert-tests as a whole 26,307 ms against 27,211.
   (run 45374040978) passed: 3,611 library tests, the seven integration
   targets (227) and the binaries' tests (61), none failed.
 
+**On `7f03318`** (round 385): the frozen run (run 45395163319) matched
+  all 7,928 outcomes with no unsuccessful execution on its second
+  attempt, on a slow runner (GNU's suite took 343 s): setup 90.5 s
+  against 68.8 s (1.316), test bodies 301.4 s against 274.4 s (1.098),
+  in all 1.142.  Its first attempt (GNU 317 s; in all 1.100) matched
+  7,927: Emaxx's run of `eglot-test-rust-completion-exit-function'
+  gave up waiting for rust-analyzer's indexing progress, as GNU's had
+  twice on round 383, and GNU's passed.  The widest body gaps of the
+  second are comp-tests (19.6 s against 15.8 s), tramp-tests (22.0
+  against 19.2), process-tests (3.25 against 1.93), semantic-utest-ia
+  (3.78 against 2.70), simple-tests (5.28 against 4.22) and mule-tests
+  (2.98 against 1.95).  The Rust gate (run 45395157573) passed: 3,629
+  library tests, the seven integration targets (230) and the binaries'
+  tests (61), none failed.
+
+**On `f643869`** (round 386): the frozen run (run 45416838018) matched
+  7,927 of the 7,928 outcomes on both its attempts, the one mismatch
+  the same test both times and on a different side each time:
+  `eglot-test-rust-completion-exit-function' failed in Emaxx's run on
+  the first attempt and in GNU's on the second, each with a
+  `jsonrpc-error', the other side passing.  In both logs the test sees
+  rust-analyzer's indexing begin and then asks for completions, and
+  the failing side's request is answered with an error while the
+  passing side's is not: a race in the test against the server on the
+  runner, which recorded the same pinned rust-analyzer (1.75.0) in
+  every run; it has failed on one side or the other in five of the last
+  eight attempts (rounds 383, 385 and 386) and is not skipped.  The
+  first attempt: setup 54.4 s against 47.0 s (1.156), test bodies 238.7
+  s against 224.1 s (1.065), in all 1.081 (GNU's suite took 271 s); the
+  second 1.087.  The widest body gaps of the first are tramp-tests
+  (15.6 s against 13.8 s), comp-tests (11.8 against 10.5),
+  process-tests (2.22 against 1.57), semantic-utest-ia (2.69 against
+  2.07) and mule-tests (1.97 against 1.36).  The Rust gate (run
+  45416831904) passed: 3,633 library tests, the seven integration
+  targets (230) and the binaries' tests (61), none failed.
+
+**On `cea1fb0`** (round 387): the frozen run (run 45437280138) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 71.3 s against 61.4 s (1.162), test bodies 273.8 s
+  against 258.1 s (1.061), in all 1.080 (GNU's suite took 319 s).  The
+  widest body gaps are tramp-tests (20.2 s against 17.2 s), comp-tests
+  (15.0 against 12.9), icalendar-tests (2.11 against 0.39; here the
+  builds of rounds 386 and 388 run it in 0.52 s and GNU in 0.43, so
+  the runner's), process-tests (2.93 against 1.82), mule-tests (2.55
+  against 1.73) and semantic-utest-ia (3.42 against 2.61).  The Rust
+  gate (run 45437271933) passed: 3,637 library tests, the seven
+  integration targets (230) and the binaries' tests (61), none failed.
+
+**On `1964bbc`** (round 388): the Rust gate (run 45465582529) passed:
+  3,646 library tests, the seven integration targets (230) and the
+  binaries' tests (61), none failed.  The frozen run (run 45465589794)
+  did not complete on either of its attempts, and each time for GNU's
+  own failure: GNU's run of test/src/process-tests.el ended in an abort
+  with none of the file's 37 outcomes written, so the comparison
+  stopped at the missing oracle outcomes.  The backtrace it printed,
+  resolved against the run's own oracle binary, is a Lisp thread's
+  `accept-process-output' reaching wait_reading_process_output's
+  `else if (xerrno == EBADF) emacs_abort ()' (process.c:5833): a
+  descriptor another thread closed under select, a race of GNU's in
+  the file's threads test, which the runs of the rounds before and
+  after pass.  Up to that file both attempts had passed every file
+  compared (506 of the 519).  Not run a third time; round 389's runs,
+  whose source includes this round's, stand for it.
+
+**On `a5ef0ae`** (round 389): the frozen run (run 45583266150) matched
+  7,927 of the 7,928 outcomes on both its attempts, the one mismatch
+  both times GNU's own failure of
+  `eglot-test-rust-completion-exit-function' (a `jsonrpc-error'),
+  Emaxx's run passing; no Emaxx outcome differed from a passing GNU
+  outcome.  That test has now failed on one side or the other in seven
+  of the eleven frozen attempts since round 383 (GNU's side five times,
+  Emaxx's twice), with the runner's recorded tools identical in a
+  passing run and a failing one; it is still compared, not skipped.
+  The first attempt: setup 51.4 s against 44.6 s (1.152), test bodies
+  226.5 s against 223.9 s (1.012), in all 1.035 (GNU's suite took 268
+  s); the second 1.079.  The widest body gaps of the first are
+  tramp-tests (14.9 s against 13.1 s), comp-tests (10.3 against 9.2),
+  semantic-utest-ia (2.56 against 1.86), mule-tests (1.92 against 1.29)
+  and epg-tests (2.27 against 1.77).  The Rust gate (run 45583261254)
+  passed: 3,653 library tests, the seven integration targets (230) and
+  the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 389 and its review), within the
+  plan's later stages.**  One line each: the canonical empty strings
+  and vector stay outside the frontier, with a borrow count that is not
+  atomic (a race only parallel runs open); string data chooses its
+  block chain before taking the runtime, so a thread that waited
+  through another's image load may put its data where it is never
+  compacted (memory, not correctness); a thread's first allocation
+  starts a new block of its kind; the process-test permit, still
+  unordered with the runtime, can now deadlock more tests run in
+  parallel; the host obarray's check for a shared clone fires after
+  the release.
+- **Found after the scope lock (round 388 and its review), within the
+  plan's later stages.**  One line each: the build-time check that heap
+  handles are neither `Send' nor `Sync' names eleven types and misses
+  others (the closure, hash table, bool-vector, char-table and
+  sub-char-table, record and symbol-with-position handles, the cons
+  slot, the string states, the interpreter state and its owner, the
+  native heap, the window handle, and `VectorlikeRef' beyond one
+  instance), none of them `Send' today; a thread that lends the lock
+  to a thread it joins has its stack and thread-local roots unscanned
+  by that thread's collections, as before the round (tests only; GNU's
+  mark_threads scans every thread); a tenure is released by a
+  thread-local destructor, so thread-locals registered before it are
+  destroyed after the release (a window only parallel runs open); the
+  process-test permit, unordered with the lock, can deadlock two tests
+  run in parallel; a library user's thread that waits for the lock 60
+  seconds now prints a line on stderr.
+- **Found after the scope lock (round 387 and its review), outside the
+  round and in no milestone.**  One line: a few host scans and tests
+  still read without a Lisp context (file-local values, shorthands,
+  completion's built-in interactive specs), none of them a literal.
+- **Found after the scope lock (round 386 and its reviews), outside the
+  round and in no milestone.**  One line each, both older than the
+  round: a canon table entry of -1 or (1+ (max-char)) leaves é unfolded
+  in GNU's buffer searches while its `string-match' folds it, where
+  Emaxx's buffer searches fold it too; `replace-regexp-in-string' and
+  `word-search-forward' do not return while
+  `inhibit-changing-match-data' is non-nil, in GNU as in Emaxx.
+- **Found after the scope lock (round 385, its tests and its review),
+  outside the round and in no milestone.**  One line each, each older
+  than the round: `set-default' of a localized DEFVAR_BOOL keeps t
+  where GNU keeps the value given (7); a watcher on `inhibit-quit'
+  does not hear `kill-buffer''s window code bind it (GNU notifies it
+  twelve times); `makunbound' of `last-command' does not detach it
+  from the command loop's stores; the KBOARD variables are written to
+  an image, where GNU writes none; a pipe process read from an image
+  makes `process-status' signal where GNU's is nil; `mapatoms' and
+  `all-completions' do not meet symbols their callback interns (the
+  mirrors plan's inventory item I1, in no stage); a weak table keeps a
+  variable's old value after a `setq' and a collection when run from
+  `--eval'; an image refusal names the object's kind where GNU prints
+  "pseudovector type N".
 - **Found after the scope lock (round 384 and its review), outside the
   round and in no milestone.**  One line each: an indirect buffer made
   of a dying base after the kill's walk of its indirect buffers (by an
@@ -25289,9 +25769,10 @@ ert-tests as a whole 26,307 ms against 27,211.
   it maps (`eassert (nmapped == leni)` is off in release builds and the
   uninitialized tail is concatenated); Emaxx concatenates what was mapped.
   Exclude that case from oracle comparisons.
-- Library tests share one process heap and are not thread-safe: run the gate
-  locally with `--test-threads=1`, as CI does; parallel runs crash in string
-  data.
+- Library tests share one process heap and are not thread-safe (D43):
+  ordinary `cargo test` now runs one test thread (`.cargo/config.toml`), as
+  the gate and CI do; an explicit `--test-threads` above 1 can still crash
+  in string data.
 - Keeping the interpreter state behind `Option` costs a test and branch per
   field access (about 18 of the 108 instructions `eval_sub` spends per list
   form). Removing the check would make a parked shell's use undefined

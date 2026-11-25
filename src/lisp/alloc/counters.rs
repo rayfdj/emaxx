@@ -6,7 +6,7 @@
 //! raises it (Fcons, make_float, allocate_vectorlike, Fmake_symbol,
 //! make_clear_multibyte_string/allocate_string, make_interval).
 //! Collection never lowers them. Their DEFVAR_INT symbols forward to these
-//! words (see `SymbolCell::forward_to_counter'), so Lisp reads, stores and
+//! words (see `SymbolCell::forward_to'), so Lisp reads, stores and
 //! dynamic bindings act on the counters themselves, as lread.c:defvar_int
 //! arranges for the C variables.
 //!

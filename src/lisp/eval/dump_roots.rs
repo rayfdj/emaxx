@@ -22,10 +22,6 @@ use crate::lisp::types::Kind;
 #[cfg_attr(not(test), allow(dead_code))]
 pub(crate) const ROOTS_RESET_AFTER_LOAD: &[(&str, &str)] = &[
     (
-        "case_fold_search",
-        "search.c's staticpro'd Vcase_fold_search, the forwarded C slot of case-fold-search, which install_image refills from the loaded current buffer's binding",
-    ),
-    (
         "require_nesting",
         "fns.c's staticpro'd require_nesting_list holds the features of the running `require' loads, none once the dump's own load ends; a session starts with none",
     ),
@@ -216,10 +212,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "the test harness's template ownership, not process state",
     ),
     (
-        "max_lisp_eval_depth",
-        "the forwarded C slot of max-lisp-eval-depth, refilled from the symbol's value on install",
-    ),
-    (
         "call_depth_gate",
         "a word derived from the quit flag, the pending termination and max-lisp-eval-depth, refreshed as each is installed",
     ),
@@ -236,10 +228,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "keyboard.c's return_to_command_loop, set by the running command loops; the new process has none until it enters its own",
     ),
     (
-        "debug_on_next_call",
-        "the forwarded C slot of debug-on-next-call, refilled likewise",
-    ),
-    (
         "hooks_cleared",
         "eval.c's Vrun_hooks cleared by shut_down_emacs, which a dumping process has not run",
     ),
@@ -250,14 +238,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     (
         "fd_thread_locks",
         "process.c's fd_callback_info thread locks, of descriptors a dumped image does not carry",
-    ),
-    (
-        "undo_inhibit_record_point",
-        "the forwarded C slot of undo-inhibit-record-point, refilled likewise with the buffers' copies",
-    ),
-    (
-        "parse_sexp_lookup_properties",
-        "the forwarded C slot of parse-sexp-lookup-properties, refilled likewise from the current buffer's binding (install_image)",
     ),
     (
         "executing_kbd_macro",
@@ -388,7 +368,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "network_connect_counter",
         "the running process's connections",
     ),
-    ("function_binding_generation", "a cache generation"),
     ("current_load_file", "nil at top level, where the dump runs"),
     (
         "load_source_provenance_remap",
@@ -466,7 +445,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
         "condition variable objects are refused by the writer",
     ),
     ("combined_after_change", "the running change group"),
-    ("timer_callback_depth", "the running timer"),
     ("file_notify_kqueue", "an OS descriptor of the process"),
     ("file_notify_inotify", "an OS descriptor of the process"),
     (
@@ -483,12 +461,7 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
 /// The transient groups that must be empty at dump time: they belong to
 /// an evaluation in progress, which Fdump_emacs_portable is not inside
 /// of beyond its own frame.
-pub(crate) const TRANSIENT_ROOTS: &[&str] =
-    &["pending_thread_events", "deferred_defsubst_unbindings"];
-
-fn opt_string(value: Option<&str>) -> Value {
-    value.map_or(Value::Nil, Value::string)
-}
+pub(crate) const TRANSIENT_ROOTS: &[&str] = &["pending_thread_events"];
 
 fn opt_symbol(value: Option<&str>) -> Value {
     value.map_or(Value::Nil, Value::symbol)
@@ -802,20 +775,6 @@ impl Interpreter {
                 ])
             })),
         ));
-        // ert.el keeps a test in its symbol's `ert--test' property; the
-        // registry mirrors it.
-        groups.push((
-            RootSlot::ErtTests,
-            Value::list(self.ert_tests.iter().map(|test| {
-                Value::vector([
-                    Value::symbol(&test.name),
-                    test.body,
-                    opt_string(test.source_file.as_deref()),
-                    Value::list(test.tags.iter().map(|tag| Value::symbol(tag))),
-                    Value::symbol(&test.expected_result),
-                ])
-            })),
-        ));
         // editfns.c: labeled_restrictions, an alist of (buffer (label beg end)...).
         groups.push((
             RootSlot::LabeledRestrictions,
@@ -828,23 +787,6 @@ impl Interpreter {
                         Value::Marker(restriction.end_marker_id),
                     ])
                 })
-            })),
-        ));
-        // keyboard.c: Vtimer_list's timer vectors; a due time as the
-        // seconds still to wait at dump time.
-        let now = std::time::Instant::now();
-        groups.push((
-            RootSlot::TimerList,
-            Value::list(self.pending_timers.iter().map(|timer| {
-                Value::vector([
-                    timer.function,
-                    Value::list(timer.args.iter().cloned()),
-                    timer.due.map_or(Value::Nil, |due| {
-                        Value::float(due.saturating_duration_since(now).as_secs_f64())
-                    }),
-                    timer.repeat.map_or(Value::Nil, Value::float),
-                    opt_symbol(timer.original_name.as_deref()),
-                ])
             })),
         ));
         // thread.c: last_thread_error.
@@ -897,13 +839,7 @@ impl Interpreter {
 
     /// The transient groups that must be empty when the image is written.
     pub(crate) fn dump_transient_roots_check(&self) -> Result<(), String> {
-        let counts = [
-            ("pending_thread_events", self.pending_thread_events.len()),
-            (
-                "deferred_defsubst_unbindings",
-                self.deferred_defsubst_unbindings.len(),
-            ),
-        ];
+        let counts = [("pending_thread_events", self.pending_thread_events.len())];
         debug_assert_eq!(counts.len(), TRANSIENT_ROOTS.len());
         for (name, count) in counts {
             if count != 0 {
@@ -1309,23 +1245,6 @@ mod install {
                     self.composition_states = compositions;
                     self.composition_index = Default::default();
                 }
-                RootSlot::ErtTests => {
-                    let mut tests = Vec::new();
-                    for entry in expect_list(value, "ert tests")? {
-                        let fields = expect_vector(&entry, "ert test")?;
-                        if fields.len() != 5 {
-                            return Err("ert test: five fields expected".into());
-                        }
-                        tests.push(ErtTestDefinition {
-                            name: expect_symbol(&fields[0], "test name")?,
-                            body: fields[1],
-                            source_file: opt_of(&fields[2], |v| expect_string(v, "source file"))?,
-                            tags: symbol_names(&fields[3], "test tags")?,
-                            expected_result: expect_symbol(&fields[4], "expected result")?,
-                        });
-                    }
-                    self.ert_tests = tests;
-                }
                 RootSlot::LabeledRestrictions => {
                     let mut restrictions = Vec::new();
                     for entry in expect_list(value, "labeled restrictions")? {
@@ -1341,32 +1260,6 @@ mod install {
                         });
                     }
                     self.labeled_restrictions = restrictions;
-                }
-                RootSlot::TimerList => {
-                    let now = std::time::Instant::now();
-                    let mut timers = Vec::new();
-                    for entry in expect_list(value, "timer list")? {
-                        let fields = expect_vector(&entry, "timer")?;
-                        if fields.len() != 5 {
-                            return Err("timer: five fields expected".into());
-                        }
-                        let due = opt_of(&fields[2], |v| {
-                            v.as_float()
-                                .map_err(|_| "timer due: not a float".to_owned())
-                        })?
-                        .map(|seconds| now + std::time::Duration::from_secs_f64(seconds.max(0.0)));
-                        timers.push(ScheduledTimer {
-                            function: fields[0],
-                            args: expect_list(&fields[1], "timer args")?,
-                            due,
-                            repeat: opt_of(&fields[3], |v| {
-                                v.as_float()
-                                    .map_err(|_| "timer repeat: not a float".to_owned())
-                            })?,
-                            original_name: opt_of(&fields[4], |v| expect_symbol(v, "timer name"))?,
-                        });
-                    }
-                    self.pending_timers = timers;
                 }
                 RootSlot::LastThreadError => {
                     self.last_thread_error = opt_of(value, |v| Ok(*v))?;
@@ -1433,13 +1326,6 @@ mod install {
         expect_list(value, what)?
             .iter()
             .map(|entry| expect_symbol_name(entry, what))
-            .collect()
-    }
-
-    fn symbol_names(value: &Value, what: &str) -> Result<Vec<String>, String> {
-        expect_list(value, what)?
-            .iter()
-            .map(|entry| expect_symbol(entry, what))
             .collect()
     }
 }

@@ -22,44 +22,52 @@ fn unquote(value: &Value) -> Value {
 impl Interpreter {
     // ── ERT support ──
 
-    // GNU `ert-set-test' stores an `ert-test' struct under the symbol's
-    // `ert--test' property; ert-font-lock's deftest macros register tests
-    // this way (bypassing `ert-deftest'), so mirror the definition into the
-    // native test registry too.
-    pub(crate) fn ert_set_test(&mut self, name: &str, test: &Value) -> Result<Value, LispError> {
-        let Kind::LispRecord(record) = test.kind() else {
-            return Err(LispError::TypeError("ert-test".into(), test.type_name()));
-        };
-        if record.type_tag() != Value::symbol("ert-test") {
-            return Err(LispError::TypeError("ert-test".into(), test.type_name()));
+    /// The tests ert.el knows, as `(ert-select-tests t t)' lists them: each
+    /// symbol of the standard obarray whose `ert--test' property is an
+    /// `ert-test' record, in the order of their names (apropos-internal's).
+    /// ert.el's own registry, read when asked: nothing is copied out.
+    pub(crate) fn ert_test_definitions(&self) -> Vec<ErtTestDefinition> {
+        let ert_test = Value::symbol("ert-test");
+        let property = SymbolName::intern_str("ert--test");
+        let mut tests = Vec::new();
+        for symbol in self.known_symbols_shared().iter() {
+            let Some(test) = self.get_symbol_property_of(symbol, &property) else {
+                continue;
+            };
+            let Kind::LispRecord(record) = test.kind() else {
+                continue;
+            };
+            if record.type_tag() != ert_test {
+                continue;
+            }
+            // The type occupies slot zero of the record: name,
+            // documentation, body, most-recent-result, expected-result-type,
+            // tags and file-name follow.
+            let expected_result = record
+                .get(5)
+                .and_then(|value| value.symbol_str().map(str::to_string))
+                .unwrap_or_else(|| ":passed".to_string());
+            let tags = record
+                .get(6)
+                .and_then(|value| value.to_vec().ok())
+                .unwrap_or_default()
+                .into_iter()
+                .filter_map(|tag| tag.symbol_str().map(str::to_string))
+                .collect::<Vec<_>>();
+            tests.push(ErtTestDefinition {
+                name: symbol.as_str().to_string(),
+                #[cfg(test)]
+                body: record.get(3).unwrap_or(Value::Nil),
+                #[cfg(test)]
+                source_file: record
+                    .get(7)
+                    .and_then(|value| primitives::string_like(&value).map(|text| text.text)),
+                tags,
+                expected_result,
+            });
         }
-        // The type occupies slot zero in the authoritative Lisp record.
-        let body = record.get(3).unwrap_or(Value::Nil);
-        let expected_result = record
-            .get(5)
-            .and_then(|value| value.symbol_str().map(str::to_string))
-            .unwrap_or_else(|| ":passed".to_string());
-        let tags = record
-            .get(6)
-            .and_then(|value| value.to_vec().ok())
-            .unwrap_or_default()
-            .into_iter()
-            .filter_map(|tag| tag.symbol_str().map(str::to_string))
-            .collect::<Vec<_>>();
-        let source_file = record
-            .get(7)
-            .and_then(|value| primitives::string_like(&value).map(|text| text.text))
-            .or_else(|| self.current_load_file.clone());
-        self.put_symbol_property(name, "ert--test", *test);
-        self.ert_tests.retain(|existing| existing.name != name);
-        self.ert_tests.push(ErtTestDefinition {
-            name: name.to_string(),
-            body,
-            source_file,
-            tags,
-            expected_result,
-        });
-        Ok(*test)
+        tests.sort_by(|left, right| left.name.cmp(&right.name));
+        tests
     }
 
     #[cfg(test)]
@@ -92,7 +100,7 @@ impl Interpreter {
     }
 
     pub fn discovered_tests(&self) -> Vec<DiscoveredTest> {
-        self.ert_tests
+        self.ert_test_definitions()
             .iter()
             .map(ErtTestDefinition::discovered)
             .collect()
@@ -107,15 +115,17 @@ impl Interpreter {
 
     #[cfg(test)]
     pub fn run_ert_tests_with_selector(&mut self, selector: Option<&Value>) -> BatchSummary {
-        let mut tests: Vec<ErtTestDefinition> = self
-            .ert_tests
-            .iter()
-            .filter(|test| selector.is_none_or(|selector| selector_matches(selector, test)))
-            .cloned()
-            .collect();
         // GNU's selector `t' enumerates tests through `apropos-internal',
         // which yields symbols in alphabetical order.
-        tests.sort_by(|left, right| left.name.cmp(&right.name));
+        let tests: Vec<ErtTestDefinition> = self
+            .ert_test_definitions()
+            .into_iter()
+            .filter(|test| selector.is_none_or(|selector| selector_matches(selector, test)))
+            .collect();
+        // The bodies stay reachable while they run, though a test may
+        // remove its own `ert--test' property.
+        let _bodies: crate::lisp::alloc::RootedVec<Value> =
+            tests.iter().map(|test| test.body).collect();
         let mut summary = BatchSummary::default();
         self.test_results.clear();
         self.last_selected_tests = tests.iter().map(|test| test.name.clone()).collect();
@@ -157,9 +167,6 @@ impl Interpreter {
             if std::env::var("EMAXX_DEBUG_ERT").is_ok() {
                 crate::errprintln!("ERT running: {}", test.name);
             }
-            // Timers a test scheduled but never reached firing conditions
-            // for must not leak into later tests.
-            self.pending_timers.clear();
             let previous =
                 std::mem::replace(&mut self.ert_test_source_file, test.source_file.clone());
             let previous_name = self.current_ert_test_name.replace(test.name.clone());

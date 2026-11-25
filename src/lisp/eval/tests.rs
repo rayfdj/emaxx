@@ -132,15 +132,14 @@ fn panic_eval_error(interp: &mut Interpreter, error: LispError) -> ! {
 fn eval_str_bare(src: &str) -> Value {
     let mut interp = Interpreter::new();
     let mut env: Env = crate::lisp::types::Env::new();
-    let forms = Reader::new(src).read_all().unwrap();
+    // The interpreter's reader, as readevalloop's: each form read (its
+    // symbols interned in the current obarray, its literals built) and
+    // evaluated before the next is read.
+    let mut offset = 0;
     let mut result = Value::Nil;
-    for form in &forms {
-        // GNU's reader interns every symbol it reads, so `intern-soft'
-        // must hit symbols that only occur in test source.
-        interp.intern_symbols_in_value(form);
-        let form = interp
-            .materialize_read_object_literals(*form, &mut env)
-            .expect("finish reader object allocation");
+    while let Some(form) =
+        crate::lisp::read_next_load_form(&mut interp, src, &mut offset, &mut env).unwrap()
+    {
         result = interp
             .eval(&form, &mut env)
             .unwrap_or_else(|error| panic_eval_error(&mut interp, error));
@@ -160,15 +159,12 @@ fn eval_str(src: &str) -> Value {
 fn eval_str_with(interp: &mut Interpreter, src: &str) -> Value {
     interp.select_symbol_owner();
     let mut env: Env = crate::lisp::types::Env::new();
-    let forms = Reader::new(src).read_all().unwrap();
+    // The interpreter's reader, as `eval_str_bare' reads.
+    let mut offset = 0;
     let mut result = Value::Nil;
-    for form in &forms {
-        // GNU's reader interns every symbol it reads, so `intern-soft'
-        // must hit symbols that only occur in test source.
-        interp.intern_symbols_in_value(form);
-        let form = interp
-            .materialize_read_object_literals(*form, &mut env)
-            .expect("finish reader object allocation");
+    while let Some(form) =
+        crate::lisp::read_next_load_form(interp, src, &mut offset, &mut env).unwrap()
+    {
         result = interp
             .eval(&form, &mut env)
             .unwrap_or_else(|error| panic_eval_error(interp, error));
@@ -235,30 +231,32 @@ fn assert_string_list(value: Value, expected: &[&str]) {
 
 fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
     let permit = crate::test_support::acquire_host_test_permit();
-    thread::Builder::new()
+    let continuation = thread::Builder::new()
         .stack_size(128 * 1024 * 1024)
         .spawn(move || {
             let _permit = permit;
             crate::test_support::note_host_permit_moved_to_this_thread();
             test();
         })
-        .unwrap()
-        .join()
         .unwrap();
+    // The test goes on on the large stack: lend it this thread's runtime
+    // while waiting, as thread-join gives global_lock up.
+    crate::lisp::runtime::release_while(|| continuation.join()).unwrap();
 }
 
 fn run_large_stack_test(test_fn: fn()) {
     let permit = crate::test_support::acquire_host_test_permit();
-    thread::Builder::new()
+    let continuation = thread::Builder::new()
         .stack_size(16 * 1024 * 1024)
         .spawn(move || {
             let _permit = permit;
             crate::test_support::note_host_permit_moved_to_this_thread();
             test_fn();
         })
-        .unwrap()
-        .join()
         .unwrap();
+    // The test goes on on the large stack: lend it this thread's runtime
+    // while waiting, as thread-join gives global_lock up.
+    crate::lisp::runtime::release_while(|| continuation.join()).unwrap();
 }
 
 fn run_exclusive_with_large_stack(test: impl FnOnce() + Send + 'static) {

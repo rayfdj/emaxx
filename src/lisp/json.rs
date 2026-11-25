@@ -1,5 +1,5 @@
 use super::eval::Interpreter;
-use super::types::{Kind, LispError, ReaderForm, Value, visible_symbol_name};
+use super::types::{Kind, LispError, Value, visible_symbol_name};
 use num_bigint::BigInt;
 use num_traits::ToPrimitive;
 
@@ -967,10 +967,6 @@ impl JsonOut<'_> {
                 self.buf.push(b'}');
                 self.unnest();
             }
-            Kind::ReaderForm(form) => match form.as_ref() {
-                ReaderForm::HashTable { fields } => self.object_hash_literal(fields)?,
-                _ => return Err(not_json_value(value)),
-            },
             Kind::Vector(vector) => {
                 self.nest()?;
                 self.buf.push(b'[');
@@ -1006,26 +1002,6 @@ impl JsonOut<'_> {
         }
         self.buf.push(b':');
         self.something(value)
-    }
-
-    /// A `#s(hash-table ...)' literal not yet made a table: its data's
-    /// pairs written as json_out_object_hash writes a table's.
-    fn object_hash_literal(&mut self, fields: &[Value]) -> Result<(), LispError> {
-        let mut data = Vec::new();
-        for pair in fields.as_chunks::<2>().0 {
-            if pair[0].as_symbol()? == "data" {
-                data = list_to_flat_pairs(&pair[1])?;
-            }
-        }
-        self.nest()?;
-        self.buf.push(b'{');
-        let mut first = true;
-        for (key, value) in &data {
-            self.member(&mut first, key, value)?;
-        }
-        self.buf.push(b'}');
-        self.unnest();
-        Ok(())
     }
 
     /// json_out_object_cons: an alist when the first element is a cons,
@@ -1259,17 +1235,6 @@ fn utf8_bytes_to_unibyte_text(bytes: &[u8]) -> String {
         }
     }
     text
-}
-
-fn list_to_flat_pairs(value: &Value) -> Result<Vec<(Value, Value)>, LispError> {
-    let items = value.to_vec()?;
-    let mut pairs = Vec::new();
-    let mut index = 0usize;
-    while index + 1 < items.len() {
-        pairs.push((items[index], items[index + 1]));
-        index += 2;
-    }
-    Ok(pairs)
 }
 
 #[cfg(test)]

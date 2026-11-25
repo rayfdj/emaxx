@@ -38,12 +38,12 @@ pub use windows::WindowObjectRef;
 #[cfg(test)]
 mod tests;
 
-use super::super::types::{BufferValue, LispBignum, MarkBit, ReaderForm, Value};
+use super::super::types::{BufferValue, LispBignum, MarkBit, Value};
 use super::{BlockKind, blocks_of, register_block, sweep_blocks_of, unregister_block};
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
-use std::sync::atomic::{AtomicPtr, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicUsize, Ordering};
 
 /// alloc.c's `VECTOR_BLOCK_SIZE'.
 pub(crate) const VECTOR_BLOCK_SIZE: usize = 4096;
@@ -111,7 +111,6 @@ pub enum VectorTag {
     /// lisp.h's PVEC_RECORD: a record, and the pseudovector kinds this
     /// implementation keeps as records (the kind is in the state).
     Record = 34,
-    ReaderForm = 41,
 }
 
 impl VectorTag {
@@ -136,7 +135,6 @@ impl VectorTag {
             32 => Self::CharTable,
             33 => Self::SubCharTable,
             34 => Self::Record,
-            41 => Self::ReaderForm,
             _ => Self::Normal,
         }
     }
@@ -335,10 +333,47 @@ fn vector_in_block(header: *mut VectorHeader, block: usize) -> bool {
     header as usize <= block + VECTOR_BLOCK_BYTES - VBLOCK_BYTES_MIN
 }
 
-/// alloc.c's `vector_free_lists' and `last_inserted_vector_free_idx'.
-static FREE_LISTS: [AtomicPtr<VectorHeader>; FREE_LIST_ARRAY_SIZE] =
-    [const { AtomicPtr::new(std::ptr::null_mut()) }; FREE_LIST_ARRAY_SIZE];
-static LAST_INSERTED_FREE_INDEX: AtomicUsize = AtomicUsize::new(FREE_LIST_ARRAY_SIZE);
+thread_local! {
+    /// alloc.c's `vector_free_lists' and `last_inserted_vector_free_idx':
+    /// the cells of the OS thread that holds the runtime (see
+    /// `alloc::Frontier').
+    static FREE_LISTS: [Cell<*mut VectorHeader>; FREE_LIST_ARRAY_SIZE] =
+        const { [const { Cell::new(std::ptr::null_mut()) }; FREE_LIST_ARRAY_SIZE] };
+    static LAST_INSERTED_FREE_INDEX: Cell<usize> = const { Cell::new(FREE_LIST_ARRAY_SIZE) };
+}
+
+/// The vectors' share of `alloc::Frontier'.
+pub(super) struct Frontier([usize; FREE_LIST_ARRAY_SIZE], usize);
+
+impl Frontier {
+    pub(super) const EMPTY: Self = Self([0; FREE_LIST_ARRAY_SIZE], FREE_LIST_ARRAY_SIZE);
+
+    pub(super) fn take() -> Self {
+        Self(
+            FREE_LISTS.with(|lists| {
+                lists
+                    .each_ref()
+                    .map(|list| list.replace(std::ptr::null_mut()) as usize)
+            }),
+            LAST_INSERTED_FREE_INDEX.replace(FREE_LIST_ARRAY_SIZE),
+        )
+    }
+
+    /// The free lists' heads.
+    #[cfg(test)]
+    pub(super) fn cells(&self) -> &[usize] {
+        &self.0
+    }
+
+    pub(super) fn install(self) {
+        FREE_LISTS.with(|lists| {
+            for (list, head) in lists.iter().zip(self.0) {
+                list.set(head as *mut VectorHeader);
+            }
+        });
+        LAST_INSERTED_FREE_INDEX.set(self.1);
+    }
+}
 
 /// gcstat's `total_vectors' and `total_vector_slots' by kind, and the
 /// string objects' share of `total_strings' and `total_string_bytes':
@@ -442,10 +477,10 @@ unsafe fn setup_on_free_list(header: *mut VectorHeader, nbytes: usize) {
         (*header).size = VectorHeader::pseudovector_size_word(VectorTag::Free, nbytes);
         payload(header)
             .cast::<*mut VectorHeader>()
-            .write(FREE_LISTS[index].load(Ordering::Relaxed));
+            .write(FREE_LISTS.with(|lists| lists[index].get()));
     }
-    FREE_LISTS[index].store(header, Ordering::Relaxed);
-    LAST_INSERTED_FREE_INDEX.store(index, Ordering::Relaxed);
+    FREE_LISTS.with(|lists| lists[index].set(header));
+    LAST_INSERTED_FREE_INDEX.set(index);
 }
 
 /// A free run in an image block: tagged free, so later sweeps neither clean
@@ -462,14 +497,24 @@ unsafe fn setup_free_unlinked(header: *mut VectorHeader, nbytes: usize) {
 /// The next vector takes a new block (see `ImageRegion'). Free runs left
 /// behind return to the free lists at the next sweep.
 pub(super) fn abandon_allocation_frontier() {
-    for list in &FREE_LISTS {
-        list.store(std::ptr::null_mut(), Ordering::Relaxed);
-    }
-    LAST_INSERTED_FREE_INDEX.store(FREE_LIST_ARRAY_SIZE, Ordering::Relaxed);
+    clear_free_lists();
+}
+
+/// Empty the vector free lists.
+fn clear_free_lists() {
+    FREE_LISTS.with(|lists| {
+        for list in lists {
+            list.set(std::ptr::null_mut());
+        }
+    });
+    LAST_INSERTED_FREE_INDEX.set(FREE_LIST_ARRAY_SIZE);
 }
 
 /// alloc.c's `allocate_vector_block'.
 fn allocate_vector_block() -> usize {
+    // A thread without the runtime has empty free lists, so it reaches
+    // here at its first allocation (see `alloc::Frontier').
+    crate::lisp::runtime::ensure_held();
     let block = super::arena::allocate_block(VECTOR_BLOCK_SIZE, VECTOR_BLOCK_SIZE);
     assert!(!block.is_null(), "out of memory for a vector block");
     let start = block as usize;
@@ -497,7 +542,7 @@ fn allocate_vector_from_block(nbytes: usize) -> *mut VectorHeader {
     debug_assert!(nbytes.is_multiple_of(ROUNDUP_SIZE));
     // First, the free list of exactly this size.
     let index = vindex(nbytes);
-    let head = FREE_LISTS[index].load(Ordering::Relaxed);
+    let head = FREE_LISTS.with(|lists| lists[index].get());
     if !head.is_null() {
         // SAFETY: a free vector's link.
         unsafe {
@@ -507,23 +552,22 @@ fn allocate_vector_from_block(nbytes: usize) -> *mut VectorHeader {
                 head as usize,
                 (*head).size
             );
-            FREE_LISTS[index].store(next_free(head), Ordering::Relaxed);
+            FREE_LISTS.with(|lists| lists[index].set(next_free(head)));
         }
         return head;
     }
     // Next, a larger free vector, split so that the rest is at least a
     // one-slot vector.
-    let first =
-        vindex(nbytes + VBLOCK_BYTES_MIN).max(LAST_INSERTED_FREE_INDEX.load(Ordering::Relaxed));
-    for list in &FREE_LISTS[first.min(FREE_LIST_ARRAY_SIZE)..] {
-        let head = list.load(Ordering::Relaxed);
+    let first = vindex(nbytes + VBLOCK_BYTES_MIN).max(LAST_INSERTED_FREE_INDEX.get());
+    for index in first.min(FREE_LIST_ARRAY_SIZE)..FREE_LIST_ARRAY_SIZE {
+        let head = FREE_LISTS.with(|lists| lists[index].get());
         if head.is_null() {
             continue;
         }
         // SAFETY: a free vector: its header and link are readable.
         let vector_nbytes = unsafe { (*head).nbytes() };
         debug_assert!(vector_nbytes > nbytes);
-        list.store(unsafe { next_free(head) }, Ordering::Relaxed);
+        FREE_LISTS.with(|lists| lists[index].set(unsafe { next_free(head) }));
         let rest = vector_nbytes - nbytes;
         debug_assert!(rest.is_multiple_of(ROUNDUP_SIZE));
         // SAFETY: the excess is inside the same free vector.
@@ -576,6 +620,9 @@ fn try_allocate_vectorlike(nbytes: usize) -> Result<*mut VectorHeader, Allocatio
             .checked_add(LARGE_MARK_BYTES)
             .and_then(|bytes| std::alloc::Layout::from_size_align(bytes, ROUNDUP_SIZE).ok())
             .ok_or(failed)?;
+        // A large vector is the heap's from here: only the OS thread that
+        // holds the runtime makes one.
+        crate::lisp::runtime::ensure_held();
         // SAFETY: a non-zero layout.
         let vector = unsafe { std::alloc::alloc(layout) };
         if vector.is_null() {
@@ -1290,10 +1337,6 @@ impl Vectorlike for BufferValue {
     const TAG: VectorTag = VectorTag::Buffer;
 }
 
-impl Vectorlike for ReaderForm {
-    const TAG: VectorTag = VectorTag::ReaderForm;
-}
-
 impl Vectorlike for crate::lisp::eval::RecordState {
     const TAG: VectorTag = VectorTag::Record;
 }
@@ -1443,7 +1486,7 @@ unsafe fn census_on_allocate(header: *mut VectorHeader) {
                     raise(&LIVE_RECORD_SLOTS, slots);
                 }
             }
-            VectorTag::Normal | VectorTag::Free | VectorTag::ReaderForm => {}
+            VectorTag::Normal | VectorTag::Free => {}
         }
     }
 }
@@ -1501,7 +1544,6 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
             | VectorTag::CharTable
             | VectorTag::SubCharTable
             | VectorTag::SymbolWithPos => {}
-            VectorTag::ReaderForm => std::ptr::drop_in_place(body.cast::<ReaderForm>()),
             VectorTag::HashTable => hash_tables::cleanup(header),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {}
             VectorTag::Record => {
@@ -1594,7 +1636,7 @@ impl SweepStats {
                         self.record_slots += slots;
                     }
                 }
-                VectorTag::Free | VectorTag::ReaderForm => {}
+                VectorTag::Free => {}
             }
         }
     }
@@ -1675,10 +1717,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
             }
         }
     }
-    for list in &FREE_LISTS {
-        list.store(std::ptr::null_mut(), Ordering::Relaxed);
-    }
-    LAST_INSERTED_FREE_INDEX.store(FREE_LIST_ARRAY_SIZE, Ordering::Relaxed);
+    clear_free_lists();
     let mut stats = SweepStats::default();
     // When no vector in the image's blocks died, they are left unread
     // (checked builds read them and assert so).
@@ -1964,7 +2003,6 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
             VectorTag::CharTable => Value::CharTable(CharTableRef::from_raw(header)),
             VectorTag::SubCharTable => Value::SubCharTable(SubCharTableRef::from_raw(header)),
             VectorTag::HashTable => Value::HashTable(HashTableRef::from_raw(header)),
-            VectorTag::ReaderForm => Value::ReaderForm(VectorlikeRef::from_raw(header)),
             VectorTag::Record if generic_records::record_has_inline_slots(header) => {
                 Value::LispRecord(LispRecordRef::from_raw(header))
             }

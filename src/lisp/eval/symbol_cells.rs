@@ -279,6 +279,10 @@ impl SymbolCells {
     /// Restore the allocated payload and redirect, independent of enumeration.
     pub(crate) fn install_cell(&mut self, symbol: &SymbolName, snapshot: SymbolCellSnapshot) {
         self.clear_alias(symbol);
+        // A variable localized in the image holds its default in its cell.
+        if snapshot.flags & LOCALIZED != 0 {
+            symbol.cell().localize_forward();
+        }
         match snapshot.value {
             Some(value) => {
                 self.insert(symbol, value);
@@ -338,6 +342,11 @@ impl SymbolCells {
 
     pub(crate) fn set_flag(&mut self, symbol: &SymbolName, flag: u8) -> bool {
         symbol.cell().set_plain_store(false);
+        // A C variable made local keeps the forward beside its default
+        // cell (data.c's make_blv).
+        if flag & LOCALIZED != 0 {
+            symbol.cell().localize_forward();
+        }
         let old = symbol.cell().flags.get();
         symbol.cell().flags.set(old | flag);
         if flag & SPECIAL != 0 {

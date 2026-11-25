@@ -278,6 +278,16 @@ impl Interpreter {
                 flags |= flag;
             }
         }
+        // pdumper.c dumps the symbol's redirect as it is: a record that is
+        // not SYMBOL_FORWARDED (`makunbound' detached the symbol from its C
+        // variable) installs a plain symbol, which this process forwarded
+        // when it defined its C variables, and leaves the C variable alone
+        // (a DEFVAR_LISP's has its dumped value from its root; an int's or
+        // bool's is not dumped).
+        if redirect != SYMBOL_FORWARDED && name.cell().has_c_slot() {
+            name.cell().release_forward();
+            self.forget_undumped_c_variable(&name);
+        }
         self.globals.install_cell(
             &name,
             SymbolCellSnapshot {
@@ -326,15 +336,19 @@ impl Interpreter {
     fn install_root_slot(&mut self, slot: RootSlot, value: &Value) {
         match slot {
             RootSlot::QuitFlag => {
-                self.quit_flag = *value;
+                self.c_variables.quit_flag.set(*value);
                 self.refresh_call_depth_gate();
             }
-            RootSlot::InhibitQuit => self.inhibit_quit = *value,
-            RootSlot::ThrowOnInput => self.throw_on_input = *value,
+            RootSlot::InhibitQuit => self.c_variables.inhibit_quit.set(*value),
+            RootSlot::ThrowOnInput => self.c_variables.throw_on_input.set(*value),
             RootSlot::OverridingPlistEnvironment => {
-                self.overriding_plist_environment = *value;
+                self.c_variables.overriding_plist_environment.set(*value);
             }
-            RootSlot::LoadPath => self.load_path = *value,
+            RootSlot::LoadPath => self.c_variables.load_path.set(*value),
+            RootSlot::CaseFoldSearch => self.c_variables.case_fold_search.set(*value),
+            RootSlot::InhibitChangingMatchData => {
+                self.c_variables.inhibit_changing_match_data.set(*value);
+            }
             RootSlot::LoadsInProgress => self.loads_in_progress = *value,
             RootSlot::LocalTimeZoneRule => self.local_time_zone_rule = *value,
             RootSlot::FrameAndBufferState => self.frame_and_buffer_state = *value,

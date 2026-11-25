@@ -434,10 +434,16 @@ impl Drop for BootEnvironmentWriteGuard {
 /// crosses the host-process boundary.  The in-process test gate for
 /// process tests is therefore taken first, the order every process test
 /// already uses (its permit, then a boot's read guard); taking the write
-/// lock first deadlocked against a process test waiting to boot.
+/// lock first deadlocked against a process test waiting to boot.  The Lisp
+/// runtime comes before both, as a test's boot takes it before its read
+/// guard: a writer that waited for it would wait for a boot waiting for
+/// the write guard.
 pub fn lock_boot_environment_for_write() -> BootEnvironmentWriteGuard {
     #[cfg(test)]
-    crate::test_support::mark_process_test();
+    {
+        crate::lisp::runtime::ensure_held();
+        crate::test_support::mark_process_test();
+    }
     let guard = boot_environment_lock()
         .write()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -446,8 +452,12 @@ pub fn lock_boot_environment_for_write() -> BootEnvironmentWriteGuard {
 }
 
 /// The boot-side read acquisition; None when this very thread holds the
-/// write guard (its own boot is the one the mutation is FOR).
+/// write guard (its own boot is the one the mutation is FOR).  A test's
+/// boot takes the Lisp runtime first, as a writer does; a public entry
+/// already holds it.
 pub fn boot_environment_read_guard() -> Option<std::sync::RwLockReadGuard<'static, ()>> {
+    #[cfg(test)]
+    crate::lisp::runtime::ensure_held();
     if BOOT_ENV_WRITE_HELD.with(std::cell::Cell::get) {
         return None;
     }

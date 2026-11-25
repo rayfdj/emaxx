@@ -3735,47 +3735,6 @@ impl Interpreter {
         }
     }
 
-    /// Put the still-unfired tail of a due-timer batch back before timers
-    /// scheduled by callbacks from that batch.  A timer callback can perform
-    /// a nonlocal exit (`throw'); GNU leaves every other timer active, while
-    /// dropping our detached batch here would silently cancel them.
-    fn restore_unfired_timer_batch(&mut self, pending: impl Iterator<Item = ScheduledTimer>) {
-        let mut unfired = pending.collect::<Vec<_>>();
-        unfired.append(&mut self.pending_timers);
-        self.pending_timers = unfired;
-    }
-
-    /// Schedule a timer to become due DELAY_SECS from now, optionally
-    /// repeating every REPEAT_SECS (GNU run-at-time).
-    #[cfg(test)]
-    pub fn schedule_timer_after(
-        &mut self,
-        function: Value,
-        args: Vec<Value>,
-        delay_secs: f64,
-        repeat_secs: Option<f64>,
-    ) {
-        let original_name = function.symbol_str().map(str::to_string);
-        let due = (delay_secs > 0.0 && delay_secs.is_finite())
-            .then(|| std::time::Instant::now() + std::time::Duration::from_secs_f64(delay_secs));
-        self.pending_timers.push(ScheduledTimer {
-            function,
-            original_name,
-            args,
-            due,
-            repeat: repeat_secs.filter(|secs| secs.is_finite() && *secs > 0.0),
-        });
-    }
-
-    /// The earliest instant at which a pending native timer becomes due,
-    /// so waits can wake up exactly when the next timer should fire.
-    pub fn next_timer_due(&self) -> Option<std::time::Instant> {
-        self.pending_timers
-            .iter()
-            .map(|timer| timer.due.unwrap_or_else(std::time::Instant::now))
-            .min()
-    }
-
     pub fn queue_file_notification(&mut self, path: &str, action: &str) {
         // A kernel notification belongs only to watches that existed when
         // the filesystem operation occurred.  Resolving recipients later
@@ -4799,77 +4758,8 @@ impl Interpreter {
         self.run_pending_file_notifications(env)
     }
 
-    fn run_pending_native_timers(&mut self, env: &mut Env) -> Result<bool, LispError> {
-        // Only timers whose scheduled time has arrived fire; the rest stay
-        // queued (GNU never runs a timer before it is due).  Due timers
-        // fire in schedule order.
-        let now = std::time::Instant::now();
-        let all = std::mem::take(&mut self.pending_timers);
-        let (pending, not_yet): (Vec<_>, Vec<_>) = all
-            .into_iter()
-            .partition(|timer| timer.due.is_none_or(|due| due <= now));
-        self.pending_timers = not_yet;
-        let ran = !pending.is_empty();
-        let mut pending = pending.into_iter();
-        while let Some(timer) = pending.next() {
-            if let Some(repeat) = timer.repeat {
-                self.pending_timers.push(ScheduledTimer {
-                    function: timer.function,
-                    original_name: timer.original_name.clone(),
-                    args: timer.args.clone(),
-                    due: Some(now + std::time::Duration::from_secs_f64(repeat)),
-                    repeat: timer.repeat,
-                });
-            }
-            self.begin_timer_callback();
-            let outcome = self.call_function_value(
-                timer.function,
-                timer.original_name.as_deref(),
-                &timer.args,
-                env,
-            );
-            self.end_timer_callback();
-            match outcome.map_err(LispError::into_kind) {
-                Ok(_) => {}
-                Err(error @ LispErrorKind::Throw(_, _)) => {
-                    self.restore_unfired_timer_batch(pending);
-                    return Err(LispError::from(error));
-                }
-                Err(error) => {
-                    // `timer-event-handler' demotes timer errors to a message
-                    // unless `debug-on-error' asks for the debugger.
-                    if self
-                        .symbol_value_key(cached_symbol!("debug-on-error"))
-                        .is_some_and(|value| value.is_truthy())
-                    {
-                        self.restore_unfired_timer_batch(pending);
-                        return Err(LispError::from(error));
-                    }
-                    let label = timer
-                        .original_name
-                        .map(|name| format!(" `{name}'"))
-                        .unwrap_or_default();
-                    let _ = primitives::call(
-                        self,
-                        "message",
-                        &[
-                            Value::String(format!("Error running timer{label}: %S").into()),
-                            super::error_condition_value(&LispError::from(error.clone())),
-                        ],
-                        env,
-                    );
-                }
-            }
-        }
-        Ok(ran)
-    }
-
-    /// Pump every timer representation that can be live in an interpreter.
-    ///
-    /// Bootstrap calls use the native queue; after GNU timer.el loads, timer
-    /// objects live in `timer-list`.  Keeping this as one event-loop operation
-    /// prevents waits and recursive command loops from silently servicing
-    /// only one side of that boundary.
+    /// keyboard.c:timer_check: the calls deferred to it, then the timers
+    /// of timer.el's `timer-list' and `timer-idle-list' that are ripe.
     pub(crate) fn run_pending_timer_events(&mut self, env: &mut Env) -> Result<bool, LispError> {
         // keyboard.c considers the idle timers only while Emacs is idle,
         // timer_idleness_start_time set by the wait for keyboard input.
@@ -4884,9 +4774,7 @@ impl Interpreter {
         idle: f64,
     ) -> Result<bool, LispError> {
         self.run_pending_funcalls(env)?;
-        let native_ran = self.run_pending_native_timers(env)?;
-        let lisp_ran = primitives::run_due_timers(self, env, idle)?;
-        Ok(native_ran || lisp_ran)
+        primitives::run_due_timers(self, env, idle)
     }
 
     /// keyboard.c:timer_check_2 first runs the calls deferred to it, the

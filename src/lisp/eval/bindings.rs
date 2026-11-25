@@ -59,7 +59,7 @@ impl InterpreterState {
     ) -> Option<Result<Value, LispError>> {
         if let Some(environment) = current_environment(env) {
             // Fassq's EQ, with this editor's flag read once.
-            let found = if self.globals.symbols_with_pos_enabled().get() {
+            let found = if self.symbols_with_positions_enabled() {
                 crate::lisp::types::assq_binding_with_pos(environment, name)
             } else {
                 crate::lisp::types::assq_binding_bare(environment, name)
@@ -70,12 +70,7 @@ impl InterpreterState {
                 Err(error) => return Some(Err(error)),
             }
         }
-        if self.globals.plain_store(name)
-            && let Some(value) = self.globals.value(name)
-        {
-            return Some(Ok(value));
-        }
-        None
+        name.cell().plain_value().map(Ok)
     }
 }
 
@@ -731,7 +726,7 @@ impl Interpreter {
             "scroll-margin" => Some(Value::Integer(0)),
             "scroll-preserve-screen-position" => Some(Value::Nil),
             "overwrite-mode" => Some(Value::Nil),
-            "load-path" => Some(self.load_path),
+            "load-path" => Some(self.c_variables.load_path.get()),
             "installation-directory" => Some(
                 primitives::compat_installation_directory()
                     .map(|value| Value::String(value.into()))
@@ -1100,12 +1095,6 @@ impl Interpreter {
             )
     }
 
-    /// A function cell was bound, rebound or voided: cached funcall
-    /// resolutions must be checked again.
-    pub(crate) fn note_function_binding_changed(&mut self) {
-        self.function_binding_generation = self.function_binding_generation.wrapping_add(1);
-    }
-
     /// A store C code makes into the variable KEY names (a DEFVAR's
     /// assignment, `Fset (Qname, value)'): data.c:set_internal's store
     /// into the alias chain's end, in the buffer-local or the global cell.
@@ -1268,7 +1257,6 @@ impl Interpreter {
         function: Option<Value>,
     ) {
         self.globals.set_function(symbol, function);
-        self.note_function_binding_changed();
     }
 
     /// data.c:Ffset's native-comp hook followed by the actual function-cell
@@ -1317,50 +1305,6 @@ impl Interpreter {
             },
         );
         Ok(definition)
-    }
-
-    pub(crate) fn begin_timer_callback(&mut self) {
-        self.timer_callback_depth += 1;
-    }
-
-    pub(crate) fn defer_unloaded_defsubst(&mut self, symbol: &SymbolName) -> bool {
-        if self.timer_callback_depth == 0
-            || !self
-                .symbol_value("loadhist-unload-filename")
-                .is_some_and(|value| value.is_truthy())
-            || !cached_symbol!("byte-optimizer")
-                .with(|property| self.get_symbol_property_of(symbol, property))
-                .is_some_and(|optimizer| {
-                    crate::lisp::types::eq_symbol_named(optimizer, "byte-compile-inline-expand")
-                })
-        {
-            return false;
-        }
-        let Some(definition) = self.globals.function(symbol) else {
-            return false;
-        };
-        if !self
-            .deferred_defsubst_unbindings
-            .iter()
-            .any(|(queued, _)| queued == symbol)
-        {
-            self.deferred_defsubst_unbindings
-                .push((*symbol, definition));
-        }
-        true
-    }
-
-    pub(crate) fn end_timer_callback(&mut self) {
-        debug_assert!(self.timer_callback_depth > 0);
-        self.timer_callback_depth -= 1;
-        if self.timer_callback_depth != 0 {
-            return;
-        }
-        for (symbol, definition) in std::mem::take(&mut self.deferred_defsubst_unbindings) {
-            if self.globals.function(&symbol) == Some(definition) {
-                self.set_function_binding_symbol(&symbol, None);
-            }
-        }
     }
 
     /// data.c:Ffset's non-circularity loop: from DEFINITION through each

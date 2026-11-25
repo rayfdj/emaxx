@@ -12,7 +12,7 @@ use std::time::SystemTime;
 use super::primitives;
 use super::sqlite::SqliteHandleState;
 use super::types::{
-    EmacsTermination, Env, EnvFrame, Kind, LispError, LispErrorKind, ReaderForm, SymbolName, Value,
+    EmacsTermination, Env, EnvFrame, Kind, LispError, LispErrorKind, SymbolName, Value,
 };
 use crate::compat::DiscoveredTest;
 #[cfg(test)]
@@ -24,6 +24,7 @@ mod bindings;
 pub(crate) use bindings::module_suffix_values;
 mod bootstrap;
 mod buffers;
+mod c_variables;
 pub(crate) mod coding;
 pub(crate) mod continuations;
 mod control_forms;
@@ -1241,7 +1242,9 @@ pub struct MessageCapture {
 #[derive(Clone, Debug)]
 pub struct ErtTestDefinition {
     pub name: String,
+    #[cfg(test)]
     pub body: Value,
+    #[cfg(test)]
     pub source_file: Option<String>,
     pub tags: Vec<String>,
     pub expected_result: String,
@@ -3852,18 +3855,6 @@ struct PendingFileNotification {
 }
 
 #[derive(Clone, Debug)]
-struct ScheduledTimer {
-    function: Value,
-    original_name: Option<String>,
-    args: Vec<Value>,
-    /// Earliest wall-clock instant the timer may fire; GNU never runs a
-    /// timer before its scheduled time.  `None` means due immediately.
-    due: Option<std::time::Instant>,
-    /// Reschedule interval in seconds for repeating timers.
-    repeat: Option<f64>,
-}
-
-#[derive(Clone, Debug)]
 /// fringe.c's fringe_bitmaps[ID] and fringe_faces[ID]: a bitmap is found
 /// by the number its symbol's `fringe' property holds.
 pub(crate) struct FringeBitmapState {
@@ -4058,7 +4049,6 @@ struct ImageGraphCopier {
     vectors: std::collections::HashMap<usize, Value>,
     strings: std::collections::HashMap<usize, Value>,
     lambdas: std::collections::HashMap<usize, Value>,
-    reader_forms: std::collections::HashMap<usize, Value>,
     records: std::collections::HashMap<usize, Value>,
     finalizers: std::collections::HashMap<usize, Value>,
     buffers: std::collections::HashMap<usize, Value>,
@@ -4081,7 +4071,6 @@ impl ImageGraphCopier {
             vectors: Default::default(),
             strings: Default::default(),
             lambdas: Default::default(),
-            reader_forms: Default::default(),
             records: Default::default(),
             finalizers: Default::default(),
             buffers: Default::default(),
@@ -4120,10 +4109,13 @@ impl ImageGraphCopier {
         copied.install_copied_name(self.copy(&symbol.lisp_name()));
         if let Some(alias) = symbol.cell().alias() {
             copied.cell().set_alias(self.copy_symbol(alias));
-        } else if let Some(counter) = symbol.cell().forwarded_counter() {
+        } else if let Some(fwd @ crate::lisp::alloc::LispFwd::Counter(_)) = symbol.cell().forward()
+        {
             // The copy forwards to the same process-wide word; copying its
             // current integer would freeze the counter in the new editor.
-            copied.cell().forward_to_counter(counter);
+            // An editor's own C variables are the copy's: its forwards are
+            // made with them (`connect_forwarded_eval_cells').
+            copied.cell().forward_to(fwd);
         } else if let Some(value) = symbol.cell().value() {
             copied.cell().set_value(self.copy(&value));
         }
@@ -4233,13 +4225,10 @@ impl ImageGraphCopier {
                     };
                     copied.borrow_mut().top_frame = Some(top);
                 }
-                // The KBOARD's variables are the copy's symbols.
-                let keyboard = std::mem::take(&mut copied.borrow_mut().keyboard);
-                let keyboard = keyboard
-                    .into_iter()
-                    .map(|(symbol, value)| (self.copy_symbol(symbol), self.copy(&value)))
-                    .collect();
-                copied.borrow_mut().keyboard = keyboard;
+                // The copy's KBOARD holds copies of the objects.
+                let kboard = std::rc::Rc::clone(&copied.borrow().kboard);
+                let kboard = kboard.copied(|value| self.copy(value));
+                copied.borrow_mut().kboard = std::rc::Rc::new(kboard);
                 value
             }
             Kind::Marker(marker) => {
@@ -4586,44 +4575,6 @@ impl ImageGraphCopier {
                 }
                 copied
             }
-            Kind::ReaderForm(form) => {
-                let key = form.identity();
-                if let Some(copied) = self.reader_forms.get(&key) {
-                    return *copied;
-                }
-                let copied = Value::ReaderForm(crate::lisp::alloc::VectorlikeRef::allocate(
-                    match form.as_ref() {
-                        crate::lisp::types::ReaderForm::HashTable { fields } => {
-                            crate::lisp::types::ReaderForm::HashTable {
-                                fields: fields.iter().map(|field| self.copy(field)).collect(),
-                            }
-                        }
-                        crate::lisp::types::ReaderForm::CharTable { fields } => {
-                            crate::lisp::types::ReaderForm::CharTable {
-                                fields: fields.iter().map(|field| self.copy(field)).collect(),
-                            }
-                        }
-                        crate::lisp::types::ReaderForm::SubCharTable { fields } => {
-                            crate::lisp::types::ReaderForm::SubCharTable {
-                                fields: fields.iter().map(|field| self.copy(field)).collect(),
-                            }
-                        }
-                        crate::lisp::types::ReaderForm::Record { slots } => {
-                            crate::lisp::types::ReaderForm::Record {
-                                slots: slots.iter().map(|slot| self.copy(slot)).collect(),
-                            }
-                        }
-                        crate::lisp::types::ReaderForm::Closure { kind, slots } => {
-                            crate::lisp::types::ReaderForm::Closure {
-                                kind: *kind,
-                                slots: slots.iter().map(|slot| self.copy(slot)).collect(),
-                            }
-                        }
-                    },
-                ));
-                self.reader_forms.insert(key, copied);
-                copied
-            }
             other => other.value(),
         }
     }
@@ -4807,7 +4758,6 @@ impl LispReachability {
             Kind::LispRecord(record) => record.mark_bit().is_marked(self.epoch),
             Kind::BoolVector(vector) => vector.mark_bit().is_marked(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
-            Kind::ReaderForm(value) => value.mark_bit().is_marked(self.epoch),
         }
     }
 
@@ -4901,7 +4851,6 @@ impl LispReachability {
             Kind::LispRecord(record) => record.mark_bit().mark(self.epoch),
             Kind::BoolVector(vector) => vector.mark_bit().mark(self.epoch),
             Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
-            Kind::ReaderForm(value) => value.mark_bit().mark(self.epoch),
         }
     }
 
@@ -5077,18 +5026,6 @@ impl LispReachability {
                     _ => {}
                 }
             }
-            Kind::ReaderForm(form) => {
-                let children: &[Value] = match form.as_ref() {
-                    ReaderForm::HashTable { fields }
-                    | ReaderForm::CharTable { fields }
-                    | ReaderForm::SubCharTable { fields }
-                    | ReaderForm::Record { slots: fields }
-                    | ReaderForm::Closure { slots: fields, .. } => fields,
-                };
-                for child in children {
-                    self.enqueue(child);
-                }
-            }
             Kind::Nil
             | Kind::T
             | Kind::Integer(_)
@@ -5168,14 +5105,25 @@ impl Interpreter {
     ) -> Vec<(crate::lisp::primitives::pdumper::image::RootSlot, Value)> {
         use crate::lisp::primitives::pdumper::image::RootSlot;
         let mut roots = vec![
-            (RootSlot::QuitFlag, self.quit_flag),
-            (RootSlot::InhibitQuit, self.inhibit_quit),
-            (RootSlot::ThrowOnInput, self.throw_on_input),
+            (RootSlot::QuitFlag, self.c_variables.quit_flag.get()),
+            (RootSlot::InhibitQuit, self.c_variables.inhibit_quit.get()),
+            (
+                RootSlot::ThrowOnInput,
+                self.c_variables.throw_on_input.get(),
+            ),
             (
                 RootSlot::OverridingPlistEnvironment,
-                self.overriding_plist_environment,
+                self.c_variables.overriding_plist_environment.get(),
             ),
-            (RootSlot::LoadPath, self.load_path),
+            (RootSlot::LoadPath, self.c_variables.load_path.get()),
+            (
+                RootSlot::CaseFoldSearch,
+                self.c_variables.case_fold_search.get(),
+            ),
+            (
+                RootSlot::InhibitChangingMatchData,
+                self.c_variables.inhibit_changing_match_data.get(),
+            ),
             (RootSlot::LoadsInProgress, self.loads_in_progress),
             (RootSlot::LocalTimeZoneRule, self.local_time_zone_rule),
             (RootSlot::FrameAndBufferState, self.frame_and_buffer_state),
@@ -5527,11 +5475,11 @@ impl Interpreter {
             locals.insert(&symbol, value, &self.loaded_bindings);
         }
         self.remove_buffer_locals(id);
+        // The C variables take the current buffer's bindings once the
+        // image's symbols are installed and its detached C variables
+        // known (install_image's `refresh_forwarded_eval_cells').
         if !locals.is_empty() {
             self.buffer_locals.insert(id, locals);
-            if id == self.current_buffer_id() {
-                self.refresh_forwarded_eval_cells();
-            }
         }
     }
 
@@ -5715,14 +5663,17 @@ impl Interpreter {
                 mark(&Value::Symbol(*symbol));
             }
         }
-        // lread.c:defvar_lisp static-protects the C slot, independently of
-        // the symbol's current redirect or plain value after makunbound.
-        mark(&self.quit_flag);
-        mark(&self.inhibit_quit);
-        mark(&self.throw_on_input);
-        mark(&self.case_fold_search);
-        mark(&self.overriding_plist_environment);
-        mark(&self.load_path);
+        // lread.c:defvar_lisp static-protects the C variable, which holds
+        // the value of a symbol forwarded to it, and which keeps its own
+        // after makunbound has made the symbol plain.
+        for value in self.c_variables.objects() {
+            mark(&value);
+        }
+        // keyboard.c's mark_kboards: current_kboard's, which its terminal
+        // holds as well.
+        for value in self.c_variables.current_kboard().values() {
+            mark(&value);
+        }
         mark(&self.loads_in_progress);
         for feature in &self.require_nesting {
             mark(&Value::Symbol(*feature));
@@ -5841,18 +5792,8 @@ impl Interpreter {
         }
         mark(&self.alternative_font_family_alist);
         mark(&self.alternative_font_registry_alist);
-        for (symbol, value) in &self.deferred_defsubst_unbindings {
-            mark(&Value::Symbol(*symbol));
-            mark(value);
-        }
         if let Some(value) = &self.last_thread_error {
             mark(value);
-        }
-        for timer in &self.pending_timers {
-            mark(&timer.function);
-            for argument in &timer.args {
-                mark(argument);
-            }
         }
         for hooks in &self.interval_insert_hooks {
             mark(hooks);
@@ -5924,9 +5865,6 @@ impl Interpreter {
         for (header, gstring) in &self.gstrings.entries {
             mark(header);
             mark(gstring);
-        }
-        for test in &self.ert_tests {
-            mark(&test.body);
         }
         for entry in &self.specpdl {
             entry.mark_values(&mut mark);
@@ -6120,6 +6058,7 @@ impl Interpreter {
     /// cells have new identities; they repopulate on use.
     #[cfg(test)]
     pub fn deep_clone_image(&self) -> Interpreter {
+        crate::lisp::runtime::ensure_held();
         assert!(
             self.terminals
                 .iter()
@@ -6189,15 +6128,28 @@ impl Interpreter {
                 };
                 clone.doomed_finalizers.append(copied);
             }
-            // Copy the actual C-side fields. The graph copier preserves
-            // aliasing with Lisp cells while forwarded, but makunbound may
-            // already have made the two independent.
-            clone.quit_flag = c.copy(&self.quit_flag);
-            clone.inhibit_quit = c.copy(&self.inhibit_quit);
-            clone.throw_on_input = c.copy(&self.throw_on_input);
-            clone.case_fold_search = c.copy(&self.case_fold_search);
-            clone.overriding_plist_environment = c.copy(&self.overriding_plist_environment);
-            clone.load_path = c.copy(&self.load_path);
+            // The copy's own C variables hold copies of the objects (a
+            // symbol forwarded to one is copied as a plain value, which
+            // `connect_forwarded_eval_cells' below makes a forward again;
+            // makunbound may have made the two independent).
+            let (from, to) = (&self.c_variables, &clone.c_variables);
+            for (source, target) in [
+                (&from.quit_flag, &to.quit_flag),
+                (&from.inhibit_quit, &to.inhibit_quit),
+                (&from.throw_on_input, &to.throw_on_input),
+                (&from.case_fold_search, &to.case_fold_search),
+                (
+                    &from.inhibit_changing_match_data,
+                    &to.inhibit_changing_match_data,
+                ),
+                (
+                    &from.overriding_plist_environment,
+                    &to.overriding_plist_environment,
+                ),
+                (&from.load_path, &to.load_path),
+            ] {
+                target.set(c.copy(&source.get()));
+            }
             clone.loads_in_progress = c.copy(&self.loads_in_progress);
             for feature in &mut clone.require_nesting {
                 *feature = c.copy_symbol(*feature);
@@ -6359,18 +6311,8 @@ impl Interpreter {
                 c.copy(&clone.alternative_font_family_alist.clone());
             clone.alternative_font_registry_alist =
                 c.copy(&clone.alternative_font_registry_alist.clone());
-            for (symbol, value) in &mut clone.deferred_defsubst_unbindings {
-                *symbol = c.copy_symbol(*symbol);
-                *value = c.copy(value);
-            }
             if let Some(error) = &clone.last_thread_error {
                 clone.last_thread_error = Some(c.copy(error));
-            }
-            for timer in &mut clone.pending_timers {
-                timer.function = c.copy(&timer.function.clone());
-                for arg in &mut timer.args {
-                    *arg = c.copy(arg);
-                }
             }
             for hooks in &mut clone.interval_insert_hooks {
                 *hooks = c.copy(hooks);
@@ -6442,9 +6384,6 @@ impl Interpreter {
             for (header, gstring) in &mut clone.gstrings.entries {
                 *header = c.copy(&header.clone());
                 *gstring = c.copy(&gstring.clone());
-            }
-            for test in &mut clone.ert_tests {
-                test.body = c.copy(&test.body.clone());
             }
             // A template is copied between top-level forms: its specpdl
             // holds bindings alone, no native activation being under way.
@@ -6523,6 +6462,11 @@ impl Interpreter {
         // A copied buffer starts with no windows counted; the copied
         // windows show the copies.
         clone.recount_buffer_windows();
+        // The copy's symbols forward to its own C variables and to the
+        // kboard of its selected frame's terminal.
+        clone.select_current_kboard();
+        clone.connect_forwarded_eval_cells();
+        clone.connect_kboard_variables();
 
         drop(symbol_scope);
         clone.select_symbol_owner();
@@ -6632,6 +6576,7 @@ impl Interpreter {
 impl Clone for Interpreter {
     /// A copy's state is a root set of its own from the moment it exists.
     fn clone(&self) -> Self {
+        crate::lisp::runtime::ensure_held();
         let clone = Self {
             state: self.state.clone(),
             continuations: self.continuations.clone(),
@@ -6645,6 +6590,9 @@ impl Clone for Interpreter {
 
 impl Drop for InterpreterState {
     fn drop(&mut self) {
+        // Its C variables go with it; a symbol forwarded to one, which a
+        // later reader can still name, keeps the value in its cell.
+        self.disconnect_forwarded_eval_cells();
         crate::lisp::alloc::unregister_state(std::ptr::from_mut::<InterpreterState>(self) as usize);
     }
 }
@@ -6702,22 +6650,12 @@ pub struct InterpreterState {
     /// `Lisp_Symbol' fields, per interpreter).  Bound values enumerate in
     /// first-binding order.
     globals: SymbolCells,
-    /// Directly forwarded Lisp_Object cells read by the C implementation.
-    /// GNU reads these globals without doing symbol-table work; keep the same
-    /// direct state while ordinary Lisp access remains visible through the
-    /// canonical global value cells below.
-    quit_flag: Value,
-    inhibit_quit: Value,
-    throw_on_input: Value,
-    /// undo.c's DEFVAR_BOOL `undo_inhibit_record_point', which the buffers
-    /// hold as well (`set_undo_inhibit_record_point').
-    undo_inhibit_record_point: bool,
-    /// search.c's Vcase_fold_search and syntax.c's DEFVAR_BOOL
-    /// parse_sexp_lookup_properties, both made buffer-local when set:
-    /// the current buffer's values, which set_buffer_internal_2 loads, as
-    /// the matcher and the scanners read them.
-    pub(crate) case_fold_search: Value,
-    pub(crate) parse_sexp_lookup_properties: bool,
+    /// The C variables the evaluator reads (globals.h's emacs_globals),
+    /// which their symbols forward to: each one's value is there alone
+    /// while its symbol is neither localized nor detached by `makunbound'.
+    /// The image carries them as root slots (the DEFVAR_LISPs) and through
+    /// their symbols' values (the rest), which install_image stores back.
+    pub(crate) c_variables: c_variables::CVariables,
     /// eval.c's Vrun_hooks cleared: shut_down_emacs has begun, and no hook
     /// runs from then on.
     pub(crate) hooks_cleared: bool,
@@ -6728,8 +6666,6 @@ pub struct InterpreterState {
     /// `set-process-thread' locked to a thread, which no other thread's
     /// wait selects on; a descriptor keeps its lock until the thread dies.
     pub(crate) fd_thread_locks: std::collections::HashMap<i32, u64>,
-    overriding_plist_environment: Value,
-    max_lisp_eval_depth: i64,
     /// Ffuncall's depth bound for a call that does nothing else on its way
     /// in (`plain_bcall_entry'): MAX_LISP_EVAL_DEPTH, or below every depth
     /// while a quit or a termination is pending, calls are profiled or
@@ -6737,7 +6673,6 @@ pub struct InterpreterState {
     /// which the full entries' do_debug_on_call answers).  Every store of
     /// those refreshes it (`refresh_call_depth_gate').
     call_depth_gate: i64,
-    debug_on_next_call: bool,
     /// eval.c's Vsignaling_function: the function signal_or_quit found
     /// below `signal''s frame (and `error''s), for cmd_error to report.
     pub(crate) signaling_function: Value,
@@ -6786,9 +6721,6 @@ pub struct InterpreterState {
     /// What keyboard.c:timer_check last returned: how long until the first
     /// timer of its copied lists still waiting is ripe, None with none.
     pub(crate) timer_check_delay: Option<std::time::Duration>,
-    /// Variable aliases keyed by alias name.
-    /// Names ever declared locally special via a non-top-level one-arg
-    /// `defvar`; lets of other names skip the env marker scan entirely.
     pub(crate) lisp_eval_depth: usize,
     /// alloc.c's nesting counter.  Hash-table user tests enter this section
     /// so arbitrary callback Lisp cannot collect the table being probed.
@@ -6829,11 +6761,6 @@ pub struct InterpreterState {
     known_symbols_cache: RefCell<Option<KnownSymbolsCache>>,
     /// Membership removal/reinsertion can leave the same symbol count.
     obarray_epoch: u64,
-    /// Names removed from the standard obarray while their old symbol cells
-    /// remain live.  GNU keeps those cells on the detached symbol object;
-    /// this tombstone prevents function/value indexes from accidentally
-    /// making the name look interned again until a reader or `intern' creates
-    /// the new canonical name.
     /// Runtime record representing GNU's preloaded standard `obarray'.  Its
     /// symbol view is synthesized from the interpreter's canonical namespace
     /// indexes rather than duplicated in the record's storage slot.
@@ -6860,8 +6787,6 @@ pub struct InterpreterState {
     /// window.c's old_selected_window: the window selected when the last
     /// window-change cycle completed.
     pub(crate) old_selected_window: Option<primitives::WindowRef>,
-    /// Per-frame old selected window.  GNU's initial batch frame leaves this
-    /// unset until the first completed window-change cycle.
     /// Monotonic selection stamp used by `window-use-time'.
     window_select_count: i64,
     /// xdisp.c's windows_or_buffers_changed: nonzero when the next
@@ -6998,10 +6923,6 @@ pub struct InterpreterState {
     /// census of the obarrays. Generic Lisp records do not enter this
     /// registry and type-slot stores maintain no index.
     record_ids_by_type_index: RecordIdsByType,
-    /// Record mark bits from the most recent real reachability pass.  Dense
-    /// host storage keeps IDs stable, but dead records must not contribute to
-    /// GNU's post-sweep live-byte census.  IDs at or above the high-water mark
-    /// were allocated after that collection and remain live until the next.
     /// alloc.c's private `gc_elapsed' timespec: the total the Lisp
     /// variable is recomputed from after every collection.
     gc_elapsed_total: f64,
@@ -7049,9 +6970,6 @@ pub struct InterpreterState {
     /// pdumper.c's `dump_private': the image this process loaded, if any
     /// (`dump_loaded_p'), with what `pdumper-stats' reports of it.
     pdumper_loaded: Option<PdumperLoadRecord>,
-    /// Next generated symbol ID used by built-in macro expansion helpers.
-    /// Buffer-local hook lists grouped by buffer, in per-buffer insertion
-    /// order.  This is the sole backing store for local hook metadata.
     /// Buffer-local variable cells grouped by buffer, in per-buffer insertion
     /// order.  GNU's buffer slot lookup is constant-time; mode-heavy code must
     /// not scan every other live buffer's locals on each variable read.
@@ -7067,15 +6985,6 @@ pub struct InterpreterState {
     /// GNU connect_counter: numbers accepted server-child connections
     /// (unix children are named "NAME <N>" from it).
     pub(crate) network_connect_counter: u64,
-    /// Bumped only when a function cell is bound, rebound or voided: what
-    /// the funcall resolutions below depend on.  A cons mutation cannot
-    /// change a resolution (the cached value shares the cell's object), so
-    /// it does not invalidate them.
-    function_binding_generation: u64,
-    /// Immutable lambda code keyed by the source form's car-cell identity.
-    /// The weak source witness prevents a recycled allocator address from
-    /// aliasing an unrelated form whose older closure is still alive.
-    /// Forms waiting for a feature to be provided.
     /// File currently being loaded, if any.
     current_load_file: Option<String>,
     /// Physical standard-Lisp source prefix and the build-tree prefix GNU's
@@ -7089,8 +6998,6 @@ pub struct InterpreterState {
     pub(crate) ert_test_source_file: Option<String>,
     #[cfg(test)]
     pub(crate) current_ert_test_name: Option<String>,
-    /// Collected ERT test definitions.
-    pub ert_tests: Vec<ErtTestDefinition>,
     /// Results from the most recent ERT run.
     #[cfg(test)]
     pub test_results: Vec<TestOutcome>,
@@ -7142,8 +7049,9 @@ pub struct InterpreterState {
     pub(crate) buffer_before_last_command_or_undo: Option<u64>,
     /// The matcher's registers in text offsets (search.c's search_regs
     /// before a search converts them to positions), held between searches
-    /// so their allocation serves every search.
-    pub(crate) search_registers: crate::lisp::regex_emacs::Registers,
+    /// so their allocation serves every search: lent to a search by their
+    /// box, none while one holds them (a search inside it has its own).
+    pub(crate) search_registers: Option<Box<crate::lisp::regex_emacs::Registers>>,
     pub message_capture_stack: Vec<MessageCapture>,
     /// Last character written to the batch `standard-output' stream.
     ///
@@ -7210,9 +7118,6 @@ pub struct InterpreterState {
     /// font_style_to_value registers a style name it lacked.
     pub(crate) font_style_table: Value,
     standard_syntax_table_id: CharTableRef,
-    // lread.c:Vload_path is a rooted Lisp_Objfwd slot, not a host-side
-    // directory vector from which reads reconstruct new Lisp objects.
-    load_path: Value,
     /// lread.c's static-protected Vloads_in_progress, not a Lisp variable.
     pub(crate) loads_in_progress: Value,
     /// Features whose `require' loads are active, innermost last.  This is
@@ -7240,12 +7145,6 @@ pub struct InterpreterState {
     /// process.c's update_tick: process_tick when status_notify last
     /// began, which its callers compare process_tick with.
     process_update_tick: u64,
-    pending_timers: Vec<ScheduledTimer>,
-    /// Source-loaded callbacks stand in for GNU's byte-compiled Lisp.  Keep
-    /// defsubst definitions removed by loadhist alive until the active timer
-    /// returns, matching calls that GNU compiled inline into the callback.
-    timer_callback_depth: usize,
-    deferred_defsubst_unbindings: Vec<(SymbolName, Value)>,
     pending_file_notifications: Vec<PendingFileNotification>,
     file_notify_watches: HashMap<i64, FileNotifyWatch>,
     #[cfg(target_os = "macos")]
@@ -7399,6 +7298,10 @@ impl Interpreter {
     }
 
     fn construct(image: bool) -> Self {
+        // Only the OS thread that holds the runtime builds an editor: one
+        // that does not takes it here and keeps it until it exits, as
+        // run_thread takes global_lock before its thread's first Lisp.
+        crate::lisp::runtime::ensure_held();
         // Each editor owns the symbols whose fields it will initialize.
         // Select once before constructing any Lisp object; the public entry
         // scope restores its caller on exit. Lisp thread state transfers do
@@ -7603,19 +7506,13 @@ impl Interpreter {
                 ("standard-translation-table-for-encode".into(), Value::Nil),
                 ("translation-table-for-input".into(), Value::Nil),
             ]),
-            quit_flag: Value::Nil,
-            inhibit_quit: Value::Nil,
-            throw_on_input: Value::Nil,
-            undo_inhibit_record_point: false,
-            case_fold_search: Value::T,
-            parse_sexp_lookup_properties: false,
+            c_variables: c_variables::CVariables::new(std::rc::Rc::clone(
+                &initial_terminal.borrow().kboard,
+            )),
             hooks_cleared: false,
             inhibit_sentinels: false,
             fd_thread_locks: std::collections::HashMap::new(),
-            overriding_plist_environment: Value::Nil,
-            max_lisp_eval_depth: 1600,
             call_depth_gate: if core::profiling() { i64::MIN } else { 1600 },
-            debug_on_next_call: false,
             signaling_function: Value::Nil,
             autoload_queue: Value::Nil,
             will_dump_reported: false,
@@ -7834,14 +7731,12 @@ impl Interpreter {
             specpdl: Vec::new(),
             labeled_restrictions: Vec::new(),
             network_connect_counter: 0,
-            function_binding_generation: 0,
             current_load_file: None,
             load_source_provenance_remap: None,
             #[cfg(test)]
             ert_test_source_file: None,
             #[cfg(test)]
             current_ert_test_name: None,
-            ert_tests: Vec::new(),
             #[cfg(test)]
             test_results: Vec::new(),
             #[cfg(test)]
@@ -7857,7 +7752,7 @@ impl Interpreter {
             running_asynch_code: false,
             last_known_column: (0, 0, 0),
             buffer_before_last_command_or_undo: None,
-            search_registers: Default::default(),
+            search_registers: None,
             message_capture_stack: Vec::new(),
             batch_standard_output_last_char: None,
             batch_stdout_need_newline: false,
@@ -7889,7 +7784,6 @@ impl Interpreter {
             menu: Default::default(),
             font_style_table: Value::Nil,
             standard_syntax_table_id,
-            load_path: Value::Nil,
             loads_in_progress: Value::Nil,
             require_nesting: Vec::new(),
             lambda_capture_overrides: Vec::new(),
@@ -7914,9 +7808,6 @@ impl Interpreter {
             fundamental_mode_name: Value::Nil,
             process_states: Vec::new(),
             process_update_tick: 0,
-            pending_timers: Vec::new(),
-            timer_callback_depth: 0,
-            deferred_defsubst_unbindings: Vec::new(),
             pending_file_notifications: Vec::new(),
             file_notify_watches: HashMap::new(),
             #[cfg(target_os = "macos")]
@@ -9357,7 +9248,7 @@ impl Interpreter {
     }
 
     pub(crate) fn set_load_path_value(&mut self, value: Value) {
-        self.load_path = value;
+        self.c_variables.load_path.set(value);
         // init_lread writes the C slot. After makunbound that slot is
         // independent of the now-plain Lisp symbol (data.c:set_internal).
         if !self.forwarded_variable_detached(&cached_symbol!("load-path").symbol()) {
@@ -9368,7 +9259,9 @@ impl Interpreter {
     pub(crate) fn configured_load_path(&self) -> Vec<PathBuf> {
         // Host path consumers project the current Lisp object on demand;
         // this vector is never stored or used as a second source of truth.
-        self.load_path
+        self.c_variables
+            .load_path
+            .get()
             .to_vec()
             .unwrap_or_default()
             .iter()

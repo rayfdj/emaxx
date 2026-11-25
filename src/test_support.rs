@@ -155,9 +155,12 @@ thread_local! {
 
 /// Preserve the existing bounded parallelism for ordinary host-heavy tests.
 /// A thread that already holds a moved-in permit gets an inherited no-op
-/// permit instead of booking a second slot (see HostTestPermitKind).
+/// permit instead of booking a second slot (see HostTestPermitKind), and so
+/// does a thread that holds the Lisp runtime: host permits come before the
+/// runtime, which already keeps every other Lisp test out, and a slot it
+/// waited for here could be held by a test waiting for its runtime.
 pub(crate) fn acquire_host_test_permit() -> HostTestPermit {
-    if HOST_PERMIT_HELD_BY_THIS_THREAD.with(std::cell::Cell::get) {
+    if HOST_PERMIT_HELD_BY_THIS_THREAD.with(std::cell::Cell::get) || crate::lisp::runtime::held() {
         return HostTestPermit {
             gate: host_test_gate(),
             kind: HostTestPermitKind::Inherited,
@@ -167,7 +170,13 @@ pub(crate) fn acquire_host_test_permit() -> HostTestPermit {
 }
 
 /// Isolate a test proven sensitive to competition from other host-heavy tests.
+/// It waits for every shared permit, whose holders may be waiting for the
+/// runtime, so a thread holding the runtime may not ask for it.
 pub(crate) fn acquire_exclusive_host_test_permit() -> HostTestPermit {
+    assert!(
+        !crate::lisp::runtime::held(),
+        "take the exclusive permit before the first Lisp use"
+    );
     host_test_gate().acquire_exclusive()
 }
 
@@ -176,6 +185,13 @@ pub(crate) fn acquire_exclusive_host_test_permit() -> HostTestPermit {
 /// The permit deliberately belongs to a separate gate from the bounded
 /// host-heavy gate. Large-stack tests acquire the latter before their body
 /// runs, so sharing a gate here would make nested process calls self-deadlock.
+///
+/// It is taken with or without the Lisp runtime, which it does not take: a
+/// test may run GNU on its own thread, which takes the permit, and build its
+/// editor on a larger stack it then joins, which taking the runtime here
+/// would keep out for good.  The permit is its thread's until the thread
+/// exits either way, so the runtime adds no wait between one test's
+/// threads; two tests run at once can wait for each other (D43).
 pub(crate) fn mark_process_test() {
     PROCESS_TEST_PERMIT.with(|slot| {
         if slot.borrow().is_none() {
@@ -358,12 +374,19 @@ pub(crate) fn initialized_upstream_batch_interpreter() -> Interpreter {
             return build_upstream_batch_interpreter();
         }
         // Process-global template.  Interpreter holds Rc graphs, which are
-        // sound across threads only when uses never overlap: libtest runs
-        // each test on its own thread, so the serial gate's
-        // --test-threads=1 is the required schedule.  The ACTIVE counter
-        // makes a violation panic before any concurrent Rc touch: at most
-        // one template-derived interpreter may be alive at a time.
+        // sound across threads only when uses never overlap.  The template
+        // is built and cloned, and its clones are used and dropped, only by
+        // the OS thread that holds the runtime, which it takes here (before
+        // the template's lock) and keeps until it exits: another thread's
+        // request waits until this thread's clones have been dropped, the
+        // shared counts included.  The ACTIVE counter still makes one
+        // thread's second request panic while its first clone is alive.
+        crate::lisp::runtime::ensure_held();
         struct AssertSend<T>(T);
+        // SAFETY: what TEMPLATE holds is reached only under its lock, by
+        // the thread that holds the runtime (above); its Rc graph, which
+        // the clones share, is touched only by that thread until the
+        // thread exits, and its clones are dropped by then.
         unsafe impl<T> Send for AssertSend<T> {}
         static TEMPLATE: std::sync::Mutex<Option<AssertSend<Interpreter>>> =
             std::sync::Mutex::new(None);
@@ -371,8 +394,8 @@ pub(crate) fn initialized_upstream_batch_interpreter() -> Interpreter {
         let mut slot = TEMPLATE.lock().expect("image template lock");
         if IMAGE_TEMPLATE_ACTIVE.load(std::sync::atomic::Ordering::SeqCst) != 0 {
             panic!(
-                "EMAXX_IMAGE_TEMPLATE requires --test-threads=1: a second \
-                 template-derived interpreter was requested while one is live"
+                "EMAXX_IMAGE_TEMPLATE: a second template-derived interpreter \
+                 was requested while this thread's first is live"
             );
         }
         if slot.is_none() {
@@ -445,15 +468,17 @@ pub(crate) fn call_lisp_function(
 
 pub(crate) fn run_with_large_stack(test: impl FnOnce() + Send + 'static) {
     let permit = acquire_host_test_permit();
-    std::thread::Builder::new()
+    let continuation = std::thread::Builder::new()
         .stack_size(128 * 1024 * 1024)
         .spawn(move || {
             let _permit = permit;
             note_host_permit_moved_to_this_thread();
             test();
         })
-        .expect("spawn large-stack test thread")
-        .join()
+        .expect("spawn large-stack test thread");
+    // The test goes on on the large stack: lend it this thread's runtime
+    // while waiting, as thread-join gives global_lock up.
+    crate::lisp::runtime::release_while(|| continuation.join())
         .expect("join large-stack test thread");
 }
 
@@ -530,7 +555,11 @@ pub(crate) fn oracle_program_ascii(program: &str) -> String {
 
 #[cfg(test)]
 mod tests {
-    use super::{HostTestGate, acquire_batch_source_bootstrap_permit, mark_process_test};
+    use super::{
+        HostTestGate, HostTestPermitKind, acquire_batch_source_bootstrap_permit, mark_process_test,
+    };
+    use crate::lisp::eval::Interpreter;
+    use crate::lisp::types::{Env, Value};
     use std::sync::mpsc;
     use std::thread;
     use std::time::Duration;
@@ -633,5 +662,117 @@ mod tests {
             .recv_timeout(Duration::from_secs(1))
             .expect("second process test should enter after thread teardown");
         second.join().expect("second process test should finish");
+    }
+
+    #[test]
+    fn host_permits_asked_for_under_the_runtime_follow_the_lock_order() {
+        // Host permits come before the runtime.  A thread holding the
+        // runtime already keeps every other Lisp test out, so its shared
+        // permit books no slot (a slot it waited for could belong to a
+        // test waiting for this thread's runtime), and an exclusive one,
+        // which waits for every shared holder, is refused.
+        thread::spawn(|| {
+            crate::lisp::runtime::ensure_held();
+            let permit = super::acquire_host_test_permit();
+            assert!(matches!(permit.kind, HostTestPermitKind::Inherited));
+        })
+        .join()
+        .expect("a shared permit under the runtime is inherited");
+        let refused = thread::spawn(|| {
+            crate::lisp::runtime::ensure_held();
+            drop(super::acquire_exclusive_host_test_permit());
+        })
+        .join()
+        .expect_err("an exclusive permit under the runtime is refused");
+        let message = refused
+            .downcast_ref::<&str>()
+            .copied()
+            .or_else(|| refused.downcast_ref::<String>().map(String::as_str))
+            .unwrap_or_default();
+        assert!(
+            message.contains("take the exclusive permit before the first Lisp use"),
+            "{message}"
+        );
+    }
+
+    #[test]
+    fn a_large_stack_continuation_is_lent_its_callers_runtime() {
+        // A caller that built an editor holds the runtime until it exits.
+        // The large-stack thread it continues the test on builds one too,
+        // which it could not if the caller kept the runtime while it waits.
+        thread::spawn(|| {
+            drop(Interpreter::new());
+            assert!(crate::lisp::runtime::held());
+            super::run_with_large_stack(|| {
+                let mut interp = Interpreter::new();
+                let value = super::eval_lisp(&mut interp, &mut Env::new(), "(+ 1 2)")
+                    .expect("evaluate on the large stack");
+                assert_eq!(value, Value::Integer(3));
+            });
+            assert!(
+                crate::lisp::runtime::held(),
+                "the caller holds the runtime again"
+            );
+        })
+        .join()
+        .expect("the test and its continuation complete");
+    }
+
+    #[test]
+    fn a_template_clone_lives_inside_one_tenure() {
+        // A batch editor (a clone of the image template under
+        // EMAXX_IMAGE_TEMPLATE) is made under the runtime, which its
+        // thread then holds until it exits: a second thread's request
+        // waits for that, and so never clones the template while the first
+        // clone's shared graph is in use or being dropped.
+        use crate::lisp::eval::IMAGE_TEMPLATE_ACTIVE;
+        use std::sync::atomic::Ordering;
+        let (built_tx, built_rx) = mpsc::channel();
+        let (finish_tx, finish_rx) = mpsc::channel::<()>();
+        let first = thread::spawn(move || {
+            let mut interp = super::initialized_upstream_batch_interpreter();
+            // 1 for a template clone, 0 for an editor built afresh.
+            let live = IMAGE_TEMPLATE_ACTIVE.load(Ordering::SeqCst);
+            built_tx.send(live).expect("announce the first editor");
+            finish_rx.recv().expect("wait to finish");
+            let value = super::eval_lisp(
+                &mut interp,
+                &mut Env::new(),
+                "(progn (garbage-collect) (length (make-list 3 'first)))",
+            )
+            .expect("evaluate in the first editor");
+            assert_eq!(value, Value::Integer(3));
+        });
+        let live = built_rx.recv().expect("the first editor is made");
+        assert!(live <= 1, "{live}");
+        let (second_tx, second_rx) = mpsc::channel();
+        let second = thread::spawn(move || {
+            let mut interp = super::initialized_upstream_batch_interpreter();
+            second_tx
+                .send(IMAGE_TEMPLATE_ACTIVE.load(Ordering::SeqCst))
+                .expect("announce the second editor");
+            let value = super::eval_lisp(
+                &mut interp,
+                &mut Env::new(),
+                "(progn (garbage-collect) (length (make-list 4 'second)))",
+            )
+            .expect("evaluate in the second editor");
+            assert_eq!(value, Value::Integer(4));
+        });
+        assert!(
+            second_rx.recv_timeout(Duration::from_millis(200)).is_err(),
+            "the second editor waits while the first one's thread lives"
+        );
+        finish_tx.send(()).expect("let the first editor finish");
+        first.join().expect("the first editor's thread");
+        assert_eq!(
+            second_rx
+                .recv_timeout(Duration::from_secs(600))
+                .expect("the second editor is made once the first thread has exited"),
+            live,
+            "the first clone was dropped before the second was made"
+        );
+        second.join().expect("the second editor's thread");
+        assert_eq!(IMAGE_TEMPLATE_ACTIVE.load(Ordering::SeqCst), 0);
     }
 }

@@ -2204,8 +2204,10 @@ fn run_verified(
             }
             // Bvarref of a variable whose cell holds its value: the
             // SYMBOL_PLAINVAL case, and SYMBOL_FORWARDED to an object slot
-            // (`unlocalized_value'); any other variable's read in
-            // `varref_redirected', and a void one's signal in the full arm.
+            // (`unlocalized_value'), or to a DEFVAR_LISP read through its
+            // forward (`forwarded_object_value'); any other variable's read
+            // in `varref_redirected', and a void one's signal in the full
+            // arm.
             macro_rules! varref {
                 ($index:expr) => {{
                     let index = usize::from($index);
@@ -2214,12 +2216,21 @@ fn run_verified(
                     let Kind::Symbol(name) = symbol.kind() else {
                         slow!()
                     };
-                    let value = match name.cell().unlocalized_value() {
+                    let cell = name.cell();
+                    let value = match cell.unlocalized_value() {
                         Some(value) => value,
-                        None => match varref_redirected(vm.interp, &name) {
-                            Some(value) => value,
-                            None => slow!(),
-                        },
+                        None => {
+                            // A plain variable's read is the one to keep
+                            // first.
+                            std::hint::cold_path();
+                            match cell.forwarded_object_value() {
+                                Some(value) => value,
+                                None => match varref_redirected(vm.interp, &name) {
+                                    Some(value) => value,
+                                    None => slow!(),
+                                },
+                            }
+                        }
                     };
                     push!(value);
                 }};
@@ -5335,12 +5346,9 @@ mod tests {
     fn run(name: &str, args: &[Value]) -> Result<Value, LispError> {
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        let object = fixture_objects()
+        let object = fixture_objects(&mut interp)
             .remove(name)
             .unwrap_or_else(|| panic!("fixture {name} missing"));
-        // The decoder fixture helper returns reader syntax. Complete the
-        // existing C-owned reader step before handing live objects to the VM.
-        interp.materialize_read_object_literals(Value::Vector(object.constants), &mut env)?;
         execute(&mut interp, &object, args, &mut env)
     }
 
@@ -5352,11 +5360,13 @@ mod tests {
         // before the reader interns the table's keys.
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        let form = super::super::super::reader::Reader::new(
+        let form = crate::lisp::read_next_load_form(
+            &mut interp,
             r##"#[257 "\211\300\267\303\207\301\207\302\207"
                    [#s(hash-table test eq data (a 5 b 7)) 1 2 3] 3]"##,
+            &mut 0,
+            &mut env,
         )
-        .read()
         .expect("read byte-code object")
         .expect("byte-code object form");
         let closure = interp.eval(&form, &mut env).expect("byte-code closure");
@@ -5419,8 +5429,7 @@ mod tests {
         // from the conservative scan.
         const HIDE: usize = 0x5555_5555_5555_5555;
         fn eval(interp: &mut Interpreter, env: &mut Env, text: &str) -> Value {
-            let form = super::super::super::reader::Reader::new(text)
-                .read()
+            let form = crate::lisp::read_next_load_form(interp, text, &mut 0, env)
                 .expect("read form")
                 .expect("a form");
             interp.eval(&form, env).expect("eval")
@@ -5487,18 +5496,20 @@ mod tests {
 
     #[test]
     fn materializes_reader_labels_shared_across_nested_closures() {
-        let form = super::super::super::reader::Reader::new(
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let form = crate::lisp::read_next_load_form(
+            &mut interp,
             r##"#[0 "\301\207"
                    [nil
                     #[0 "\300\207" [nil] 1 #1=""]
                     #[0 "\300\207" [nil] 1 #1#]]
                    1]"##,
+            &mut 0,
+            &mut env,
         )
-        .read()
         .expect("read byte-code object with shared reader label")
         .expect("byte-code object form");
-        let mut interp = Interpreter::new();
-        let mut env = Env::new();
         let closure = interp
             .eval(&form, &mut env)
             .expect("materialize outer byte-code closure");
@@ -5513,16 +5524,16 @@ mod tests {
 
     #[test]
     fn materializes_bytecode_records_nested_in_list_constants() {
-        let constant =
-            super::super::super::reader::Reader::new(r##"(wrapper #[0 "\300\207" [nil] 1])"##)
-                .read()
-                .expect("read list-valued bytecode constant")
-                .expect("constant form");
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        let materialized = interp
-            .materialize_read_object_literals(constant, &mut env)
-            .expect("materialize nested byte-code function");
+        let materialized = crate::lisp::read_next_load_form(
+            &mut interp,
+            r##"(wrapper #[0 "\300\207" [nil] 1])"##,
+            &mut 0,
+            &mut env,
+        )
+        .expect("read list-valued bytecode constant")
+        .expect("constant form");
         let items = materialized.to_vec().expect("proper list constant");
 
         assert!(matches!(
@@ -5585,10 +5596,9 @@ mod tests {
         // (defun emaxx-fx-catch (f) (condition-case err (funcall f) (error (cons 'caught err))))
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        let object = fixture_objects().remove("emaxx-fx-catch").unwrap();
-        interp
-            .materialize_read_object_literals(Value::Vector(object.constants), &mut env)
-            .expect("materialize unchanged fixture reader objects");
+        let object = fixture_objects(&mut interp)
+            .remove("emaxx-fx-catch")
+            .unwrap();
         // Non-signaling: (lambda () 42) via a builtin-friendly stand-in.
         let ok = execute(
             &mut interp,
@@ -5632,20 +5642,18 @@ mod phase_c_tests {
 
     fn run2_in(interp: &mut Interpreter, name: &str, args: &[Value]) -> Result<Value, LispError> {
         let mut env = Env::new();
-        let object = named_objects(ORACLE_ELC2)
+        let object = named_objects(interp, ORACLE_ELC2)
             .remove(name)
             .unwrap_or_else(|| panic!("fixture {name} missing"));
-        interp.materialize_read_object_literals(Value::Vector(object.constants), &mut env)?;
         execute(interp, &object, args, &mut env)
     }
 
     fn run2_with_gnu_early_lisp(name: &str, args: &[Value]) -> Result<Value, LispError> {
         let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
         let mut env = Env::new();
-        let object = named_objects(ORACLE_ELC2)
+        let object = named_objects(&mut interp, ORACLE_ELC2)
             .remove(name)
             .unwrap_or_else(|| panic!("fixture {name} missing"));
-        interp.materialize_read_object_literals(Value::Vector(object.constants), &mut env)?;
         execute(&mut interp, &object, args, &mut env)
     }
 
@@ -5732,8 +5740,7 @@ mod phase_c_tests {
                          vm-light-plain
                          (with-current-buffer buffer (point)))))"#
         );
-        let form = super::super::super::reader::Reader::new(&source)
-            .read()
+        let form = crate::lisp::read_next_load_form(&mut interp, &source, &mut 0, &mut env)
             .expect("read form")
             .expect("a form");
         let value = interp.eval(&form, &mut env).expect("calls");
@@ -5778,8 +5785,7 @@ mod phase_c_tests {
                  (prin1-to-string
                   (vm-record-slots (record 'vm-rec 1 2) (vector 'a 'b) 2)))"#
         );
-        let form = super::super::super::reader::Reader::new(&source)
-            .read()
+        let form = crate::lisp::read_next_load_form(&mut interp, &source, &mut 0, &mut env)
             .expect("read form")
             .expect("a form");
         let value = interp.eval(&form, &mut env).expect("calls");
@@ -5839,8 +5845,7 @@ mod phase_c_tests {
                                (f (make-byte-code 0 code [list x] 301)))
                           (list (length (funcall f)) (car (funcall f))))))))"#
         );
-        let form = super::super::super::reader::Reader::new(&source)
-            .read()
+        let form = crate::lisp::read_next_load_form(&mut interp, &source, &mut 0, &mut env)
             .expect("read form")
             .expect("a form");
         let value = interp.eval(&form, &mut env).expect("calls");
@@ -5897,8 +5902,7 @@ mod phase_c_tests {
                  (fset 'vm-gate-probe {vm_gate_probe})
                  (prin1-to-string (vm-gate-probe)))"#
         );
-        let form = super::super::super::reader::Reader::new(&source)
-            .read()
+        let form = crate::lisp::read_next_load_form(&mut interp, &source, &mut 0, &mut env)
             .expect("read form")
             .expect("a form");
         let value = interp.eval(&form, &mut env).expect("probe");
@@ -5931,12 +5935,9 @@ mod phase_c_tests {
         // Normal exit: handler still runs (setcdr log 'cleaned).
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        let object = named_objects(ORACLE_ELC2)
+        let object = named_objects(&mut interp, ORACLE_ELC2)
             .remove("emaxx-fx2-unwind")
             .unwrap();
-        interp
-            .materialize_read_object_literals(Value::Vector(object.constants), &mut env)
-            .expect("materialize unchanged fixture reader objects");
         let log = Value::list([Value::symbol("payload"), Value::symbol("untouched")]);
         let value = execute(&mut interp, &object, std::slice::from_ref(&log), &mut env).unwrap();
         assert_eq!(format!("{value}"), "payload");
@@ -5967,12 +5968,9 @@ mod phase_c_tests {
                 &mut env,
             )
             .unwrap();
-        let object = named_objects(ORACLE_ELC2)
+        let object = named_objects(&mut interp, ORACLE_ELC2)
             .remove("emaxx-fx2-dynbind")
             .unwrap();
-        interp
-            .materialize_read_object_literals(Value::Vector(object.constants), &mut env)
-            .expect("materialize unchanged fixture reader objects");
         let value = execute(&mut interp, &object, &[Value::symbol("bound")], &mut env).unwrap();
         assert_eq!(format!("{value}"), "bound");
         // The binding must be undone after the call.
@@ -5989,12 +5987,10 @@ mod phase_c_tests {
         // formals are specbound, so symbol-value sees `a'.
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        let object = super::super::tests::named_objects(super::super::tests::ORACLE_ELC3)
-            .remove("emaxx-fx3-legacy")
-            .unwrap();
-        interp
-            .materialize_read_object_literals(Value::Vector(object.constants), &mut env)
-            .expect("materialize unchanged fixture reader objects");
+        let object =
+            super::super::tests::named_objects(&mut interp, super::super::tests::ORACLE_ELC3)
+                .remove("emaxx-fx3-legacy")
+                .unwrap();
         assert!(matches!(object.argspec, ArgSpec::Legacy(_)));
         let value = execute(
             &mut interp,

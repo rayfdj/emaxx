@@ -318,7 +318,7 @@ impl CharTableRef {
 
     /// lisp.h:CHAR_TABLE_REF_ASCII: each table's ASCII slot, its default
     /// for nil, up the parents while nil.
-    #[inline]
+    #[inline(always)]
     fn ascii_get(&self, index: usize) -> Value {
         let mut table = *self;
         loop {

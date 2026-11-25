@@ -39,3 +39,43 @@ fn a_symbol_sweep_on_another_host_thread_frees_the_creators_uninterned_symbols()
         "the swept symbols are freed: {made} allocated before, {after} after"
     );
 }
+
+#[test]
+fn host_symbols_move_with_the_runtime() {
+    // The obarray of code that makes no editor is the runtime's: an OS
+    // thread without the runtime takes it before it looks a name up, and
+    // every holder in turn sees the same symbols.
+    use crate::lisp::runtime::held;
+    const NAME: &str = "runtime-host-obarray-probe";
+    let (made_tx, made_rx) = std::sync::mpsc::channel();
+    let (finish_tx, finish_rx) = std::sync::mpsc::channel::<()>();
+    let maker = std::thread::spawn(move || {
+        assert!(!held());
+        let made = SymbolName::intern_str(NAME).identity_ptr();
+        assert!(held(), "interning took the runtime");
+        made_tx.send(made).expect("announce the symbol");
+        finish_rx.recv().expect("wait to finish");
+    });
+    let made = made_rx.recv().expect("the symbol is made");
+    let (found_tx, found_rx) = std::sync::mpsc::channel();
+    let finder = std::thread::spawn(move || {
+        let found = SymbolName::find(NAME).map(|symbol| symbol.identity_ptr());
+        assert!(held(), "the lookup took the runtime");
+        found_tx.send(found).expect("announce the lookup");
+    });
+    assert!(
+        found_rx
+            .recv_timeout(std::time::Duration::from_millis(200))
+            .is_err(),
+        "no lookup in the host obarray while another thread holds the runtime"
+    );
+    finish_tx.send(()).expect("let the maker finish");
+    maker.join().expect("the maker exits");
+    assert_eq!(
+        found_rx
+            .recv_timeout(std::time::Duration::from_secs(60))
+            .expect("the lookup runs once the maker has exited"),
+        Some(made)
+    );
+    finder.join().expect("the finder exits");
+}

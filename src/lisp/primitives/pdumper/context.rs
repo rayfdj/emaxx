@@ -53,7 +53,6 @@ pub(crate) enum ObjectKey {
     LispRecord(usize),
     BoolVector(usize),
     Finalizer(usize),
-    ReaderForm(usize),
 }
 
 pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
@@ -96,7 +95,6 @@ pub(crate) fn object_key(value: &Value) -> Option<ObjectKey> {
         Kind::LispRecord(record) => ObjectKey::LispRecord(record.identity()),
         Kind::BoolVector(vector) => ObjectKey::BoolVector(vector.identity()),
         Kind::Finalizer(object) => ObjectKey::Finalizer(object.identity()),
-        Kind::ReaderForm(form) => ObjectKey::ReaderForm(form.identity()),
     })
 }
 
@@ -1172,7 +1170,6 @@ impl DumpContext {
             Kind::Window(_) => (self.dump_nilled_pseudovec()?, DumpType::Window),
             // pdumper.c:dump_vectorlike rejects PVEC_SYMBOL_WITH_POS.
             Kind::SymbolWithPos(_) => return Err(self.unsupported(object, "pseudovector type 6")),
-            Kind::ReaderForm(_) => return Err(self.unsupported(object, "reader form")),
         };
         self.clear_referrer();
 
@@ -2620,9 +2617,7 @@ impl DumpContext {
                         let reloc = match kind {
                             DumpType::Symbol => RelocType::DumpToDumpSymbol,
                             DumpType::Cons => RelocType::DumpToDumpCons,
-                            DumpType::String | DumpType::StringObject => {
-                                RelocType::DumpToDumpString
-                            }
+                            DumpType::String => RelocType::DumpToDumpString,
                             DumpType::Vector
                             | DumpType::Closure
                             | DumpType::LispRecord

@@ -427,7 +427,7 @@ impl GlState {
     fn read_state(&mut self, interp: &Interpreter) {
         self.buffer_table = interp.current_syntax_table_id();
         self.check_ascii();
-        self.lookup_properties = interp.parse_sexp_lookup_properties;
+        self.lookup_properties = interp.parse_sexp_lookup_properties();
         self.propertize_done = interp
             .local_variable_value_key(cached_symbol!("syntax-propertize--done"))
             .and_then(|value| value.integer_value())

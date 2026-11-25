@@ -1,4 +1,5 @@
 use super::*;
+use crate::lisp::reader::ReadLiteral;
 use crate::lisp::types::Kind;
 
 /// lread.c:bytecode_from_rev_list's checks of a closure literal's slots.
@@ -59,8 +60,8 @@ impl crate::lisp::reader::ReadContext for LispReadContext<'_> {
         crate::lisp::primitives::intern_read_symbol(self.interp, &obarray, name, multibyte)
     }
 
-    fn build(&mut self, form: ReaderForm) -> Result<Value, LispError> {
-        self.interp.build_read_object(form, self.env)
+    fn build(&mut self, literal: ReadLiteral) -> Result<Value, LispError> {
+        self.interp.build_read_object(literal, self.env)
     }
 
     fn load_file_name(&mut self) -> Value {
@@ -132,18 +133,18 @@ impl Interpreter {
     /// (hash_table_from_plist) or a char-table.
     pub(crate) fn build_read_object(
         &mut self,
-        form: ReaderForm,
+        literal: ReadLiteral,
         env: &mut Env,
     ) -> Result<Value, LispError> {
-        match form {
-            ReaderForm::Record { slots } => {
+        match literal {
+            ReadLiteral::Record { slots } => {
                 let Some(kind) = slots.first() else {
                     return Err(LispError::ReadError("empty record literal".into()));
                 };
                 crate::lisp::primitives::check_record_data_slots(slots.len() - 1)?;
                 Ok(Value::LispRecord(LispRecordRef::new(*kind, &slots[1..])))
             }
-            ReaderForm::Closure { mut slots, .. } => {
+            ReadLiteral::Closure { mut slots } => {
                 if !(3..=6).contains(&slots.len()) {
                     return Err(LispError::ReadError("Invalid byte-code object".into()));
                 }
@@ -160,186 +161,16 @@ impl Interpreter {
                 }
                 Ok(value)
             }
-            ReaderForm::HashTable { fields } => {
+            ReadLiteral::HashTable { fields } => {
                 crate::lisp::primitives::hash_table_from_read_fields(self, &fields, env)
             }
-            ReaderForm::CharTable { fields } => {
+            ReadLiteral::CharTable { fields } => {
                 crate::lisp::primitives::char_table_from_read_fields(&fields, false)
             }
-            ReaderForm::SubCharTable { fields } => {
+            ReadLiteral::SubCharTable { fields } => {
                 crate::lisp::primitives::char_table_from_read_fields(&fields, true)
             }
         }
-    }
-
-    /// Finish the Interpreter-dependent part of GNU's reader contract.
-    ///
-    /// A read without a context leaves identity-bearing literals (`#s(...)',
-    /// `#[...]', `#^[...]', `#&') as reader forms until the reader's caller
-    /// finishes the object here, so every read constructs one shared graph
-    /// before evaluation.
-    pub(crate) fn materialize_read_object_literals(
-        &mut self,
-        value: Value,
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        if !crate::lisp::reader::read_object_needs_resolution(&value) {
-            return Ok(value);
-        }
-        let value = self.materialize_read_record_literals(&value, env)?;
-        let value =
-            crate::lisp::primitives::materialize_read_hash_table_literals(self, &value, env)?;
-        crate::lisp::primitives::materialize_read_char_table_literals(self, &value, env)
-    }
-
-    /// Materialize `#[...]' and ordinary `#s(...)' reader forms throughout a
-    /// freshly-read object.  GNU creates pseudovector objects in the reader, even
-    /// below `quote'.  Emaxx keeps parsing independent of an Interpreter, so
-    /// perform that object-allocation step at the read/evaluation boundary.
-    /// Mutating surrounding cons cells in place preserves reader sharing.
-    pub(crate) fn materialize_read_record_literals(
-        &mut self,
-        value: &Value,
-        env: &mut Env,
-    ) -> Result<Value, LispError> {
-        self.materialize_read_record_literals_inner(
-            value,
-            env,
-            &mut std::collections::HashSet::new(),
-            &mut std::collections::HashSet::new(),
-            &mut std::collections::HashSet::new(),
-            &mut std::collections::HashMap::new(),
-        )
-    }
-
-    fn materialize_read_record_literals_inner(
-        &mut self,
-        value: &Value,
-        env: &mut Env,
-        seen_cons: &mut std::collections::HashSet<usize>,
-        seen_vectors: &mut std::collections::HashSet<usize>,
-        active_reader_forms: &mut std::collections::HashSet<usize>,
-        records: &mut std::collections::HashMap<usize, Value>,
-    ) -> Result<Value, LispError> {
-        if let Kind::ReaderForm(form) = value.kind()
-            && matches!(
-                form.as_ref(),
-                ReaderForm::Record { .. } | ReaderForm::Closure { .. }
-            )
-        {
-            let identity = form.identity();
-            if let Some(record) = records.get(&identity) {
-                return Ok(*record);
-            }
-            if !active_reader_forms.insert(identity) {
-                return Err(LispError::ReadError("circular record literal".into()));
-            }
-            let (slots, closure_kind) = match form.as_ref() {
-                ReaderForm::Record { slots } => (slots, None),
-                ReaderForm::Closure { kind, slots } => (slots, Some(*kind)),
-                _ => unreachable!(),
-            };
-            // Install the real closure before descending into its slots.
-            // A reader label can lead back through any of those objects.
-            let closure = if closure_kind.is_some() {
-                if !(3..=6).contains(&slots.len()) {
-                    return Err(LispError::ReadError("Invalid byte-code object".into()));
-                }
-                let value = Value::Closure(crate::lisp::types::ClosureRef::filled(
-                    slots.len(),
-                    Value::Nil,
-                ));
-                records.insert(identity, value);
-                Some(value)
-            } else {
-                None
-            };
-            let mut materialized = Vec::with_capacity(slots.len());
-            for slot in slots {
-                let value = self.materialize_read_record_literals_inner(
-                    slot,
-                    env,
-                    seen_cons,
-                    seen_vectors,
-                    active_reader_forms,
-                    records,
-                )?;
-                let value = crate::lisp::primitives::materialize_read_hash_table_literals(
-                    self, &value, env,
-                )?;
-                let value = crate::lisp::primitives::materialize_read_char_table_literals(
-                    self, &value, env,
-                )?;
-                materialized.push(value);
-            }
-            let record = match closure_kind {
-                Some(_) => {
-                    prepare_closure_literal(self, &mut materialized, env)?;
-                    let value = closure.expect("allocated closure");
-                    let Kind::Closure(closure) = value.kind() else {
-                        unreachable!()
-                    };
-                    for (index, slot) in materialized.into_iter().enumerate() {
-                        closure.initialize_slot(index, slot);
-                    }
-                    value
-                }
-                None => {
-                    let Some(kind) = materialized.first() else {
-                        return Err(LispError::ReadError("empty record literal".into()));
-                    };
-                    crate::lisp::primitives::check_record_data_slots(materialized.len() - 1)?;
-                    Value::LispRecord(LispRecordRef::new(*kind, &materialized[1..]))
-                }
-            };
-            active_reader_forms.remove(&identity);
-            records.insert(identity, record);
-            return Ok(record);
-        }
-        if let Kind::Vector(vector) = value.kind() {
-            if !seen_vectors.insert(vector.identity()) {
-                return Ok(*value);
-            }
-            let slots = vector.slots().collect::<Vec<_>>();
-            for (index, slot) in slots.iter().enumerate() {
-                let materialized = self.materialize_read_record_literals_inner(
-                    slot,
-                    env,
-                    seen_cons,
-                    seen_vectors,
-                    active_reader_forms,
-                    records,
-                )?;
-                vector.set(index, materialized);
-            }
-            return Ok(*value);
-        }
-        let Some((car_cell, cdr_cell)) = (value).cons_cells() else {
-            return Ok(*value);
-        };
-        let identity = car_cell.cell_id();
-        if !seen_cons.insert(identity) {
-            return Ok(*value);
-        }
-        let car = car_cell.get();
-        car_cell.set(self.materialize_read_record_literals_inner(
-            &car,
-            env,
-            seen_cons,
-            seen_vectors,
-            active_reader_forms,
-            records,
-        )?);
-        let cdr = cdr_cell.get();
-        cdr_cell.set(self.materialize_read_record_literals_inner(
-            &cdr,
-            env,
-            seen_cons,
-            seen_vectors,
-            active_reader_forms,
-            records,
-        )?);
-        Ok(*value)
     }
 
     /// eval.c:Fmake_interpreted_closure: validate only the outer kinds,
@@ -426,16 +257,14 @@ impl Interpreter {
             // loadhist uses `(defalias NAME nil)' while unloading; leaving
             // a literal nil binding here would hide any dumped autoload and
             // turn the next call into `(invalid-function nil)'.
-            if !function.is_nil() || !self.defer_unloaded_defsubst(&name) {
-                // Ffset: `NILP (symbol) && !NILP (definition)' signals.
-                if args[0].is_nil() && !function.is_nil() {
-                    return Err(LispError::SignalValue(Value::list([
-                        Value::symbol("setting-constant"),
-                        args[0],
-                    ])));
-                }
-                self.fset_function_symbol(&name, args[0], function, env)?;
+            // Ffset: `NILP (symbol) && !NILP (definition)' signals.
+            if args[0].is_nil() && !function.is_nil() {
+                return Err(LispError::SignalValue(Value::list([
+                    Value::symbol("setting-constant"),
+                    args[0],
+                ])));
             }
+            self.fset_function_symbol(&name, args[0], function, env)?;
         }
         if !docstring.is_nil() {
             self.put_symbol_property_on(&name, "function-documentation", docstring);
