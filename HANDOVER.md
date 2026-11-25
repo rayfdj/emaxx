@@ -24257,6 +24257,24 @@ ert-tests as a whole 26,307 ms against 27,211.
   compared (506 of the 519).  Not run a third time; round 389's runs,
   whose source includes this round's, stand for it.
 
+**On `a5ef0ae`** (round 389): the frozen run (run 45583266150) matched
+  7,927 of the 7,928 outcomes on both its attempts, the one mismatch
+  both times GNU's own failure of
+  `eglot-test-rust-completion-exit-function' (a `jsonrpc-error'),
+  Emaxx's run passing; no Emaxx outcome differed from a passing GNU
+  outcome.  That test has now failed on one side or the other in seven
+  of the eleven frozen attempts since round 383 (GNU's side five times,
+  Emaxx's twice), with the runner's recorded tools identical in a
+  passing run and a failing one; it is still compared, not skipped.
+  The first attempt: setup 51.4 s against 44.6 s (1.152), test bodies
+  226.5 s against 223.9 s (1.012), in all 1.035 (GNU's suite took 268
+  s); the second 1.079.  The widest body gaps of the first are
+  tramp-tests (14.9 s against 13.1 s), comp-tests (10.3 against 9.2),
+  semantic-utest-ia (2.56 against 1.86), mule-tests (1.92 against 1.29)
+  and epg-tests (2.27 against 1.77).  The Rust gate (run 45583261254)
+  passed: 3,653 library tests, the seven integration targets (230) and
+  the binaries' tests (61), none failed.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 389 and its review), within the
   plan's later stages.**  One line each: the canonical empty strings
