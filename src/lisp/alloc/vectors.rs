@@ -340,13 +340,16 @@ thread_local! {
     static FREE_LISTS: [Cell<*mut VectorHeader>; FREE_LIST_ARRAY_SIZE] =
         const { [const { Cell::new(std::ptr::null_mut()) }; FREE_LIST_ARRAY_SIZE] };
     static LAST_INSERTED_FREE_INDEX: Cell<usize> = const { Cell::new(FREE_LIST_ARRAY_SIZE) };
+    /// alloc.c's staticpro'd zero_vector, a permanent cell (0 until made),
+    /// the runtime's: given and returned with the frontier.
+    static ZERO_VECTOR: Cell<usize> = const { Cell::new(0) };
 }
 
 /// The vectors' share of `alloc::Frontier'.
-pub(super) struct Frontier([usize; FREE_LIST_ARRAY_SIZE], usize);
+pub(super) struct Frontier([usize; FREE_LIST_ARRAY_SIZE], usize, usize);
 
 impl Frontier {
-    pub(super) const EMPTY: Self = Self([0; FREE_LIST_ARRAY_SIZE], FREE_LIST_ARRAY_SIZE);
+    pub(super) const EMPTY: Self = Self([0; FREE_LIST_ARRAY_SIZE], FREE_LIST_ARRAY_SIZE, 0);
 
     pub(super) fn take() -> Self {
         Self(
@@ -356,6 +359,7 @@ impl Frontier {
                     .map(|list| list.replace(std::ptr::null_mut()) as usize)
             }),
             LAST_INSERTED_FREE_INDEX.replace(FREE_LIST_ARRAY_SIZE),
+            ZERO_VECTOR.replace(0),
         )
     }
 
@@ -372,6 +376,7 @@ impl Frontier {
             }
         });
         LAST_INSERTED_FREE_INDEX.set(self.1);
+        ZERO_VECTOR.set(self.2);
     }
 }
 
@@ -989,22 +994,34 @@ struct ZeroVector {
     mark: MarkBit,
 }
 
-static ZERO_VECTOR: std::sync::OnceLock<usize> = std::sync::OnceLock::new();
-
 pub(super) fn zero_vector_at(address: usize) -> Option<*mut VectorHeader> {
-    ZERO_VECTOR
-        .get()
-        .filter(|&&zero| zero == address)
-        .map(|&zero| zero as *mut VectorHeader)
+    (address != 0 && address == ZERO_VECTOR.get()).then_some(address as *mut VectorHeader)
 }
 
+/// alloc.c's staticpro'd zero_vector.
+#[inline]
 fn zero_vector() -> *mut VectorHeader {
-    *ZERO_VECTOR.get_or_init(|| {
-        Box::leak(Box::new(ZeroVector {
-            header: VectorHeader { size: 0 },
-            mark: MarkBit::default(),
-        })) as *mut ZeroVector as usize
-    }) as *mut VectorHeader
+    match ZERO_VECTOR.get() {
+        0 => make_zero_vector(),
+        zero => zero as *mut VectorHeader,
+    }
+}
+
+/// init_vectors' zero_vector, made once for the runtime.  A thread without
+/// the runtime has none (see `alloc::Frontier'): it takes the runtime, and
+/// the runtime's empty vector, first.
+#[cold]
+#[inline(never)]
+fn make_zero_vector() -> *mut VectorHeader {
+    if crate::lisp::runtime::took_runtime() && ZERO_VECTOR.get() != 0 {
+        return ZERO_VECTOR.get() as *mut VectorHeader;
+    }
+    let zero = Box::leak(Box::new(ZeroVector {
+        header: VectorHeader { size: 0 },
+        mark: MarkBit::default(),
+    })) as *mut ZeroVector as usize;
+    ZERO_VECTOR.set(zero);
+    zero as *mut VectorHeader
 }
 
 /// `Lisp_Object' for an ordinary vector: the header's address.

@@ -21,7 +21,6 @@ use super::{BlockKind, FREE_MARK, blocks_of, new_block, release_block, sweep_blo
 use std::cell::{Cell, UnsafeCell};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
-use std::sync::OnceLock;
 use std::sync::atomic::{AtomicUsize, Ordering};
 
 #[repr(C)]
@@ -329,33 +328,50 @@ impl StringMark<'_> {
     }
 }
 
-static EMPTY_UNIBYTE: OnceLock<usize> = OnceLock::new();
-static EMPTY_MULTIBYTE: OnceLock<usize> = OnceLock::new();
-
 pub(super) fn empty_string_at(address: usize) -> Option<*mut StringCell> {
-    [EMPTY_UNIBYTE.get(), EMPTY_MULTIBYTE.get()]
-        .into_iter()
-        .flatten()
-        .any(|&empty| empty == address)
+    (address != 0 && (address == EMPTY_UNIBYTE.get() || address == EMPTY_MULTIBYTE.get()))
         .then_some(address as *mut StringCell)
 }
 
+/// alloc.c's empty_unibyte_string and empty_multibyte_string.
+#[inline]
 fn empty_string(multibyte: bool) -> StringObjectRef {
+    let address = if multibyte {
+        EMPTY_MULTIBYTE.get()
+    } else {
+        EMPTY_UNIBYTE.get()
+    };
+    let address = if address == 0 {
+        make_empty_string(multibyte)
+    } else {
+        address
+    };
+    // SAFETY: the runtime's permanent allocated empty string cell.
+    unsafe { StringObjectRef::from_raw(address as *mut StringCell) }
+}
+
+/// init_strings' empty string of MULTIBYTE, made once for the runtime.  A
+/// thread without the runtime has none (see `alloc::Frontier'): it takes
+/// the runtime, and the runtime's empty strings, first.
+#[cold]
+#[inline(never)]
+fn make_empty_string(multibyte: bool) -> usize {
     let slot = if multibyte {
         &EMPTY_MULTIBYTE
     } else {
         &EMPTY_UNIBYTE
     };
-    let address = *slot.get_or_init(|| {
-        let state = SharedStringState::empty(multibyte);
-        // Dumped empty strings retain their singleton identities, but are not
-        // PURE_P at runtime: the first purecopy must allocate a new header.
-        let mut cell = StringCell::new(state, false);
-        cell.permanent_empty = true;
-        Box::into_raw(Box::new(cell)) as usize
-    });
-    // SAFETY: each OnceLock owns a permanent allocated string cell.
-    unsafe { StringObjectRef::from_raw(address as *mut StringCell) }
+    if crate::lisp::runtime::took_runtime() && slot.get() != 0 {
+        return slot.get();
+    }
+    let state = SharedStringState::empty(multibyte);
+    // Dumped empty strings retain their singleton identities, but are not
+    // PURE_P at runtime: the first purecopy must allocate a new header.
+    let mut cell = StringCell::new(state, false);
+    cell.permanent_empty = true;
+    let address = Box::into_raw(Box::new(cell)) as usize;
+    slot.set(address);
+    address
 }
 
 thread_local! {
@@ -365,14 +381,20 @@ thread_local! {
     static FREE_LIST: Cell<*mut StringCell> = const { Cell::new(std::ptr::null_mut()) };
     static BUMP_NEXT: Cell<usize> = const { Cell::new(0) };
     static BUMP_END: Cell<usize> = const { Cell::new(0) };
+    /// alloc.c's staticpro'd empty_unibyte_string and
+    /// empty_multibyte_string, permanent cells (0 until made), the
+    /// runtime's: given and returned with the frontier, so that no OS
+    /// thread without the runtime borrows them.
+    static EMPTY_UNIBYTE: Cell<usize> = const { Cell::new(0) };
+    static EMPTY_MULTIBYTE: Cell<usize> = const { Cell::new(0) };
 }
 
 /// The strings' share of `alloc::Frontier': the headers' and the current
 /// small data blocks'.
-pub(super) struct Frontier([usize; 3], data::Frontier);
+pub(super) struct Frontier([usize; 5], data::Frontier);
 
 impl Frontier {
-    pub(super) const EMPTY: Self = Self([0; 3], data::Frontier::EMPTY);
+    pub(super) const EMPTY: Self = Self([0; 5], data::Frontier::EMPTY);
 
     pub(super) fn take() -> Self {
         Self(
@@ -380,6 +402,8 @@ impl Frontier {
                 FREE_LIST.replace(std::ptr::null_mut()) as usize,
                 BUMP_NEXT.replace(0),
                 BUMP_END.replace(0),
+                EMPTY_UNIBYTE.replace(0),
+                EMPTY_MULTIBYTE.replace(0),
             ],
             data::Frontier::take(),
         )
@@ -389,16 +413,18 @@ impl Frontier {
     /// and the current small data blocks.
     #[cfg(test)]
     pub(super) fn cells(&self) -> [usize; 5] {
-        let [free, next, end] = self.0;
+        let [free, next, end, _, _] = self.0;
         let [small, pure, image] = self.1.blocks();
         [free, if next < end { next } else { 0 }, small, pure, image]
     }
 
     pub(super) fn install(self) {
-        let [free, next, end] = self.0;
+        let [free, next, end, unibyte, multibyte] = self.0;
         FREE_LIST.set(free as *mut StringCell);
         BUMP_NEXT.set(next);
         BUMP_END.set(end);
+        EMPTY_UNIBYTE.set(unibyte);
+        EMPTY_MULTIBYTE.set(multibyte);
         self.1.install();
     }
 }
@@ -690,11 +716,10 @@ pub(crate) fn borrowed_string_roots() -> Vec<Value> {
             inspect((start + index * STRING_CELL_SIZE) as *mut StringCell);
         }
     }
-    for &address in [EMPTY_UNIBYTE.get(), EMPTY_MULTIBYTE.get()]
-        .into_iter()
-        .flatten()
-    {
-        inspect(address as *mut StringCell);
+    for address in [EMPTY_UNIBYTE.get(), EMPTY_MULTIBYTE.get()] {
+        if address != 0 {
+            inspect(address as *mut StringCell);
+        }
     }
     debug_assert!(
         guards_live || roots.is_empty(),

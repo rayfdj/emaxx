@@ -700,6 +700,37 @@ mod tests {
         waits_for_the_holder(|| Value::symbol("runtime-frontier-intern-probe").is_symbol());
     }
 
+    /// The words of alloc.c's empty_unibyte_string, empty_multibyte_string
+    /// and zero_vector as this OS thread finds them.
+    fn empty_objects() -> [usize; 3] {
+        let empty = |multibyte| {
+            crate::lisp::types::StringObjectRef::from_storage_kind(
+                &[],
+                0,
+                multibyte,
+                crate::lisp::alloc::StringAllocation::Ordinary,
+            )
+            .map(|string| Value::StringObject(string).word())
+            .expect("an empty string")
+        };
+        [empty(false), empty(true), Value::vector(Vec::new()).word()]
+    }
+
+    #[test]
+    fn the_empty_strings_and_vector_are_the_runtimes() {
+        // alloc.c's staticpro'd globals: one object each for the process,
+        // which a thread without the runtime takes the runtime to reach.
+        let first = std::thread::spawn(empty_objects)
+            .join()
+            .expect("the first thread");
+        let second = std::thread::spawn(empty_objects)
+            .join()
+            .expect("the second thread");
+        assert_eq!(first, second);
+        waits_for_the_holder(|| Value::string("").is_string());
+        waits_for_the_holder(|| Value::vector(Vec::new()).is_vectorlike());
+    }
+
     /// This thread's newest cons: its cell, the cell its frontier gives
     /// next, the live conses and the mark epoch.
     fn cons_here() -> (usize, Option<usize>, usize, u32) {
