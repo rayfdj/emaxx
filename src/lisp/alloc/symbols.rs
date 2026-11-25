@@ -1412,6 +1412,8 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
 /// The allocated symbol cells that are uninterned, live or not yet swept.
 #[cfg(test)]
 pub(crate) fn allocated_uninterned_symbols() -> usize {
+    // The blocks and the frontier are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
     let bump_next = SYMBOL_BUMP_NEXT.get();
     let bump_end = SYMBOL_BUMP_END.get();
     let mut count = 0;
@@ -1436,12 +1438,16 @@ pub(crate) fn allocated_uninterned_symbols() -> usize {
 }
 
 pub(crate) fn live_symbols() -> usize {
+    // The books are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
     LIVE_SYMBOLS.load(Ordering::Relaxed)
 }
 
 /// gcstat's `total_free_symbols': the last sweep's count (Fmake_symbol does
 /// not lower it).
 pub(crate) fn free_symbols() -> usize {
+    // The books are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
     FREE_SYMBOLS.load(Ordering::Relaxed)
 }
 

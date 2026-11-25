@@ -804,6 +804,8 @@ pub(crate) fn sweep_floats() -> usize {
 }
 
 pub(crate) fn live_floats() -> usize {
+    // The books are the runtime's (`live_conses').
+    crate::lisp::runtime::ensure_held();
     LIVE_FLOATS.load(Ordering::Relaxed)
 }
 
@@ -2061,6 +2063,8 @@ pub(crate) unsafe fn mem_find_cons(address: usize) -> Option<*mut ConsCell> {
 /// next cons is allocated makes so.
 #[cfg(test)]
 pub(crate) fn cons_allocated_at(address: usize) -> bool {
+    // The blocks are the runtime's (`live_conses').
+    crate::lisp::runtime::ensure_held();
     // SAFETY: `mem_find' reads nothing it does not find in a block.
     unsafe { mem_find_cons(address) }.is_some_and(|cell| cell as usize == address)
 }
@@ -2069,6 +2073,8 @@ pub(crate) fn cons_allocated_at(address: usize) -> bool {
 /// is clear, as a collection's sweeps leave them.
 #[cfg(test)]
 pub(crate) fn every_mark_bit_clear() -> bool {
+    // The blocks are the runtime's (`live_conses').
+    crate::lisp::runtime::ensure_held();
     let clear = |words: &[Cell<usize>]| words.iter().all(|word| word.get() == 0);
     blocks_of(BlockKind::Cons).into_iter().all(|start| {
         // SAFETY: a registered cons block's metadata.
@@ -2389,7 +2395,13 @@ pub(crate) fn clobber_stack() {
     std::hint::black_box(&scratch);
 }
 
+/// gcstat's `total_conses'.  alloc.c's books are globals that the thread
+/// running Lisp reads, so a census, like an allocator (`took_runtime'),
+/// takes the runtime on a thread that does not hold it, which then keeps
+/// it until it exits: no other OS thread allocates or sweeps between two
+/// of its reads.
 pub(crate) fn live_conses() -> usize {
+    crate::lisp::runtime::ensure_held();
     LIVE_CONSES.load(Ordering::Relaxed)
 }
 
@@ -2409,6 +2421,8 @@ pub(crate) struct BlockRecord {
 
 /// The block records of every kind, from the registry.
 pub(crate) fn block_records() -> Vec<BlockRecord> {
+    // The block registry is the runtime's (`live_conses').
+    crate::lisp::runtime::ensure_held();
     let registry = BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
@@ -2480,6 +2494,8 @@ pub(crate) const FLOAT_CELL_BYTES: usize = FLOAT_CELL_SIZE;
 /// gcstat's `total_free_floats': the last sweep's count (make_float does
 /// not lower it).
 pub(crate) fn free_floats() -> usize {
+    // The books are the runtime's (`live_conses').
+    crate::lisp::runtime::ensure_held();
     FREE_FLOATS.load(Ordering::Relaxed)
 }
 
@@ -2487,6 +2503,8 @@ pub(crate) fn free_floats() -> usize {
 /// decrement it).
 #[allow(dead_code)]
 pub(crate) fn free_conses() -> usize {
+    // The books are the runtime's (`live_conses').
+    crate::lisp::runtime::ensure_held();
     FREE_CONSES.load(Ordering::Relaxed)
 }
 
@@ -2495,6 +2513,8 @@ pub(crate) fn free_conses() -> usize {
 /// report of retained process memory.
 #[cfg(test)]
 pub(crate) fn cons_storage_for_test() -> [usize; 4] {
+    // The block list is the runtime's (`live_conses').
+    crate::lisp::runtime::ensure_held();
     [
         all_blocks().len(),
         std::mem::size_of::<ConsBlock>(),

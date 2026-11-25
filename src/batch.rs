@@ -583,43 +583,22 @@ pub(crate) fn initialize_batch_interpreter_as_started(
     initialize_interpreter(options, true)
 }
 
-/// A boot that has no image to start from reconstructs the dumped state
-/// by running loadup.el, whose dump-mode path runs git
-/// (`emacs-repository-get-version'): that crosses the host-process
-/// boundary, which the test harness serializes with a permit every
-/// process test takes before it boots.  Such a boot takes the permit
-/// before the boot-environment guard too, so the two are always taken
-/// in that order; whether this boot reconstructs is known only under the
-/// guard, so the attempt reports it, the permit is taken, and the boot
-/// restarts (taking the permit under the guard deadlocked against a
-/// process test waiting to boot).
-enum BootAttempt {
-    Ready(Box<Interpreter>),
-    #[cfg(test)]
-    NeedsProcessPermit,
-}
-
+/// A boot is the process's.  It maps the process's one dump (pdumper.c;
+/// comp.c's `loaded_once': each dumped unit is loaded once a process), or,
+/// with none, reconstructs the dumped state by running loadup.el, whose
+/// dump-mode path runs git (`emacs-repository-get-version'), crossing the
+/// host-process boundary.  The test harness serializes the process with a
+/// permit, so every boot takes it, and first: before the boot-environment
+/// guard, the order every process test takes the two in.  The permit is
+/// the thread's until it exits, so while an editor a boot made lives,
+/// another test lent the runtime meanwhile waits to boot rather than load
+/// the dumped units a second time.
 fn initialize_interpreter(
     options: &BatchRunOptions,
     noninteractive: bool,
 ) -> Result<Interpreter, String> {
     #[cfg(test)]
-    loop {
-        match initialize_interpreter_attempt(options, noninteractive)? {
-            BootAttempt::Ready(interpreter) => return Ok(*interpreter),
-            BootAttempt::NeedsProcessPermit => crate::test_support::mark_process_test(),
-        }
-    }
-    #[cfg(not(test))]
-    match initialize_interpreter_attempt(options, noninteractive)? {
-        BootAttempt::Ready(interpreter) => Ok(*interpreter),
-    }
-}
-
-fn initialize_interpreter_attempt(
-    options: &BatchRunOptions,
-    noninteractive: bool,
-) -> Result<BootAttempt, String> {
+    crate::test_support::mark_process_test();
     // Boot resolves its Lisp tree partly from process environment
     // (EMAXX_DUMP_SOURCE_DIRECTORY, EMACS_TEST_DIRECTORY).  Tests that
     // point those at fixture roots take this lock for WRITE; every boot
@@ -681,13 +660,6 @@ fn initialize_interpreter_attempt(
                 ));
             }
         }
-    }
-    #[cfg(test)]
-    if !initialized && !crate::test_support::holds_process_test_permit() {
-        // The reconstruction runs git (see `BootAttempt'); the fixture
-        // directory lock goes with the attempt.
-        drop(fixture_to_dump);
-        return Ok(BootAttempt::NeedsProcessPermit);
     }
     if !initialized && !temacs {
         interpreter = Interpreter::new();
@@ -852,7 +824,7 @@ fn initialize_interpreter_attempt(
             Ok(()) => {}
             Err(LispErrorKind::Terminate(termination)) => {
                 interpreter.request_termination(termination);
-                return Ok(BootAttempt::Ready(Box::new(interpreter)));
+                return Ok(interpreter);
             }
             Err(error) => return Err(format!("after-pdump-load-hook: {error}")),
         }
@@ -893,7 +865,7 @@ fn initialize_interpreter_attempt(
             other => return Err(format!("GNU batch startup did not complete: {other:?}")),
         }
     }
-    Ok(BootAttempt::Ready(Box::new(interpreter)))
+    Ok(interpreter)
 }
 
 fn configure_native_load_path_for_dump_reconstruction(
@@ -1687,8 +1659,7 @@ mod tests {
         let continuation = thread::Builder::new()
             .stack_size(128 * 1024 * 1024)
             .spawn(move || {
-                let _permit = permit;
-                crate::test_support::note_host_permit_moved_to_this_thread();
+                let _permit = permit.moved_to_this_thread();
                 test();
             })
             .expect("spawn large-stack test thread");

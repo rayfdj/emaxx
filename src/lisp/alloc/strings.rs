@@ -13,6 +13,8 @@ pub(crate) use data::{
 };
 #[cfg(test)]
 pub(crate) fn string_data_census() -> (usize, usize, usize) {
+    // The books are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
     data::census()
 }
 
@@ -835,6 +837,8 @@ fn assert_image_strings_marked(start: usize, epoch: u32) {
 }
 
 pub(crate) fn live_string_object_census() -> (usize, usize, usize) {
+    // The books are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
     (
         LIVE_STRINGS.load(Ordering::Relaxed),
         LIVE_BYTES.load(Ordering::Relaxed),

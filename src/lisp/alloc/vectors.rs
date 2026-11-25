@@ -1866,6 +1866,8 @@ pub(crate) fn sweep_vectors(epoch: u32) -> usize {
 /// as this implementation has counted them: the ordinary vectors, the
 /// closures, the bignums at three words each).
 pub(crate) fn live_vector_census() -> (usize, usize) {
+    // The books are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
     let bignums = LIVE_BIGNUMS.load(Ordering::Relaxed);
     (
         LIVE_VECTORS.load(Ordering::Relaxed) + LIVE_CLOSURES.load(Ordering::Relaxed) + bignums,
@@ -1878,6 +1880,8 @@ pub(crate) fn live_vector_census() -> (usize, usize) {
 /// The records' census: count and slots, as alloc.c counts a record
 /// among the vectors.
 pub(crate) fn live_record_census() -> (usize, usize) {
+    // The books are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
     (
         LIVE_RECORDS.load(Ordering::Relaxed),
         LIVE_RECORD_SLOTS.load(Ordering::Relaxed),
@@ -2039,5 +2043,7 @@ pub(super) unsafe fn value_of(header: *mut VectorHeader) -> Value {
 /// Each canonical overlay owns one configured 80-byte interval node. The
 /// vector census already includes its 32-byte header and payload allocation.
 pub(crate) fn live_overlay_node_bytes() -> usize {
+    // The books are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
     LIVE_OVERLAYS.load(Ordering::Relaxed) * 80
 }

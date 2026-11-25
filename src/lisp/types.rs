@@ -4103,8 +4103,8 @@ pub(crate) fn release_thread_state() {
 pub(crate) mod tests {
     use super::{
         ConsCell, EnvFrame, Kind, LispError, SharedCons, StringObjectRef, SymbolName, Value,
-        assq_binding, census_live_conses, census_live_floats, census_live_uninterned_symbols,
-        census_live_vectors, environment_declares_special,
+        assq_binding, census_live_conses, census_live_floats, census_live_strings,
+        census_live_uninterned_symbols, census_live_vectors, environment_declares_special,
     };
     use std::collections::HashSet;
 
@@ -4481,6 +4481,82 @@ pub(crate) mod tests {
         // A float is freed by the sweep, not by the drop of a handle
         // (`collection_frees_unreached_conses_and_expires_weak_slots').
         assert_eq!(census_live_floats(), before + 1);
+    }
+
+    #[test]
+    fn every_census_read_holds_the_runtime_until_its_thread_exits() {
+        // alloc.c's books are the runtime's: a thread that reads one takes
+        // the runtime, as a thread that allocates does, so no other
+        // thread allocates or sweeps between two of its reads.
+        let readers: [fn(); 19] = [
+            || {
+                census_live_conses();
+            },
+            || {
+                census_live_floats();
+            },
+            || {
+                census_live_vectors();
+            },
+            || {
+                census_live_strings();
+            },
+            || {
+                census_live_uninterned_symbols();
+            },
+            || {
+                crate::lisp::alloc::live_conses();
+            },
+            || {
+                crate::lisp::alloc::free_conses();
+            },
+            || {
+                crate::lisp::alloc::free_floats();
+            },
+            || {
+                crate::lisp::alloc::free_symbols();
+            },
+            || {
+                crate::lisp::alloc::block_records();
+            },
+            || {
+                crate::lisp::alloc::every_mark_bit_clear();
+            },
+            || {
+                crate::lisp::alloc::cons_allocated_at(0);
+            },
+            || {
+                crate::lisp::alloc::live_floats();
+            },
+            || {
+                crate::lisp::alloc::cons_storage_for_test();
+            },
+            || {
+                crate::lisp::alloc::string_data_census();
+            },
+            || {
+                crate::lisp::alloc::live_symbols();
+            },
+            || {
+                crate::lisp::alloc::live_record_census();
+            },
+            || {
+                crate::lisp::alloc::vectors::live_vector_census();
+            },
+            || {
+                crate::lisp::alloc::vectors::live_overlay_node_bytes();
+            },
+        ];
+        for (index, read) in readers.into_iter().enumerate() {
+            let held = std::thread::spawn(move || {
+                let before = crate::lisp::runtime::held();
+                read();
+                (before, crate::lisp::runtime::held())
+            })
+            .join()
+            .expect("the reader's thread");
+            assert_eq!(held, (false, true), "reader {index}");
+        }
     }
 
     #[test]

@@ -16751,6 +16751,10 @@ mod tests {
 
     #[test]
     fn interpreted_closure_allocation_charges_its_gnu_lisp_words() {
+        // The byte total is the runtime's, as the census is
+        // (`alloc::live_conses'), but its reader is the allocator's own,
+        // so the test takes the runtime before its first read.
+        crate::lisp::runtime::ensure_held();
         let measured: Vec<_> = (3..=6)
             .map(|len| {
                 let before = lisp_allocated_bytes();
