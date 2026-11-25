@@ -109,6 +109,15 @@ impl GlobalLock {
     fn acquire(&self, patience: Duration, report: &mut dyn FnMut(&str)) -> bool {
         let me = std::thread::current();
         let mut state = self.state();
+        // A holder that asks again would wait for itself: a release whose
+        // reset reached a new block's path or the host obarray.
+        debug_assert!(
+            state
+                .holder
+                .as_ref()
+                .is_none_or(|holder| holder.id() != me.id()),
+            "the runtime's holder asks for the runtime again"
+        );
         if state.holder.is_some() {
             state.waiters += 1;
             let deadline = Instant::now() + patience;
@@ -359,6 +368,7 @@ fn release_thread_state() {
     crate::lisp::eval::release_thread_state();
     crate::lisp::reader::release_thread_state();
     crate::lisp::types::release_thread_state();
+    crate::tty::release_thread_state();
 }
 
 /// RESET the thread-local KEY of the runtime that leaves this OS thread,

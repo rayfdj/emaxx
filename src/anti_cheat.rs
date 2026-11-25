@@ -1783,10 +1783,173 @@ fn call_arguments(text: &str) -> Option<&str> {
     None
 }
 
+/// SOURCE as the compiler reads its code: comments (line, block and doc
+/// comments) blanked, string and character literals emptied, newlines
+/// kept.  A gate that matches code by its text reads this, so that a
+/// commented-out call or a name in a string is not taken for code.
+fn code_only(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let mut out = String::with_capacity(source.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let byte = bytes[at];
+        let next = bytes.get(at + 1).copied();
+        if byte == b'/' && next == Some(b'/') {
+            while at < bytes.len() && bytes[at] != b'\n' {
+                at += 1;
+            }
+            continue;
+        }
+        if byte == b'/' && next == Some(b'*') {
+            let mut depth = 0usize;
+            while at < bytes.len() {
+                if bytes[at] == b'/' && bytes.get(at + 1) == Some(&b'*') {
+                    depth += 1;
+                    at += 2;
+                } else if bytes[at] == b'*' && bytes.get(at + 1) == Some(&b'/') {
+                    depth -= 1;
+                    at += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    if bytes[at] == b'\n' {
+                        out.push('\n');
+                    }
+                    at += 1;
+                }
+            }
+            out.push(' ');
+            continue;
+        }
+        // A raw string: r"..", r#".."#, br"..".
+        if (byte == b'r' || (byte == b'b' && next == Some(b'r')))
+            && (at == 0 || !word(bytes[at - 1]))
+        {
+            let mut quote = at + if byte == b'b' { 2 } else { 1 };
+            let mut hashes = 0;
+            while bytes.get(quote) == Some(&b'#') {
+                hashes += 1;
+                quote += 1;
+            }
+            if bytes.get(quote) == Some(&b'"') {
+                let mut end = quote + 1;
+                while end < bytes.len()
+                    && !(bytes[end] == b'"'
+                        && bytes[end + 1..].iter().take_while(|&&c| c == b'#').count() >= hashes)
+                {
+                    if bytes[end] == b'\n' {
+                        out.push('\n');
+                    }
+                    end += 1;
+                }
+                out.push_str("\"\"");
+                at = end + 1 + hashes;
+                continue;
+            }
+        }
+        if byte == b'"' {
+            let mut end = at + 1;
+            while end < bytes.len() && bytes[end] != b'"' {
+                if bytes[end] == b'\\' {
+                    end += 1;
+                } else if bytes[end] == b'\n' {
+                    out.push('\n');
+                }
+                end += 1;
+            }
+            out.push_str("\"\"");
+            at = end + 1;
+            continue;
+        }
+        if byte == b'\'' {
+            // A character literal ('x', '\n', '\u{..}'); else a lifetime.
+            if next == Some(b'\\') {
+                let mut end = at + 3;
+                while end < bytes.len() && bytes[end] != b'\'' {
+                    end += 1;
+                }
+                out.push_str("' '");
+                at = end + 1;
+                continue;
+            }
+            if let Some(character) = source[at + 1..].chars().next() {
+                let after = at + 1 + character.len_utf8();
+                if bytes.get(after) == Some(&b'\'') {
+                    out.push_str("' '");
+                    at = after + 1;
+                    continue;
+                }
+            }
+        }
+        let character = source[at..]
+            .chars()
+            .next()
+            .expect("a character at a boundary");
+        out.push(character);
+        at += character.len_utf8();
+    }
+    out
+}
+
+/// The items of the `thread_local!' block BLOCK (its braces included), as
+/// the macro reads them: each `static NAME: TYPE = INIT;' item's name and
+/// type, whatever its layout, or the text of an item that is not one.
+fn thread_local_items(block: &str) -> Vec<Result<(String, String), String>> {
+    let item = regex::Regex::new(
+        r"^(?s)(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?static\s+([A-Z][A-Z0-9_]*)\s*:\s*([^=]+?)\s*=",
+    )
+    .expect("compile thread-local item pattern");
+    let inner = &block[block.find('{').map_or(0, |open| open + 1)..block.len().saturating_sub(1)];
+    let mut items = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (offset, byte) in inner.bytes().enumerate() {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b';' if depth == 0 => {
+                items.push(inner[start..offset].trim());
+                start = offset + 1;
+            }
+            _ => {}
+        }
+    }
+    items.push(inner[start..].trim());
+    items
+        .into_iter()
+        .filter(|text| !text.is_empty())
+        .map(|text| match item.captures(text) {
+            Some(found) => Ok((
+                found[1].to_owned(),
+                found[2].split_whitespace().collect::<Vec<_>>().join(" "),
+            )),
+            None => Err(text.to_owned()),
+        })
+        .collect()
+}
+
+/// Whether TEXT calls PATH with no arguments, as a token: `PATH()' not
+/// inside a longer name (for a bare name, not a path's last segment).
+fn calls_with_no_arguments(text: &str, path: &str) -> bool {
+    let before = if path.contains("::") {
+        r"[^\w]"
+    } else {
+        r"[^\w:]"
+    };
+    regex::Regex::new(&format!(
+        r"(?:^|{before}){}\s*\(\s*\)",
+        regex::escape(path).replace("::", r"\s*::\s*")
+    ))
+    .expect("compile call pattern")
+    .is_match(text)
+}
+
 /// SOURCE without its `#[cfg(test)]' modules (inline or declared).
 fn without_test_modules(source: &str) -> String {
     let module = regex::Regex::new(
-        r"(?m)^#\[cfg\(test\)\]\n(?:#\[[^\n]*\]\n)*(?:pub(?:\(crate\))? )?mod [a-z_0-9]+ *(;|\{)",
+        r"(?m)^[ \t]*#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\(crate\))?\s+)?mod\s+[a-z_0-9]+\s*(;|\{)",
     )
     .expect("compile test module pattern");
     let mut kept = String::new();
@@ -1816,10 +1979,28 @@ fn without_test_modules(source: &str) -> String {
 /// module's `release_thread_state' (reached from the runtime's, which every
 /// release of the runtime runs) or by the allocation frontier's `take'
 /// (which the runtime's release calls), or is listed below with the reason
-/// it is the OS thread's own.  A thread-local whose type holds a Lisp handle
-/// (a Lisp object word or handle type, a closure, or a crate type holding
-/// one, three levels down) may be listed only in the second table, with the
-/// reason it is not editor state.
+/// it is the OS thread's own.
+///
+/// What it checks, on the sources with comments and literals removed:
+/// every item of every `thread_local!' block (parsed as the macro's items,
+/// whatever their layout; an item it cannot read fails), in a file that is
+/// not a test file; that the Drops of Tenure and Scope call
+/// `release_thread_state()' and the runtime's release calls
+/// `crate::lisp::alloc::Frontier::take()', as tokens; that each module's
+/// `release_thread_state' (and each `Frontier::take') is called, as a
+/// token, from another one's; that each item is either reset in its own
+/// file's release (or take) body by a write of its whole value, or listed,
+/// and not both; that each listed name is an item of that file; and that a
+/// type naming a Lisp handle (a Lisp word or handle type, a closure, or a
+/// crate type naming one, three levels down) is listed only in the second
+/// table.
+///
+/// What it does not prove: that control reaches a call it finds (a call
+/// under a condition counts); that a reset value is the initial one; that a
+/// listed reason is true; that a type holds no Lisp object when it keeps one
+/// as an integer or a raw pointer (`usize', `*const T'), which the type names
+/// do not show, or through a type more than three levels down or outside
+/// the crate.  Those rest on the listed reasons and on review.
 pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
     // Not editor state, and no Lisp object in it.
     const PER_OS_THREAD: &[(&str, &str, &str)] = &[
@@ -2214,6 +2395,12 @@ pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
     // can go), or is checked against a global epoch before use.
     const LISP_PER_OS_THREAD: &[(&str, &str, &str)] = &[
         (
+            "src/lisp/primitives/dispatch.rs",
+            "NAME_FACTS",
+            "facts found from a primitive's name (flags, arities, function pointers whose \
+             signatures name Lisp types): no Lisp object, the same in every editor",
+        ),
+        (
             "src/lisp/modules/mod.rs",
             "ACTIVE_ENVS",
             "a module call's activations, set only during the call",
@@ -2259,10 +2446,6 @@ pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
     .expect("compile definition pattern");
     let identifier =
         regex::Regex::new(r"\b[A-Z][A-Za-z0-9_]*\b").expect("compile identifier pattern");
-    let local = regex::Regex::new(
-        r"(?m)^\s*(?:pub(?:\((?:crate|super)\))?\s+)?static\s+([A-Z][A-Z0-9_]*)\s*:\s*(.+?)\s*=",
-    )
-    .expect("compile thread-local pattern");
     let root = repo_root();
     let sources: Vec<(String, String)> = rust_files_below("src")
         .into_iter()
@@ -2273,7 +2456,7 @@ pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
                 .to_string_lossy()
                 .replace('\\', "/");
             let text = fs::read_to_string(&path).expect("read a runtime source");
-            (relative, without_test_modules(&text))
+            (relative, without_test_modules(&code_only(&text)))
         })
         .collect();
     // Crate definitions by name, for the types a thread-local's names.
@@ -2339,17 +2522,20 @@ pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
         .find(|(path, _)| path == "src/lisp/runtime.rs")
         .expect("the runtime's source")
         .1;
-    for (owner, header) in [
-        ("impl Drop for Tenure {", "release_thread_state();"),
-        ("impl Drop for Scope {", "release_thread_state();"),
+    for (owner, call) in [
+        ("impl Drop for Tenure {", "release_thread_state"),
+        ("impl Drop for Scope {", "release_thread_state"),
         (
             "fn release(&self, poison: bool) {",
-            "crate::lisp::alloc::Frontier::take()",
+            "crate::lisp::alloc::Frontier::take",
         ),
     ] {
         let body =
             function_body(runtime, owner).unwrap_or_else(|| panic!("{owner} in the runtime"));
-        assert!(body.contains(header), "{owner} must call {header}");
+        assert!(
+            calls_with_no_arguments(&body, call),
+            "{owner} must call {call}()"
+        );
     }
     let release_bodies: Vec<(String, String)> = sources
         .iter()
@@ -2370,45 +2556,65 @@ pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
         release_bodies
             .iter()
             .chain(&frontier_bodies)
-            .any(|(caller, body)| caller != path && body.contains(call))
-            || (path == "src/lisp/alloc.rs" && runtime.contains("alloc::Frontier::take()"))
+            .any(|(caller, body)| caller != path && calls_with_no_arguments(body, call))
+            || (path == "src/lisp/alloc.rs"
+                && function_body(runtime, "fn release(&self, poison: bool) {")
+                    .is_some_and(|body| calls_with_no_arguments(&body, "alloc::Frontier::take")))
     };
     let mut violations = Vec::new();
     for (path, _) in &release_bodies {
         if path != "src/lisp/runtime.rs"
-            && !called(path, &format!("{}::release_thread_state()", stem(path)))
+            && !called(path, &format!("{}::release_thread_state", stem(path)))
         {
             violations.push(format!("{path}: its release_thread_state is not called"));
         }
     }
     for (path, _) in &frontier_bodies {
-        if !called(path, &format!("{}::Frontier::take()", stem(path))) {
+        if !called(path, &format!("{}::Frontier::take", stem(path))) {
             violations.push(format!("{path}: its Frontier::take is not called"));
         }
     }
     let mut found = std::collections::BTreeSet::new();
-    // A release writes the thread-local: it replaces, sets or takes its
-    // cell, or it passes it to `release_local' (or reads it with `with')
-    // in a closure that assigns, sets, replaces, takes or clears.
-    let write = regex::Regex::new(r"\*\w+ = |\.(?:set|replace|take|store)\(|\.clear\(\)")
-        .expect("compile write pattern");
+    // A release replaces the thread-local's whole value: it sets,
+    // replaces or takes the key's cell, or it passes the key to
+    // `release_local' (or reads it with `with') in a closure that assigns
+    // a whole binding (`*value = ..'), or sets, replaces, takes or clears a
+    // binding itself; a write to a field (`value.field.clear()') is not
+    // one.
+    let whole = regex::Regex::new(
+        r"(?:^|[^\w.])(?:\*\s*\w+\s*=[^=]|\w+\s*\.\s*(?:set|replace|take|clear)\s*\()",
+    )
+    .expect("compile whole-value write pattern");
     let resets = |text: &str, name: &str| {
-        let direct = regex::Regex::new(&format!(r"\b{name}\.(?:replace|set|take|store)\("))
-            .expect("compile direct write pattern");
-        let call = regex::Regex::new(&format!(r"release_local\(&{name},|\b{name}\.with\("))
-            .expect("compile release call pattern");
+        let direct = regex::Regex::new(&format!(
+            r"(?:^|[^\w.]){name}\s*\.\s*(?:replace|set|take)\s*\("
+        ))
+        .expect("compile direct write pattern");
+        let call = regex::Regex::new(&format!(
+            r"(?:^|[^\w.])(?:release_local\s*\(\s*&\s*{name}\s*,|{name}\s*\.\s*with\s*\()"
+        ))
+        .expect("compile release call pattern");
         direct.is_match(text)
             || call.find_iter(text).any(|at| {
                 call_arguments(&text[at.start()..])
-                    .is_some_and(|arguments| write.is_match(arguments))
+                    .is_some_and(|arguments| whole.is_match(arguments))
             })
     };
+    let block_start = regex::Regex::new(r"\bthread_local!\s*\{").expect("compile block pattern");
     for (path, text) in sources.iter().filter(|(path, _)| runtime_file(path)) {
         let mut rest = text.as_str();
-        while let Some(at) = rest.find("thread_local! {") {
+        while let Some(at) = block_start.find(rest).map(|found| found.start()) {
             let block = balanced_block(rest, at).expect("a thread_local! block");
-            for local in local.captures_iter(block) {
-                let (name, kind) = (&local[1], &local[2]);
+            for item in thread_local_items(block) {
+                let (name, kind) = match &item {
+                    Ok((name, kind)) => (name.as_str(), kind.as_str()),
+                    Err(text) => {
+                        violations.push(format!(
+                            "{path}: a thread_local! item the gate cannot read: {text}"
+                        ));
+                        continue;
+                    }
+                };
                 found.insert((path.clone(), name.to_owned()));
                 let released = release_bodies
                     .iter()

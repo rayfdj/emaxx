@@ -5243,6 +5243,18 @@ fn share_walk_layouts(on: bool) {
     WALK_LAYOUTS.with(|cache| *cache.borrow_mut() = on.then(Default::default));
 }
 
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the walk layouts, whose keys are windows, go.  They are kept only while
+/// one window's redisplay walks, so a release finds them gone unless it
+/// unwinds out of that redisplay.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&WALK_LAYOUTS, |cache| {
+        if let Ok(mut layouts) = cache.try_borrow_mut() {
+            *layouts = None;
+        }
+    });
+}
+
 impl<'a> ScreenLineLayouter<'a> {
     pub(crate) fn new(
         interpreter: &'a Interpreter,

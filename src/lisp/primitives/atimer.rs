@@ -486,7 +486,12 @@ pub(crate) fn funcall_with_delayed_message(
 pub(crate) fn release_thread_state() {
     crate::lisp::runtime::release_local(&ATIMERS, |atimers| {
         if let Ok(mut atimers) = atimers.try_borrow_mut() {
-            atimers.active.clear();
+            // No handle outlives the release: the ids go on counting all
+            // the same.
+            *atimers = Atimers {
+                active: Vec::new(),
+                next_id: atimers.next_id,
+            };
         }
     });
 }
