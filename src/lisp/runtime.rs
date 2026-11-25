@@ -44,23 +44,34 @@ static RUNTIME: GlobalLock = GlobalLock::new();
 /// How long an OS thread waits for the runtime before it names the holder.
 const PATIENCE: Duration = Duration::from_secs(60);
 
-/// How this OS thread holds the runtime, if it does.
+/// How this OS thread holds the runtime, if it does.  It holds it while
+/// it has a tenure or any hold, and gives it back when the last of them
+/// goes (`let_go'), as a recursive lock counts its holder's locks.
 #[derive(Clone, Copy)]
 struct Entered {
     /// It holds the runtime until it exits.
     tenure: bool,
+    /// Its live `Runtime' handles and the scoped entries running on it.
+    holds: u32,
     /// A scoped entry runs on it and has registered its stack base.
     boundary: bool,
 }
 
+impl Entered {
+    const NONE: Self = Self {
+        tenure: false,
+        holds: 0,
+        boundary: false,
+    };
+
+    fn held(self) -> bool {
+        self.tenure || self.holds > 0
+    }
+}
+
 thread_local! {
     /// Plain words with no destructor, so that `held' is a load and a test.
-    static ENTERED: Cell<Entered> = const {
-        Cell::new(Entered {
-            tenure: false,
-            boundary: false,
-        })
-    };
+    static ENTERED: Cell<Entered> = const { Cell::new(Entered::NONE) };
     /// Gives a tenure back when its OS thread exits, as run_thread's
     /// release_global_lock does once the thread's function has returned.
     static TENURE: Tenure = const { Tenure };
@@ -76,11 +87,28 @@ impl Drop for Tenure {
                 tenure: false,
                 ..entered
             });
-            release_thread_state();
-            // The thread's own panic was caught before its thread-locals
-            // went: a failed test does not poison the runtime for the next.
-            RUNTIME.release(false);
+            // A hold left (a handle forgotten) keeps the runtime.
+            if entered.holds == 0 {
+                release_thread_state();
+                // The thread's own panic was caught before its
+                // thread-locals went: a failed test does not poison the
+                // runtime for the next.
+                RUNTIME.release(false);
+            }
         }
+    }
+}
+
+/// One of this thread's holds goes; with the last, and no tenure, the
+/// runtime goes back (thread.c:release_global_lock), the thread's editor
+/// state released first.
+fn let_go(poison: bool) {
+    let entered = ENTERED.get();
+    let holds = entered.holds - 1;
+    ENTERED.set(Entered { holds, ..entered });
+    if holds == 0 && !entered.tenure {
+        release_thread_state();
+        RUNTIME.release(poison);
     }
 }
 
@@ -204,8 +232,7 @@ pub(crate) fn holder_name() -> Option<String> {
 /// thread.c:in_current_thread: whether this OS thread holds the runtime.
 #[inline]
 pub(crate) fn held() -> bool {
-    let entered = ENTERED.get();
-    entered.tenure || entered.boundary
+    ENTERED.get().held()
 }
 
 /// Hold the runtime on this OS thread: at once if it already does, else
@@ -296,10 +323,7 @@ pub(crate) fn release_while<R>(wait: impl FnOnce() -> R) -> R {
     let base = crate::lisp::eval::continuations::current_stack_base().map(|base| base as usize);
     // The runtime is taken again before the stacks leave the registry.
     let result = crate::lisp::alloc::with_stacks_lent(base, || {
-        let entered = ENTERED.replace(Entered {
-            tenure: false,
-            boundary: false,
-        });
+        let entered = ENTERED.replace(Entered::NONE);
         RUNTIME.release(false);
         let _retake = Retake(entered);
         wait()
@@ -314,7 +338,8 @@ pub(crate) fn release_while<R>(wait: impl FnOnce() -> R) -> R {
 /// `&Runtime`, and a `Runtime` is neither `Send` nor `Sync`, so that a
 /// call can only come from the thread that holds it.  `lock' waits for
 /// another holder; on a thread that holds the runtime already it waits for
-/// nothing and leaves it held when the returned value goes.
+/// nothing and counts one more hold.  The thread holds the runtime until
+/// its last handle goes and no call made through one is running.
 ///
 /// An owned result of a call crosses to another thread:
 ///
@@ -354,34 +379,28 @@ pub(crate) fn release_while<R>(wait: impl FnOnce() -> R) -> R {
 /// });
 /// ```
 pub struct Runtime {
-    /// Whether this value took the runtime, and gives it back when it goes.
-    acquired: bool,
     _holder_only: std::marker::PhantomData<*const ()>,
 }
 
 impl Runtime {
     /// Take the runtime for this OS thread, once no other one holds it
-    /// (thread.c:acquire_global_lock); at once on a thread that holds it.
+    /// (thread.c:acquire_global_lock); at once on a thread that holds it,
+    /// as one more hold.  The runtime goes back when the thread's last
+    /// hold does: every handle, and every call made through one, so no
+    /// handle's drop gives it up while another or a call is alive.
     /// Uncontended, taking it makes no futex wait.
     pub fn lock() -> Self {
         let entered = ENTERED.get();
-        if entered.tenure || entered.boundary {
-            return Self {
-                acquired: false,
-                _holder_only: std::marker::PhantomData,
-            };
-        }
-        if RUNTIME.acquire(PATIENCE, &mut report_wait) {
+        if !entered.held() && RUNTIME.acquire(PATIENCE, &mut report_wait) {
             RUNTIME.release(false);
             // Do not recover a poisoned heap after a panic escapes the runtime.
             panic!("Lisp runtime panicked while active");
         }
         ENTERED.set(Entered {
-            tenure: true,
+            holds: entered.holds + 1,
             ..entered
         });
         Self {
-            acquired: true,
             _holder_only: std::marker::PhantomData,
         }
     }
@@ -389,27 +408,18 @@ impl Runtime {
 
 impl Drop for Runtime {
     fn drop(&mut self) {
-        if self.acquired {
-            ENTERED.set(Entered {
-                tenure: false,
-                ..ENTERED.get()
-            });
-            release_thread_state();
-            RUNTIME.release(std::thread::panicking());
-        }
+        let_go(std::thread::panicking());
     }
 }
 
-/// The outermost scoped entry on an OS thread. It holds the runtime for
-/// its call unless the thread's tenure already does.
-struct Scope {
-    acquired: bool,
-}
+/// The outermost scoped entry on an OS thread: one hold of the runtime
+/// for its call, taken first if the thread holds none.
+struct Scope;
 
 impl Scope {
     fn enter() -> Self {
         let entered = ENTERED.get();
-        let acquired = !entered.tenure;
+        let acquired = !entered.held();
         let poisoned = if acquired {
             RUNTIME.acquire(PATIENCE, &mut report_wait)
         } else {
@@ -423,10 +433,11 @@ impl Scope {
             panic!("Lisp runtime panicked while active");
         }
         ENTERED.set(Entered {
+            holds: entered.holds + 1,
             boundary: true,
             ..entered
         });
-        Self { acquired }
+        Self
     }
 }
 
@@ -436,10 +447,7 @@ impl Drop for Scope {
             boundary: false,
             ..ENTERED.get()
         });
-        if self.acquired {
-            release_thread_state();
-            RUNTIME.release(std::thread::panicking());
-        }
+        let_go(std::thread::panicking());
     }
 }
 

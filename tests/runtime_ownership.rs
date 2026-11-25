@@ -149,3 +149,113 @@ fn editor_state_left_by_one_os_thread_is_not_read_after_another_collects() {
         .expect("let the first thread call again");
     first.join().expect("the first thread's calls");
 }
+
+/// A batch call's options: an editor with no loadup that evaluates nil.
+fn quiet_editor() -> BatchRunOptions {
+    BatchRunOptions {
+        no_loadup: true,
+        no_site_lisp: true,
+        eval: vec!["nil".to_owned()],
+        ..Default::default()
+    }
+}
+
+/// Another OS thread waiting in `Runtime::lock': it reports when it holds
+/// the runtime, and gives it back at once.
+fn contender() -> (std::sync::mpsc::Receiver<()>, std::thread::JoinHandle<()>) {
+    let (asking_tx, asking_rx) = std::sync::mpsc::channel();
+    let (entered_tx, entered_rx) = std::sync::mpsc::channel();
+    let thread = std::thread::spawn(move || {
+        asking_tx.send(()).expect("announce the request");
+        let _runtime = emaxx::Runtime::lock();
+        entered_tx.send(()).expect("announce the hold");
+    });
+    asking_rx.recv().expect("the contender asks");
+    (entered_rx, thread)
+}
+
+/// Long enough for a contender the runtime was given to report it.
+const BOUND: std::time::Duration = std::time::Duration::from_millis(300);
+
+fn still_waiting(entered: &std::sync::mpsc::Receiver<()>, when: &str) {
+    assert!(
+        entered.recv_timeout(BOUND).is_err(),
+        "another OS thread holds the runtime {when}"
+    );
+}
+
+fn enters_at_last(entered: &std::sync::mpsc::Receiver<()>, thread: std::thread::JoinHandle<()>) {
+    entered
+        .recv_timeout(std::time::Duration::from_secs(600))
+        .expect("the contender holds the runtime once this thread's holds are gone");
+    thread.join().expect("the contender");
+}
+
+#[test]
+fn a_handle_dropped_inside_a_call_keeps_the_runtime_until_the_last_goes() {
+    // Two handles on one thread are two holds: dropping the first inside
+    // a call made with the second gives nothing up, nor does the call's
+    // return; the runtime goes with the last handle.
+    let first = emaxx::Runtime::lock();
+    let second = emaxx::Runtime::lock();
+    let (entered, thread) = contender();
+    let waiting = &entered;
+    let result = run_batch_process_with_large_stack(&second, quiet_editor(), move |outcome| {
+        assert_eq!(outcome, BatchRunOutcome::Exit(0));
+        drop(first);
+        still_waiting(waiting, "after a handle's drop inside the call");
+        Ok(0)
+    });
+    assert_eq!(result.expect("the call"), 0);
+    still_waiting(&entered, "after the call returned");
+    drop(second);
+    enters_at_last(&entered, thread);
+}
+
+#[test]
+fn the_handle_a_call_was_made_with_keeps_the_runtime_after_the_other_goes() {
+    // The drop order reversed: the call's own handle outlives the one
+    // dropped inside it, and the runtime goes when it does.
+    let first = emaxx::Runtime::lock();
+    let second = emaxx::Runtime::lock();
+    let (entered, thread) = contender();
+    let waiting = &entered;
+    let result = run_batch_process_with_large_stack(&first, quiet_editor(), move |outcome| {
+        assert_eq!(outcome, BatchRunOutcome::Exit(0));
+        drop(second);
+        still_waiting(waiting, "after the other handle's drop inside the call");
+        Ok(0)
+    });
+    assert_eq!(result.expect("the call"), 0);
+    still_waiting(&entered, "after the call returned");
+    drop(first);
+    enters_at_last(&entered, thread);
+}
+
+#[test]
+fn a_handle_dropped_inside_a_nested_call_keeps_the_runtime_for_both() {
+    // A call made inside another's callback is one more hold: a handle
+    // dropped inside the inner call leaves both calls and the other
+    // handle holding the runtime.
+    let first = emaxx::Runtime::lock();
+    let second = emaxx::Runtime::lock();
+    let (entered, thread) = contender();
+    let waiting = &entered;
+    let outer = &second;
+    let result = run_batch_process_with_large_stack(&second, quiet_editor(), move |outcome| {
+        assert_eq!(outcome, BatchRunOutcome::Exit(0));
+        let inner = run_batch_process_with_large_stack(outer, quiet_editor(), move |outcome| {
+            assert_eq!(outcome, BatchRunOutcome::Exit(0));
+            drop(first);
+            still_waiting(waiting, "after a handle's drop inside the nested call");
+            Ok(0)
+        });
+        assert_eq!(inner.expect("the nested call"), 0);
+        still_waiting(waiting, "after the nested call returned");
+        Ok(0)
+    });
+    assert_eq!(result.expect("the call"), 0);
+    still_waiting(&entered, "after the call returned");
+    drop(second);
+    enters_at_last(&entered, thread);
+}

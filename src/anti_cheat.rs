@@ -1984,9 +1984,13 @@ fn without_test_modules(source: &str) -> String {
 /// What it checks, on the sources with comments and literals removed:
 /// every item of every `thread_local!' block (parsed as the macro's items,
 /// whatever their layout; an item it cannot read fails), in a file that is
-/// not a test file; that the Drops of Tenure and Scope call
-/// `release_thread_state()' and the runtime's release calls
-/// `crate::lisp::alloc::Frontier::take()', as tokens; that each module's
+/// not a test file; that Tenure's Drop and `let_go', where a thread's
+/// last hold goes, call `release_thread_state()' and the runtime's release
+/// calls `crate::lisp::alloc::Frontier::take()', as tokens; that the Drops
+/// of a `Runtime' handle and of a scoped entry call `let_go'; that the
+/// runtime is released (`RUNTIME.release(') only in `let_go', Tenure's
+/// Drop, a lend (`release_while') and an acquire refused before it
+/// recorded a hold (`lock', `Scope::enter'); that each module's
 /// `release_thread_state' (and each `Frontier::take') is called, as a
 /// token, from another one's; that each item is either reset in its own
 /// file's release (or take) body by a write of its whole value, or listed,
@@ -2514,7 +2518,7 @@ pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
         .1;
     for (owner, call) in [
         ("impl Drop for Tenure {", "release_thread_state"),
-        ("impl Drop for Scope {", "release_thread_state"),
+        ("fn let_go(poison: bool) {", "release_thread_state"),
         (
             "fn release(&self, poison: bool) {",
             "crate::lisp::alloc::Frontier::take",
@@ -2527,6 +2531,30 @@ pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
             "{owner} must call {call}()"
         );
     }
+    // A thread gives the runtime back at its last hold alone.
+    for owner in ["impl Drop for Runtime {", "impl Drop for Scope {"] {
+        let body =
+            function_body(runtime, owner).unwrap_or_else(|| panic!("{owner} in the runtime"));
+        assert!(body.contains("let_go("), "{owner} must let its hold go");
+    }
+    let releases = runtime.matches("RUNTIME.release(").count();
+    let allowed: usize = [
+        "fn let_go(poison: bool) {",
+        "impl Drop for Tenure {",
+        "fn release_while<R>(",
+        "pub fn lock() -> Self {",
+        "fn enter() -> Self {",
+    ]
+    .iter()
+    .map(|owner| {
+        function_body(runtime, owner).map_or(0, |body| body.matches("RUNTIME.release(").count())
+    })
+    .sum();
+    assert_eq!(
+        releases, allowed,
+        "the runtime is released elsewhere than at a thread's last hold, a tenure's end, a lend \
+         or a refused acquire"
+    );
     let release_bodies: Vec<(String, String)> = sources
         .iter()
         .filter(|(path, _)| runtime_file(path))
