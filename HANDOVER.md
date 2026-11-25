@@ -209,7 +209,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   state kept in thread-locals is dropped at every release of the
   runtime, so no OS thread keeps Lisp objects another's collection
   does not see; parallel library runs neither crash nor hang at two
-  and four test threads.
+  and four test threads.  Round 391: stages 6 and 9; the native
+  execution lock is gone, helper threads start with the process's
+  signals blocked, and a native helper signals from a frame that owns
+  nothing; a frame further up that owns storage is still jumped over.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -20844,6 +20847,78 @@ setup_process_coding_systems's check now refuses). A 13-form
   its notes of new state are the cells of the empty strings and the
   zero vector, which replace three process cells one for one, and a
   release function's parameter.
+- **Round 391: the native execution lock is the runtime, helper
+  threads start with the process's signals blocked, and a native
+  helper signals from a frame that owns nothing (M2, stages 6 and 9 of
+  the plan of runtime ownership, A2.3 and A2.5; none closed).**  **The
+  lock**: native code ran under a second process lock of its own (a
+  mutex, an activation count and a held flag), taken at the outermost
+  native activation and handed over at a suspension; thread.c has one
+  lock, global_lock.  It is deleted: the runtime serializes native
+  code as it does all Lisp, and a suspended native activation gives
+  the runtime up as any yield does.  Finding 84's cases (two threads
+  yielding inside native functions; `sleep-for',
+  `accept-process-output' and `condition-wait' there; a thread dying
+  or signalled in native code; a collection while another thread is
+  suspended in a native frame) answer as before and as GNU.  The plan
+  expected 30 to 60 instructions fewer a call into native code, and
+  the two probes added for it show none: a batch run's startup
+  functions are native-compiled and still active, so every later call
+  is a nested activation, which never took the lock; an outermost call
+  is entered only from a command loop and no probe measures it.
+  **Signals**: the process reapers and the name-resolution thread are
+  started with every signal blocked but a thread's own faults, and the
+  starting thread's mask is restored once the helper exists, as glibc
+  starts its own helpers, so a signal sent to the process goes to a
+  thread that runs Lisp, where sysdep.c's deliver_process_signal has
+  it handled; a gate refuses any other way of starting a thread in the
+  runtime's files.  SIGTERM, SIGHUP, SIGINT, SIGCHLD and SIGWINCH with
+  a reaper alive behave as before and as GNU.  **Non-local exits**: a
+  native helper that signals jumps out past its own Rust frame, so
+  that frame must own nothing when it does; the rule is stated once,
+  at jump_nonlocal, and a gate checks each of the about 70 places a
+  helper records its error: the call ends its arm or block, and no
+  owning local or parameter is live at it.  It found two leaks, both
+  fixed: `make-closure''s decoded closure variables, and `mapcar''s
+  results when bringing the handlers up to date fails; 100,000
+  signalling `make-closure' calls with 12 arguments grew the process
+  by about 14 MB and now stay within 1 MB.  **Still to do**: a Rust
+  frame further up that owns storage while a callee signals (apply's
+  argument vector past eight arguments, `mapcar''s results past 32) is
+  still jumped over, and its spilled vector leaks once a signal; GNU
+  frees such storage in the unwinding itself (SAFE_ALLOCA's specpdl
+  entry); it is the first part of the next thread round.  **Lisp sees
+  nothing change.**  **Counts**: a byte-compiled loop's call of a
+  native-compiled function 330.6 instructions (GNU 337.0) and an
+  interpreted loop's 1,968.0 (GNU 1,801.0), both as before the round;
+  the native, allocation, call and interpreter guards unchanged.  The
+  independent review (the one question: does the round cheat or break
+  something) ran finding 84's cases, the five signals and the leak on
+  the build before, this one and GNU, which answered alike but for the
+  leak, and found no cheat and nothing broken; it found the two
+  probes' comments wrong (they called each call an outermost
+  activation), and they are corrected in the round.  **One parity
+  case was a race of GNU's own**, and failed once in this round's
+  validation: an exited pty child's `set-process-window-size' after a
+  loop of `process-live-p' and `accept-process-output' answers t when
+  SIGCHLD lands before the loop's first test and nil when a wait
+  notifies the exit first; on the loaded development machine GNU
+  answered t in 5 of 16 runs, and the builds before and after the
+  round the same.  The case now polls `process-live-p' alone, which
+  reads the stored status without notifying it (t), then waits and
+  witnesses nil: GNU and both builds print the two in 20 of 20 runs.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,655 passed, 0 failed, 2 ignored (four
+  library tests more); cli 30, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 1, package_lifecycle 5,
+  runtime_ownership 4; cli_parity 186 of 187 in the first run, its one
+  failure the parity case above, and 187 of 187 when run again whole
+  at the commit that rewrites the case; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 764 changed
+  lines with 4 tests and 12 assertions added and 5 assertions removed
+  (the deleted lock's own test); its notes of dropped results are the
+  reapers' `let _ =' lines, which were there before and now go through
+  the new spawn.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24375,6 +24450,24 @@ ert-tests as a whole 26,307 ms against 27,211.
   decide.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 391 and its review), within the
+  plan's later stages or outside the round.**  One line each: the gate
+  of the helpers' frames reads text, so a `drop' in a branch never
+  taken, an owning type outside its list (maps, queues, `Arc', paths,
+  files, an error holding strings) and a binding made by `match',
+  `if let' or `for' would get past it (no caller relies on one today);
+  the gate of thread starts misses a bare `spawn' after a `use', a
+  direct pthread_create and threads a dependency starts, as its
+  comment says; a lend of the runtime inside native code depends on
+  the borrower's activations ending before the lender resumes, where
+  it deadlocked before; the process reapers are threads GNU does not
+  have (it reaps in handle_child_signal); an interpreted loop's call
+  of a native-compiled function costs 1,968.0 instructions against
+  GNU's 1,801.0, by a probe new in this round; the tests that read the
+  allocation counters without the runtime still give wrong counts at
+  four test threads; the library test of a process's TLS state across
+  a collection and an asynchronous handshake fails alone on a loaded
+  machine and passes on a quiet one.
 - **Found after the scope lock (round 390 and its review), within the
   plan's later stages.**  One line each: most of the thread-locals now
   released are C globals or terminal fields in GNU and are still
