@@ -7,7 +7,9 @@
 use super::*;
 use crate::lisp::eval::roots::{LispRootMarker, TraceLispRoots};
 use std::any::Any;
+use std::cell::RefCell;
 use std::panic::{AssertUnwindSafe, catch_unwind, resume_unwind};
+use std::rc::Rc;
 
 #[cfg(all(target_os = "macos", target_arch = "aarch64"))]
 core::arch::global_asm!(
@@ -257,9 +259,9 @@ pub(crate) fn with_thread_suspended<R>(
             let tls = SuspendedTlsGuard {
                 active: ACTIVE_CALL.replace(std::ptr::null_mut()),
                 gc: ActiveGc::replace(std::ptr::null()),
-                // A loader/compiler-only callback does not own the native
-                // execution lock. In that case the process-global pointer
-                // can belong to an unrelated OS thread: never change it.
+                // A loader/compiler-only callback has no active call: the
+                // heap pointer is not its own (it may be an activation's on
+                // another stack of this thread): never change it.
                 heap: (!active.is_null())
                     .then(|| ACTIVE_NATIVE_HEAP.swap(std::ptr::null_mut(), Ordering::Relaxed)),
             };

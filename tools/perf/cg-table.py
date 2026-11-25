@@ -34,6 +34,11 @@ and for a subr called from native code, each at 100000:300000
     native-point native-plus native-max native-symbol-name native-delq
     native-assoc native-logand native-cons native-eqlsign native-geq
     native-purecopy native-current-buffer
+
+and for a call into native code, one outermost native activation a
+call of a native-compiled function, from byte code and from eval:
+
+    bc-to-native:100000:300000 interp-to-native:100000:300000
 """
 import concurrent.futures
 import os

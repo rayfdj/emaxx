@@ -559,8 +559,8 @@ mod tests {
         assert_eq!(dropped.get(), 2, "both Rust frame guards were released");
         assert!(current_stack_base().is_none());
 
-        // A leaked native activation lock or TLS owner would deadlock or
-        // misdirect this fresh interpreter's ordinary native call.
+        // A leaked TLS owner would misdirect this fresh interpreter's
+        // ordinary native call.
         let mut fresh = Interpreter::new();
         assert_eq!(
             crate::lisp::native_comp::invoke_suspension_companion(&mut fresh)
@@ -662,7 +662,7 @@ mod tests {
             "the suspended native unwind action owns the weak key"
         );
         // A separate native invocation on the driving stack must use this
-        // same heap and must not acquire the OS-thread execution lock again.
+        // same heap.
         assert_eq!(
             crate::lisp::native_comp::invoke_suspension_companion(&mut interpreter)
                 .expect("independent native activation"),

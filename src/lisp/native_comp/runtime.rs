@@ -21,14 +21,13 @@ use crate::lisp::{
     eval::Interpreter,
     types::{Env, LispError},
 };
-use std::cell::{Cell, RefCell, UnsafeCell};
+use std::cell::{Cell, UnsafeCell};
 use std::ffi::c_void;
 use std::marker::PhantomData;
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 use std::mem::{ManuallyDrop, MaybeUninit};
-use std::rc::Rc;
 use std::sync::{
-    Mutex, MutexGuard, OnceLock,
+    OnceLock,
     atomic::{AtomicPtr, Ordering},
 };
 
@@ -751,69 +750,12 @@ fn active_collection_cannot_be_due() -> bool {
     lisp_allocated_bytes() < ACTIVE_GC_TRIGGER.get()
 }
 
-// A Lisp interpreter is single-threaded, as reflected by its Rc-owned values.
-// Serialize native activation between OS threads so allocation helpers can
-// use one direct atomic heap pointer. Cooperative Lisp threads on the same OS
-// thread share the lock; a suspended first call can return before another
-// call, so ownership must not be tied to the first call's Rust stack frame.
-static NATIVE_EXECUTION_LOCK: Mutex<()> = Mutex::new(());
+// The native heap of the active call, for the allocation helpers: the
+// runtime's, as GNU's globals are, and read and written only by the OS
+// thread that holds the runtime (`runtime::held'), which serializes native
+// code between OS threads as global_lock does.  Native code runs only for
+// an editor, and an editor is used only by the runtime's holder.
 static ACTIVE_NATIVE_HEAP: AtomicPtr<NativeHeap> = AtomicPtr::new(std::ptr::null_mut());
-
-thread_local! {
-    /// The thread's live native activations. A plain counter, read and
-    /// written on every native call; the lock below changes hands only
-    /// when the count leaves or returns to zero.
-    static NATIVE_EXECUTION_ACTIVATIONS: Cell<usize> = const { Cell::new(0) };
-    /// The execution lock while the thread has an activation.
-    static NATIVE_EXECUTION_LOCK_HELD: RefCell<Option<MutexGuard<'static, ()>>> =
-        const { RefCell::new(None) };
-}
-
-struct NativeExecutionGuard {
-    // A token must be released on the OS thread that acquired it.
-    _not_send: PhantomData<Rc<()>>,
-}
-
-impl NativeExecutionGuard {
-    #[inline]
-    fn enter() -> Self {
-        let activations = NATIVE_EXECUTION_ACTIVATIONS.get();
-        if activations == 0 {
-            Self::acquire();
-        }
-        NATIVE_EXECUTION_ACTIVATIONS.set(activations + 1);
-        Self {
-            _not_send: PhantomData,
-        }
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn acquire() {
-        let lock = NATIVE_EXECUTION_LOCK
-            .lock()
-            .unwrap_or_else(std::sync::PoisonError::into_inner);
-        NATIVE_EXECUTION_LOCK_HELD.with_borrow_mut(|held| *held = Some(lock));
-    }
-
-    #[cold]
-    #[inline(never)]
-    fn release() {
-        let lock = NATIVE_EXECUTION_LOCK_HELD.with_borrow_mut(Option::take);
-        drop(lock);
-    }
-}
-
-impl Drop for NativeExecutionGuard {
-    #[inline]
-    fn drop(&mut self) {
-        let activations = NATIVE_EXECUTION_ACTIVATIONS.get() - 1;
-        NATIVE_EXECUTION_ACTIVATIONS.set(activations);
-        if activations == 0 {
-            Self::release();
-        }
-    }
-}
 
 struct ActiveCallGuard {
     previous: *mut ActiveCall,
@@ -842,7 +784,6 @@ pub(crate) fn with_active_call<R>(
     body: impl FnOnce() -> R,
 ) -> R {
     let outermost = ACTIVE_CALL.with(|active| active.get().is_null());
-    let _execution_guard = NativeExecutionGuard::enter();
     let mut active = ActiveCall {
         interpreter,
         environment: Cell::new(environment),
@@ -850,9 +791,9 @@ pub(crate) fn with_active_call<R>(
     };
     let previous = ACTIVE_CALL.replace(&mut active);
     let previous_gc = ActiveGc::replace(std::ptr::from_mut(&mut runtime.heap.gc));
-    // Every store to the heap pointer is made under the execution lock,
-    // held from the guard above, so a load and a store exchange it: a
-    // swap is a locked `xchg' on x86, about 20 cycles on each native call.
+    // Every store to the heap pointer is made by the runtime's holder, so a
+    // load and a store exchange it: a swap is a locked `xchg' on x86, about
+    // 20 cycles on each native call.
     let previous_heap = ACTIVE_NATIVE_HEAP.load(Ordering::Relaxed);
     ACTIVE_NATIVE_HEAP.store(std::ptr::from_mut(&mut runtime.heap), Ordering::Relaxed);
     let previous_stack_bottom = runtime.heap.native_stack_bottom;
@@ -872,8 +813,8 @@ pub(crate) fn with_active_call<R>(
 /// Whether a call by RUNTIME for INTERPRETER is nested in PREVIOUS, the
 /// active call, of the same runtime and interpreter.  Every change of
 /// stack clears the active call (`with_thread_suspended'), so that call
-/// is on this stack and returns after this one: it holds the execution
-/// lock, the heap pointer is its runtime's and the stack's bottom is set,
+/// is on this stack and returns after this one: the heap pointer is its
+/// runtime's and the stack's bottom is set,
 /// and a nested call changes only the active call's record.
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[inline(always)]
@@ -7193,20 +7134,79 @@ mod tests {
         assert_eq!(current_native_stack_bottom(), original_base);
     }
 
+    /// FUNCTION's fixnum result for 41, called as native code by an editor
+    /// of this OS thread.
+    fn native_call_here(function: *const c_void) -> Option<i64> {
+        let mut interpreter = Interpreter::new();
+        let mut runtime = NativeRuntime::default();
+        let value = runtime
+            .invoke(
+                &mut interpreter,
+                &mut Env::new(),
+                function,
+                NativeCallingConvention::Fixed,
+                &[Value::Integer(41)],
+            )
+            .ok()?;
+        match value.kind() {
+            Kind::Integer(number) => Some(number),
+            _ => None,
+        }
+    }
+
+    fn native_add_one_here() -> Option<i64> {
+        native_call_here(add_one_fixnum as *const c_void)
+    }
+
+    /// Native code that lends the runtime while another OS thread runs
+    /// native code: VALUE plus one when that thread's call answered 42.
+    extern "C" fn add_one_after_another_threads_native_call(value: NativeWord) -> NativeWord {
+        let other =
+            crate::lisp::runtime::release_while(|| std::thread::spawn(native_add_one_here).join());
+        if matches!(other, Ok(Some(42))) {
+            value.wrapping_add(1 << FIXNUM_BITS)
+        } else {
+            value
+        }
+    }
+
     #[test]
-    fn native_execution_lock_survives_non_lifo_activation_returns() {
-        let first = NativeExecutionGuard::enter();
-        let second = NativeExecutionGuard::enter();
-        drop(first);
-        assert_eq!(NATIVE_EXECUTION_ACTIVATIONS.get(), 1);
-        assert!(NATIVE_EXECUTION_LOCK_HELD.with_borrow(Option::is_some));
-        assert!(matches!(
-            NATIVE_EXECUTION_LOCK.try_lock(),
-            Err(std::sync::TryLockError::WouldBlock),
-        ));
-        drop(second);
-        assert_eq!(NATIVE_EXECUTION_ACTIVATIONS.get(), 0);
-        assert!(NATIVE_EXECUTION_LOCK_HELD.with_borrow(Option::is_none));
+    fn native_activation_requires_no_second_lock() {
+        // The runtime alone serializes native code between OS threads, as
+        // global_lock does in GNU.  Two threads take turns through scoped
+        // entries, and a thread whose native activation lends the runtime
+        // lets another run native code meanwhile.
+        let (to_second, from_first) = std::sync::mpsc::channel::<()>();
+        let (to_first, from_second) = std::sync::mpsc::channel::<()>();
+        let first = std::thread::spawn(move || {
+            let mut answers = Vec::new();
+            for _ in 0..3 {
+                answers.push(crate::lisp::runtime::with_runtime(native_add_one_here));
+                to_second.send(()).expect("hand the turn over");
+                from_second.recv().expect("wait for the turn");
+            }
+            answers
+        });
+        let second = std::thread::spawn(move || {
+            let mut answers = Vec::new();
+            for _ in 0..3 {
+                from_first.recv().expect("wait for the turn");
+                answers.push(crate::lisp::runtime::with_runtime(native_add_one_here));
+                to_first.send(()).expect("hand the turn over");
+            }
+            answers
+        });
+        for answers in [first.join(), second.join()] {
+            assert_eq!(answers.expect("a turn-taking thread"), vec![Some(42); 3]);
+        }
+        let lender = std::thread::spawn(|| {
+            native_call_here(add_one_after_another_threads_native_call as *const c_void)
+        });
+        assert_eq!(
+            lender.join().expect("the lending thread"),
+            Some(42),
+            "the other thread's native call ran while this one's was active"
+        );
     }
 
     extern "C" fn add_one_fixnum(value: NativeWord) -> NativeWord {

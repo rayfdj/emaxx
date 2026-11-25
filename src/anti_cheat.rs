@@ -2100,16 +2100,6 @@ pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
             "a native call's collection counter",
         ),
         (
-            "src/lisp/native_comp/runtime.rs",
-            "NATIVE_EXECUTION_ACTIVATIONS",
-            "this OS thread's native activations",
-        ),
-        (
-            "src/lisp/native_comp/runtime.rs",
-            "NATIVE_EXECUTION_LOCK_HELD",
-            "this OS thread's hold of the native lock",
-        ),
-        (
             "src/lisp/primitives/accessors_random.rs",
             "RANDOM",
             "the random state, a C global without Lisp objects",
