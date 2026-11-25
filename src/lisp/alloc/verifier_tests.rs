@@ -103,15 +103,17 @@ fn a_cons_block_holds_its_metadata_and_2015_conses() {
     assert_eq!(CONS_CELLS + CELLS_PER_BLOCK * CELL_SIZE, CONS_BLOCK_ALIGN);
     let [_, block, payload, rest] = cons_storage_for_test();
     assert_eq!((block, payload, rest), (32768, 2015 * 16, 528));
-    // The last cell's bits are in the bitmaps' last word.
+    // A cell's bits are its slot's: the first cell's at 33, the last
+    // cell's in the bitmaps' last word.
     let last = Value::cons(Value::Nil, Value::Nil);
     let Kind::Cons(cell) = last.kind() else {
         unreachable!();
     };
     let (word, _) = unsafe { cons_mark(cell.as_ptr()) }.bit();
     assert!(word < CONS_BITMAP_WORDS);
+    assert_eq!(CONS_FIRST_SLOT, 33);
     assert_eq!(
-        (CELLS_PER_BLOCK - 1) / usize::BITS as usize,
+        (CONS_FIRST_SLOT + CELLS_PER_BLOCK - 1) / usize::BITS as usize,
         CONS_BITMAP_WORDS - 1
     );
 }

@@ -68,7 +68,9 @@ const CELL_SIZE: usize = std::mem::size_of::<ConsCell>();
 /// The 16-byte conses after the block's metadata: its epoch and two
 /// bitmaps of a bit for each 16 bytes of the block (`CONS_BITMAP_WORDS'),
 /// the mark and the allocation, which conservative scanning and checked
-/// native decoding read.  GNU's block has its mark bits alone (2,030
+/// native decoding read.  A cell's bit is its slot's from the block's
+/// address, so the marking and allocating paths take no offset; the bits
+/// of the metadata's own slots are unused.  GNU's block has its mark bits alone (2,030
 /// conses, CONS_BLOCK_SIZE); its free cell's car is `dead_object ()',
 /// where this one's first word is the free-list link.  Ordinary reads
 /// and stores never access the metadata.
@@ -1590,8 +1592,8 @@ fn cons_cell(start: usize, index: usize) -> *mut ConsCell {
 #[repr(C)]
 struct ConsMetadata {
     epoch: Cell<u32>,
-    /// A bit for each cell, by its index in the block (the bits past
-    /// `CELLS_PER_BLOCK' unused).
+    /// A bit for each cell, by its slot from the block's address (the
+    /// metadata's slots' bits unused).
     allocated: [Cell<usize>; CONS_BITMAP_WORDS],
     marked: [Cell<usize>; CONS_BITMAP_WORDS],
 }
@@ -1621,7 +1623,7 @@ const _: () = {
     assert!(std::mem::offset_of!(ConsBlock, metadata) == 0);
     assert!(CONS_CELLS == CONS_METADATA_BYTES);
     assert!(std::mem::size_of::<ConsMetadata>() <= CONS_METADATA_BYTES);
-    assert!(CELLS_PER_BLOCK <= CONS_BITMAP_WORDS * usize::BITS as usize);
+    assert!(CONS_FIRST_SLOT + CELLS_PER_BLOCK <= CONS_BITMAP_WORDS * usize::BITS as usize);
     assert!(std::mem::offset_of!(ConsCell, car) == 0);
     assert!(std::mem::offset_of!(ConsCell, cdr) == std::mem::size_of::<Value>());
 };
@@ -1639,13 +1641,11 @@ impl ConsMark<'_> {
         self.slot - CONS_FIRST_SLOT
     }
 
-    // cons_mark checked the slot's range: the index cannot wrap.
     #[inline(always)]
     fn bit(&self) -> (usize, usize) {
-        let index = self.slot.wrapping_sub(CONS_FIRST_SLOT);
         (
-            index / usize::BITS as usize,
-            1 << (index % usize::BITS as usize),
+            self.slot / usize::BITS as usize,
+            1 << (self.slot % usize::BITS as usize),
         )
     }
 
@@ -1700,18 +1700,18 @@ impl ConsMark<'_> {
             self.clear_marks(epoch);
         }
         let bits = usize::BITS as usize;
-        let mut index = self.index();
-        let end = index + count;
-        while index < end {
-            let word = index / bits;
-            let first = index % bits;
-            let last = (end - (index - first)).min(bits);
+        let mut slot = self.slot;
+        let end = slot + count;
+        while slot < end {
+            let word = slot / bits;
+            let first = slot % bits;
+            let last = (end - (slot - first)).min(bits);
             let mask = (usize::MAX >> (bits - (last - first))) << first;
             let allocated = &self.block.allocated[word];
             allocated.set(allocated.get() | mask);
             let marked = &self.block.marked[word];
             marked.set(marked.get() | mask);
-            index += last - first;
+            slot += last - first;
         }
     }
 
@@ -2171,14 +2171,20 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
         // words: a cell is live when allocated and marked; an allocated
         // cell that is not becomes free (its bits cleared; a cons has
         // nothing to drop); every cell that is not live goes on the free
-        // list, in address order as before.
-        for word in 0..lim.div_ceil(usize::BITS as usize) {
-            let first = word * usize::BITS as usize;
-            let valid = if lim - first >= usize::BITS as usize {
-                usize::MAX
-            } else {
-                (1usize << (lim - first)) - 1
-            };
+        // list, in address order as before.  The bits are the slots'; the
+        // first word's below the first cell are the metadata's.
+        let word_bits = usize::BITS as usize;
+        let end = CONS_FIRST_SLOT + lim;
+        for word in CONS_FIRST_SLOT / word_bits..end.div_ceil(word_bits) {
+            let low = (word * word_bits).max(CONS_FIRST_SLOT) - word * word_bits;
+            let high = end.min((word + 1) * word_bits) - word * word_bits;
+            if high <= low {
+                // The newest block before its first cell is taken.
+                continue;
+            }
+            let valid = (usize::MAX >> (word_bits - (high - low))) << low;
+            // The index, from the first cell, of this word's bit 0.
+            let first = (word * word_bits).wrapping_sub(CONS_FIRST_SLOT);
             let allocated = metadata.allocated[word].get();
             let marked = metadata.marked[word].get();
             let live = allocated & if current { marked } else { 0 } & valid;
@@ -2189,7 +2195,7 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
                 if cfg!(debug_assertions) {
                     let mut bits = dead;
                     while bits != 0 {
-                        let index = first + bits.trailing_zeros() as usize;
+                        let index = first.wrapping_add(bits.trailing_zeros() as usize);
                         bits &= bits - 1;
                         // SAFETY: a cell of this block nothing reaches.
                         unsafe { poison(cons_cell(start, index)) };
@@ -2205,7 +2211,7 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
                 continue;
             }
             while free != 0 {
-                let index = first + free.trailing_zeros() as usize;
+                let index = first.wrapping_add(free.trailing_zeros() as usize);
                 free &= free - 1;
                 let cell = cons_cell(start, index);
                 // SAFETY: a free cell's first word is the free-list link.
