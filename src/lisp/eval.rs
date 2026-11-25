@@ -5532,19 +5532,15 @@ impl Interpreter {
     }
 
     /// Mark actual roots, then iterate weak-table reachability to a fixed
-    /// point. Both native and interpreter roots enter this one graph walk.
+    /// point. Both native and interpreter roots enter this one graph walk
+    /// (the native ones with the strings Rust borrows, which the collector
+    /// checked before this mark phase began).
     pub(crate) fn weak_hash_reachability(
         &self,
         env: &Env,
         native_roots: &[Value],
     ) -> WeakHashReachability {
-        // Check exclusive Rust string borrows before advancing the epoch.
-        // Shared guards are roots even when held off the scanned stacks.
-        let borrowed_strings = crate::lisp::alloc::borrowed_string_roots();
         let mut marked = LispReachability::for_collection();
-        for value in borrowed_strings {
-            marked.mark(self, &value);
-        }
         marked.mark_env(self, env);
         for value in native_roots {
             marked.mark(self, value);

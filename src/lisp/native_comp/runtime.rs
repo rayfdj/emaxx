@@ -6162,6 +6162,23 @@ pub(crate) struct NativeHeap {
     native_stack_bottom: *const NativeWord,
 }
 
+/// A collection between its first mark and its last sweep.  alloc.c meets
+/// an inconsistency in a collection with emacs_abort, and nothing unwinds
+/// through garbage_collect; here a Rust panic could unwind out of it and
+/// be caught (batch.rs:with_batch_stack), leaving the mark bits the next
+/// collection trusts, so that it would free what is reachable.  Dropped
+/// by an unwind, this ends the process as emacs_abort does: SIGABRT, which
+/// the fatal-signal handler, where it is installed, reports as GNU's
+/// ("Fatal error 6", the backtrace).  The collection's normal end forgets
+/// it.
+struct CollectionUnderway;
+
+impl Drop for CollectionUnderway {
+    fn drop(&mut self) {
+        std::process::abort();
+    }
+}
+
 impl NativeHeap {
     fn new() -> Self {
         Self {
@@ -6288,7 +6305,15 @@ impl NativeHeap {
                 .map(|counter| counter.load(std::sync::atomic::Ordering::Relaxed))
         };
         let before_marks = consed();
-        let lisp_roots = crate::lisp::alloc::conservative_values(pending);
+        let mut lisp_roots = crate::lisp::alloc::conservative_values(pending);
+        // Exclusive Rust string borrows are checked before the mark phase
+        // begins, so that a collection they refuse has marked nothing;
+        // shared guards are roots even when held off the scanned stacks.
+        lisp_roots.extend(crate::lisp::alloc::borrowed_string_roots());
+        // From its first mark to its last sweep the collection has no way
+        // out but its end, as alloc.c:garbage_collect has none but its
+        // return: an unwind ends the process (`CollectionUnderway').
+        let underway = CollectionUnderway;
         let reachability = interpreter.weak_hash_reachability(environment, &lisp_roots);
         // From here to the sweep, no other mark phase may begin (a checked
         // build's guard; see `begin_mark_epoch').
@@ -6314,6 +6339,8 @@ impl NativeHeap {
         crate::lisp::types::sweep_symbol_cells(epoch);
         let free_strings = crate::lisp::alloc::sweep_strings(epoch);
         interpreter.note_sweeps_free_counts(free_strings, free_vector_slots);
+        // The collection is complete.
+        std::mem::forget(underway);
     }
 
     #[inline(always)]
