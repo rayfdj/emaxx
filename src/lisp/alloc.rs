@@ -5,8 +5,8 @@
 //!
 //! A `ConsRef' is `Lisp_Object' for a cons: a pointer the collector keeps
 //! valid, copied without a reference count. The aligned block owns compact
-//! mark/allocation bitmaps and weak-reference serials; the cell contains only
-//! two Lisp words. A free cell's first word links the free list.
+//! mark and allocation bitmaps; the cell contains only two Lisp words. A
+//! free cell's first word links the free list.
 //!
 //! The blocks, the free list, the bump pointer into the newest block and
 //! the collection's epoch are the process's, as `cons_block',
@@ -41,7 +41,7 @@ pub(crate) use strings::{
     live_string_object_census, retire_string_data, string_data_size, sweep_strings,
 };
 pub(crate) mod vectors;
-use std::sync::atomic::{AtomicBool, AtomicU64, AtomicUsize, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicUsize, Ordering};
 pub use symbols::{SymbolCell, SymbolRef};
 /// The actual header cells this allocator holds, as charged to collection.
 pub(crate) const SYMBOL_CELL_BYTES: usize = symbols::SYMBOL_CELL_SIZE;
@@ -61,14 +61,18 @@ pub(crate) use vectors::{
 /// with the C sizes (`BLOCK_ALIGN' 1 << 15 without unexec, `BLOCK_BYTES'
 /// = BLOCK_ALIGN - sizeof (struct ablocks *), `MALLOC_SIZE_NEAR (1024)'
 /// = 1016 under glibc's 16-byte alignment). Conses and floats have GNU's
-/// 16-/8-byte payloads in 32 KiB blocks. Weak-reference serials and two more
-/// bitmaps reduce the cons slots per block; floats only need one extra bitmap.
+/// 16-/8-byte payloads in 32 KiB blocks, each with one more bitmap than
+/// GNU's mark bits: the allocation state.
 const C_BLOCK_BYTES: usize = (1 << 15) - 8;
 const CELL_SIZE: usize = std::mem::size_of::<ConsCell>();
-/// Space for each 16-byte cons, an eight-byte weak-reference serial and three
-/// bitmap bits, plus the block epoch and alignment padding. GNU needs only
-/// its mark bit. Ordinary reads and stores never access this extra metadata.
-pub(crate) const CELLS_PER_BLOCK: usize = (((1 << 15) - 8) * 8) / (16 * 8 + 64 + 3);
+/// The 16-byte conses after the block's metadata: its epoch and two
+/// bitmaps of a bit for each 16 bytes of the block (`CONS_BITMAP_WORDS'),
+/// the mark and the allocation, which conservative scanning and checked
+/// native decoding read.  GNU's block has its mark bits alone (2,030
+/// conses, CONS_BLOCK_SIZE); its free cell's car is `dead_object ()',
+/// where this one's first word is the free-list link.  Ordinary reads
+/// and stores never access the metadata.
+pub(crate) const CELLS_PER_BLOCK: usize = ((1 << 15) - CONS_METADATA_BYTES) / CELL_SIZE;
 /// Eight-byte float payloads and two bits per slot: the collection mark,
 /// and allocation state for checked native-word decoding. GNU has one mark
 /// bit; the allocation bit replaces this runtime's in-object FREE_MARK.
@@ -364,8 +368,6 @@ thread_local! {
     static FLOAT_BUMP_NEXT: Cell<usize> = const { Cell::new(0) };
     static FLOAT_BUMP_END: Cell<usize> = const { Cell::new(0) };
 }
-/// The last serial given a cons for `WeakConsRef' (see `ConsMark::serial').
-static SERIAL: AtomicU64 = AtomicU64::new(0);
 
 /// alloc.c's allocation frontier: the cons, float, symbol and string free
 /// lists and the bump regions of their newest blocks, the current blocks
@@ -1554,9 +1556,16 @@ pub(crate) fn with_stacks_lent<R>(base: Option<usize>, body: impl FnOnce() -> R)
 /// `Lisp_Object' for a cons: the cell's address, copied freely, valid
 /// while the collector can reach the cell.
 /// GNU's CONS_BLOCK/CONS_INDEX arithmetic: a cell's block is found by
-/// alignment, and its allocation, marking and weak-reference serials there.
+/// alignment, and its allocation and marking there.
 const CONS_BLOCK_ALIGN: usize = 1 << 15;
-const CONS_BITMAP_WORDS: usize = CELLS_PER_BLOCK.div_ceil(usize::BITS as usize);
+/// A bit for each cell-sized span of the block, metadata included: the
+/// metadata then fits before the first cell.
+const CONS_BITMAP_WORDS: usize = CONS_BLOCK_ALIGN / CELL_SIZE / usize::BITS as usize;
+/// The metadata's bytes, to a cell's alignment: the epoch, then the two
+/// bitmaps.
+const CONS_METADATA_BYTES: usize = (std::mem::size_of::<u64>()
+    + 2 * CONS_BITMAP_WORDS * std::mem::size_of::<usize>())
+.next_multiple_of(CELL_SIZE);
 
 /// The metadata starts the block and the cells follow it, as in
 /// `FloatBlock': Fcons marks a new cell allocated through the block's
@@ -1567,17 +1576,14 @@ struct ConsBlock {
     cells: ConsCells,
 }
 
-/// The cells start on a bitmap word's span, so that a cell's bit is its
-/// slot's from the block's address, as with the cells first.
-#[repr(C, align(1024))]
+/// The cells, on a cell's alignment after the metadata.
+#[repr(C, align(16))]
 struct ConsCells([std::mem::MaybeUninit<ConsCell>; CELLS_PER_BLOCK]);
 
 /// The first cell's offset in its block.
 const CONS_CELLS: usize = std::mem::offset_of!(ConsBlock, cells);
-/// The slots, of a cell's size from the block's address, and the bitmap
-/// words that the metadata takes before the first cell.
+/// The first cell's slot, of a cell's size from the block's address.
 const CONS_FIRST_SLOT: usize = CONS_CELLS / CELL_SIZE;
-const CONS_FIRST_WORD: usize = CONS_FIRST_SLOT / usize::BITS as usize;
 
 /// The cell INDEX of the cons block at START.
 #[inline(always)]
@@ -1588,37 +1594,24 @@ fn cons_cell(start: usize, index: usize) -> *mut ConsCell {
 #[repr(C)]
 struct ConsMetadata {
     epoch: Cell<u32>,
+    /// A bit for each cell, by its index in the block (the bits past
+    /// `CELLS_PER_BLOCK' unused).
     allocated: [Cell<usize>; CONS_BITMAP_WORDS],
     marked: [Cell<usize>; CONS_BITMAP_WORDS],
-    /// The cells whose serial slot holds this allocation's serial: set when
-    /// a weak reference first asks for it, cleared when the sweep frees the
-    /// cell, so a cell is allocated with its bit clear.
-    serial_given: [Cell<usize>; CONS_BITMAP_WORDS],
-    // A reused address must not revive a WeakConsRef. GNU's raw Lisp values
-    // need no serial; Rust's weak host cache references do. Ordinary car/cdr
-    // and stores never read these serials or the bitmaps. A cell's serial
-    // is written when a weak reference first asks for it, as Fcons writes
-    // nothing beside the cell, and read only while its `serial_given' bit
-    // is set, so any other slot may be uninitialized.
-    serials: [Cell<std::mem::MaybeUninit<u64>>; CELLS_PER_BLOCK],
 }
 
 impl ConsMetadata {
     /// A new block's metadata, every cell free: the epoch and the bitmaps.
-    /// GNU's Fcons clears only a new block's mark bits; the serials are
-    /// left as they are (about 11 KB a block that zeroing wrote).
     ///
     /// # Safety
     /// METADATA is a new block's metadata, not yet in use.
     unsafe fn init(metadata: *mut Self) {
-        // SAFETY: the caller's contract; the serials are MaybeUninit.
+        // SAFETY: the caller's contract.
         unsafe {
             std::ptr::addr_of_mut!((*metadata).epoch).write(Cell::new(0));
             std::ptr::addr_of_mut!((*metadata).allocated)
                 .write([const { Cell::new(0) }; CONS_BITMAP_WORDS]);
             std::ptr::addr_of_mut!((*metadata).marked)
-                .write([const { Cell::new(0) }; CONS_BITMAP_WORDS]);
-            std::ptr::addr_of_mut!((*metadata).serial_given)
                 .write([const { Cell::new(0) }; CONS_BITMAP_WORDS]);
         }
     }
@@ -1630,8 +1623,9 @@ const _: () = {
     assert!(!std::mem::needs_drop::<ConsCell>());
     assert!(std::mem::size_of::<ConsBlock>() == CONS_BLOCK_ALIGN);
     assert!(std::mem::offset_of!(ConsBlock, metadata) == 0);
-    assert!(CONS_CELLS != 0);
-    assert!(CONS_FIRST_SLOT.is_multiple_of(usize::BITS as usize));
+    assert!(CONS_CELLS == CONS_METADATA_BYTES);
+    assert!(std::mem::size_of::<ConsMetadata>() <= CONS_METADATA_BYTES);
+    assert!(CELLS_PER_BLOCK <= CONS_BITMAP_WORDS * usize::BITS as usize);
     assert!(std::mem::offset_of!(ConsCell, car) == 0);
     assert!(std::mem::offset_of!(ConsCell, cdr) == std::mem::size_of::<Value>());
 };
@@ -1649,12 +1643,13 @@ impl ConsMark<'_> {
         self.slot - CONS_FIRST_SLOT
     }
 
-    // cons_mark checked the slot's range: the word index cannot wrap.
+    // cons_mark checked the slot's range: the index cannot wrap.
     #[inline(always)]
     fn bit(&self) -> (usize, usize) {
+        let index = self.slot.wrapping_sub(CONS_FIRST_SLOT);
         (
-            (self.slot / usize::BITS as usize).wrapping_sub(CONS_FIRST_WORD),
-            1 << (self.slot % usize::BITS as usize),
+            index / usize::BITS as usize,
+            1 << (index % usize::BITS as usize),
         )
     }
 
@@ -1686,10 +1681,6 @@ impl ConsMark<'_> {
     fn allocate(&self, epoch: u32) {
         let (word, mask) = self.bit();
         debug_assert!(self.index() < CELLS_PER_BLOCK);
-        debug_assert!(
-            self.block.serial_given[word].get() & mask == 0,
-            "a free cons with a serial"
-        );
         // SAFETY: `cons_mark' made this mark for a payload slot: its index
         // is below CELLS_PER_BLOCK, and its word below CONS_BITMAP_WORDS.
         let (allocated, marked) = unsafe {
@@ -1713,19 +1704,18 @@ impl ConsMark<'_> {
             self.clear_marks(epoch);
         }
         let bits = usize::BITS as usize;
-        let mut slot = self.slot;
-        let end = self.slot + count;
-        while slot < end {
-            let word = slot / bits - CONS_FIRST_WORD;
-            let first = slot % bits;
-            let last = (end - (slot - first)).min(bits);
+        let mut index = self.index();
+        let end = index + count;
+        while index < end {
+            let word = index / bits;
+            let first = index % bits;
+            let last = (end - (index - first)).min(bits);
             let mask = (usize::MAX >> (bits - (last - first))) << first;
-            debug_assert!(self.block.serial_given[word].get() & mask == 0);
             let allocated = &self.block.allocated[word];
             allocated.set(allocated.get() | mask);
             let marked = &self.block.marked[word];
             marked.set(marked.get() | mask);
-            slot += last - first;
+            index += last - first;
         }
     }
 
@@ -1737,32 +1727,6 @@ impl ConsMark<'_> {
             word.set(0);
         }
         self.block.epoch.set(epoch);
-    }
-
-    /// This allocation's serial, given now if no weak reference asked for
-    /// it before: one more than the last given, so no earlier allocation
-    /// of the cell had it.  Callers ask only for allocated cells (a live
-    /// ConsRef, or one `mem_find' found allocated).
-    fn serial(&self) -> u64 {
-        debug_assert!(self.allocated(), "the serial of a free cons");
-        if let Some(serial) = self.given_serial() {
-            return serial;
-        }
-        let (word, mask) = self.bit();
-        let serial = SERIAL.load(Ordering::Relaxed) + 1;
-        SERIAL.store(serial, Ordering::Relaxed);
-        self.block.serials[self.index()].set(std::mem::MaybeUninit::new(serial));
-        let given = &self.block.serial_given[word];
-        given.set(given.get() | mask);
-        serial
-    }
-
-    /// The serial given this allocation, if a weak reference asked for one.
-    fn given_serial(&self) -> Option<u64> {
-        let (word, mask) = self.bit();
-        // SAFETY: a set bit means the slot was written for this allocation.
-        (self.block.serial_given[word].get() & mask != 0)
-            .then(|| unsafe { self.block.serials[self.index()].get().assume_init() })
     }
 }
 
@@ -1819,19 +1783,6 @@ impl ConsRef {
         // SAFETY: this reached handle keeps its containing block allocated.
         unsafe { cons_mark(self.0.as_ptr()) }
     }
-
-    pub(crate) fn serial(&self) -> u64 {
-        self.mark_bit().serial()
-    }
-
-    /// A weak handle: valid until the cell is swept, told apart from a
-    /// later cell in the same slot by the serial.
-    pub(crate) fn downgrade(&self) -> WeakConsRef {
-        WeakConsRef {
-            cell: self.0,
-            serial: self.serial(),
-        }
-    }
 }
 
 impl std::ops::Deref for ConsRef {
@@ -1869,44 +1820,6 @@ impl Eq for ConsRef {}
 impl std::hash::Hash for ConsRef {
     fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
         (self.0.as_ptr() as usize).hash(state);
-    }
-}
-
-/// A reference that does not keep the cell: `upgrade' answers while the
-/// cell is allocated and still the same allocation.
-#[derive(Clone, Debug)]
-pub struct WeakConsRef {
-    cell: NonNull<ConsCell>,
-    serial: u64,
-}
-
-impl WeakConsRef {
-    #[cfg(test)]
-    pub(crate) fn identity(&self) -> usize {
-        self.cell.as_ptr() as usize
-    }
-
-    /// A weak handle from a cell's address and serial (a test keeps them
-    /// hidden from the conservative scan).
-    #[cfg(test)]
-    pub(crate) fn from_parts(address: usize, serial: u64) -> Self {
-        Self {
-            cell: NonNull::new(address as *mut ConsCell).expect("a cell address"),
-            serial,
-        }
-    }
-
-    pub(crate) fn upgrade(&self) -> Option<ConsRef> {
-        let address = self.cell.as_ptr() as usize;
-        // SAFETY: the address was a cell's; `mem_find' checks it still
-        // names an allocated cell before anything reads it.
-        let live = unsafe { mem_find_cons(address) }?;
-        if live as usize != address {
-            return None;
-        }
-        // SAFETY: mem_find answered an allocated cell and block.
-        (unsafe { cons_mark(live) }.given_serial() == Some(self.serial))
-            .then_some(ConsRef(self.cell))
     }
 }
 
@@ -2169,19 +2082,35 @@ pub(crate) unsafe fn mem_find_cons(address: usize) -> Option<*mut ConsCell> {
     }
 }
 
-/// The serial of the allocated cell at ADDRESS (a cell's address), or
-/// None when the sweep has freed it (or it was never a cell): for a
-/// holder that keeps a cell's address across a collection without
-/// keeping the cell (test witnesses hidden from the conservative scan).
+/// For tests: whether an allocated cell starts at ADDRESS.  A holder that
+/// keeps a cell's address across a collection without keeping the cell
+/// (a witness hidden from the conservative scan) learns whether the
+/// collection freed it; that the cell there is still the same allocation
+/// it knows only if no cons was allocated there since, which a witness
+/// alone in its block (`cons_alone_in_new_block') and checked before the
+/// next cons is allocated makes so.
 #[cfg(test)]
-pub(crate) fn allocated_serial(address: usize) -> Option<u64> {
-    // SAFETY: `mem_find' answers an allocated cell, whose serial is
-    // readable.
-    unsafe {
-        mem_find_cons(address)
-            .filter(|cell| *cell as usize == address)
-            .map(|cell| cons_mark(cell).serial())
-    }
+pub(crate) fn cons_allocated_at(address: usize) -> bool {
+    // SAFETY: `mem_find' reads nothing it does not find in a block.
+    unsafe { mem_find_cons(address) }.is_some_and(|cell| cell as usize == address)
+}
+
+/// For tests: a cons alone in a new block, with no other cons in its block
+/// until the next sweep (`cons_allocated_at').
+#[cfg(test)]
+pub(crate) fn cons_alone_in_new_block(car: Value, cdr: Value) -> Value {
+    abandon_cons_frontier();
+    let cons = Value::cons(car, cdr);
+    abandon_cons_frontier();
+    cons
+}
+
+/// For tests: the next cons is allocated from a new block (the free cells
+/// left behind return to the free list at the next sweep).
+#[cfg(test)]
+pub(crate) fn abandon_cons_frontier() {
+    FREE_LIST.set(std::ptr::null_mut());
+    BUMP_NEXT.set(BUMP_END.get());
 }
 
 /// The blocks of KIND.
@@ -2261,8 +2190,6 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
             if dead != 0 {
                 metadata.allocated[word].set(allocated & !dead);
                 metadata.marked[word].set(marked & !dead);
-                let given = &metadata.serial_given[word];
-                given.set(given.get() & !dead);
                 if cfg!(debug_assertions) {
                     let mut bits = dead;
                     while bits != 0 {
@@ -2340,9 +2267,8 @@ fn verify_marking(epoch: u32) {
                 assert_ne!(
                     vectorlike_is_marked(&value, epoch),
                     Some(false),
-                    "marked cons {:#x} (serial {}) holds an unmarked vectorlike in {which}: {}",
+                    "marked cons {:#x} holds an unmarked vectorlike in {which}: {}",
                     cell as usize,
-                    mark.serial(),
                     describe(&value)
                 );
                 if let Kind::Cons(target) = value.kind() {
@@ -2350,11 +2276,9 @@ fn verify_marking(epoch: u32) {
                     let target_mark = unsafe { cons_mark(target.as_ptr()) };
                     assert!(
                         target_mark.is_marked(epoch),
-                        "marked cons {:#x} (serial {}) holds unmarked cons {:#x} (serial {}, allocated {}) in {which} at epoch {epoch}",
+                        "marked cons {:#x} holds unmarked cons {:#x} (allocated {}) in {which} at epoch {epoch}",
                         cell as usize,
-                        mark.serial(),
                         target.as_ptr() as usize,
-                        target_mark.serial(),
                         target_mark.allocated()
                     );
                 }
@@ -2427,9 +2351,8 @@ fn verify_heap() {
                     // mark word is read.
                     if !unsafe { cons_mark(target.as_ptr()) }.allocated() {
                         panic!(
-                            "after the sweep, live cons {:#x} (serial {}) holds freed cons {:#x} in its {which}",
+                            "after the sweep, live cons {:#x} holds freed cons {:#x} in its {which}",
                             cell as usize,
-                            unsafe { cons_mark(cell) }.serial(),
                             target.as_ptr() as usize
                         );
                     }
@@ -2487,7 +2410,7 @@ pub(crate) fn free_conses() -> usize {
 }
 
 /// Physical block storage for allocator validation, including unused slots,
-/// serials, bitmaps and alignment padding. Payload charging alone is not a
+/// bitmaps and alignment padding. Payload charging alone is not a
 /// report of retained process memory.
 #[cfg(test)]
 pub(crate) fn cons_storage_for_test() -> [usize; 4] {

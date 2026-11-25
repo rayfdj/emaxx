@@ -91,3 +91,27 @@ fn a_block_address_names_no_cons_or_float() {
     );
     std::hint::black_box((conses, floats));
 }
+
+#[test]
+fn a_cons_block_holds_its_metadata_and_2015_conses() {
+    // The block's metadata is its epoch and the mark and allocation
+    // bitmaps, a bit for each 16 bytes of the 32 KiB block: 520 bytes, the
+    // first cell at 528.  GNU's block holds 2,030 (its mark bits alone);
+    // with a weak-reference serial a cons this one held 1,344.
+    assert_eq!(CONS_CELLS, 528);
+    assert_eq!(CELLS_PER_BLOCK, 2015);
+    assert_eq!(CONS_CELLS + CELLS_PER_BLOCK * CELL_SIZE, CONS_BLOCK_ALIGN);
+    let [_, block, payload, rest] = cons_storage_for_test();
+    assert_eq!((block, payload, rest), (32768, 2015 * 16, 528));
+    // The last cell's bits are in the bitmaps' last word.
+    let last = Value::cons(Value::Nil, Value::Nil);
+    let Kind::Cons(cell) = last.kind() else {
+        unreachable!();
+    };
+    let (word, _) = unsafe { cons_mark(cell.as_ptr()) }.bit();
+    assert!(word < CONS_BITMAP_WORDS);
+    assert_eq!(
+        (CELLS_PER_BLOCK - 1) / usize::BITS as usize,
+        CONS_BITMAP_WORDS - 1
+    );
+}

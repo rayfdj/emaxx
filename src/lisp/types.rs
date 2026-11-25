@@ -858,7 +858,6 @@ impl fmt::Display for SharedBigInt {
 pub type SharedFloat = crate::lisp::alloc::FloatRef;
 
 pub type SharedCons = crate::lisp::alloc::ConsRef;
-pub use crate::lisp::alloc::WeakConsRef;
 pub type ConsCells = (ConsSlot, ConsSlot);
 /// Interpreted and byte-code closures share their inline GNU fields.
 pub use crate::lisp::alloc::ClosureRef;
@@ -1434,12 +1433,6 @@ impl ConsCell {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-enum ConsField {
-    Car,
-    Cdr,
-}
-
 /// A retained reference to one mutable field of a cons.
 ///
 /// Like GNU's address of XCAR/XCDR, this is the actual field address.
@@ -1504,34 +1497,6 @@ impl ConsSlot {
 
     pub fn ptr_eq(&self, other: &Self) -> bool {
         self.slot == other.slot
-    }
-
-    pub fn downgrade(&self) -> WeakConsSlot {
-        let cell = self.cell();
-        WeakConsSlot {
-            cell: cell.downgrade(),
-            field: if self.slot == NonNull::from(&cell.car) {
-                ConsField::Car
-            } else {
-                ConsField::Cdr
-            },
-        }
-    }
-}
-
-#[derive(Clone, Debug)]
-pub struct WeakConsSlot {
-    cell: WeakConsRef,
-    field: ConsField,
-}
-
-impl WeakConsSlot {
-    pub fn upgrade(&self) -> Option<ConsSlot> {
-        let cell = self.cell.upgrade()?;
-        Some(match self.field {
-            ConsField::Car => ConsSlot::car(&cell),
-            ConsField::Cdr => ConsSlot::cdr(&cell),
-        })
     }
 }
 
@@ -1846,7 +1811,7 @@ pub struct Value(usize, std::marker::PhantomData<*mut ()>);
 // giving one of these types either trait adds a second implementation
 // that matches it, the inference of `_' becomes ambiguous, and the build
 // fails.
-const _: [fn(); 11] = {
+const _: [fn(); 10] = {
     trait ThreadBound<A> {
         fn check() {}
     }
@@ -1864,7 +1829,6 @@ const _: [fn(); 11] = {
         <crate::lisp::alloc::StringObjectRef as ThreadBound<_>>::check,
         <crate::lisp::alloc::SymbolRef as ThreadBound<_>>::check,
         <crate::lisp::alloc::VectorRef as ThreadBound<_>>::check,
-        <crate::lisp::alloc::WeakConsRef as ThreadBound<_>>::check,
         <BufferRef as ThreadBound<_>>::check,
         <symbols::SymbolOwner as ThreadBound<_>>::check,
     ]
@@ -4137,41 +4101,39 @@ pub(crate) fn release_thread_state() {
 pub(crate) mod tests {
     use super::{
         ConsCell, EnvFrame, Kind, LispError, SharedCons, StringObjectRef, SymbolName, Value,
-        WeakConsRef, assq_binding, census_live_conses, census_live_floats,
-        census_live_uninterned_symbols, census_live_vectors, environment_declares_special,
+        assq_binding, census_live_conses, census_live_floats, census_live_uninterned_symbols,
+        census_live_vectors, environment_declares_special,
     };
     use std::collections::HashSet;
 
-    /// The words of weakly held conses, to tell whether any changed: native
-    /// code and the interpreter store into a cons directly, without a
-    /// mutation epoch, watcher or store barrier.  The weak references never
-    /// retain an otherwise unreachable graph.  Only tests use it.
+    /// The words of conses held by address, to tell whether any changed:
+    /// native code and the interpreter store into a cons directly, without
+    /// a mutation epoch, watcher or store barrier.  An address does not
+    /// retain an otherwise unreachable graph; a cell freed since is not
+    /// current (`cons_allocated_at').  Only tests use it.
     #[derive(Debug, Clone, Default)]
     pub(crate) struct ConsMutationSnapshot {
-        cells: Vec<(WeakConsRef, [usize; 2])>,
+        cells: Vec<(usize, [usize; 2])>,
     }
 
     impl ConsMutationSnapshot {
+        fn entry(cell: &SharedCons) -> (usize, [usize; 2]) {
+            (
+                ConsCell::identity(cell),
+                [cell.car.get().word(), cell.cdr.get().word()],
+            )
+        }
+
         pub(crate) fn cell(cell: &SharedCons) -> Self {
             Self::cells(std::iter::once(cell))
         }
 
         pub(crate) fn cells<'a>(cells: impl IntoIterator<Item = &'a SharedCons>) -> Self {
             let mut snapshot = Self {
-                cells: cells
-                    .into_iter()
-                    .map(|cell| {
-                        (
-                            cell.downgrade(),
-                            [cell.car.get().word(), cell.cdr.get().word()],
-                        )
-                    })
-                    .collect(),
+                cells: cells.into_iter().map(Self::entry).collect(),
             };
-            snapshot
-                .cells
-                .sort_unstable_by_key(|(cell, _)| cell.identity());
-            snapshot.cells.dedup_by_key(|(cell, _)| cell.identity());
+            snapshot.cells.sort_unstable_by_key(|(address, _)| *address);
+            snapshot.cells.dedup_by_key(|(address, _)| *address);
             snapshot
         }
 
@@ -4196,17 +4158,12 @@ pub(crate) mod tests {
         }
 
         pub(crate) fn include_cell(&mut self, cell: &SharedCons) {
+            let entry = Self::entry(cell);
             if let Err(index) = self
                 .cells
-                .binary_search_by_key(&ConsCell::identity(cell), |(cell, _)| cell.identity())
+                .binary_search_by_key(&entry.0, |(address, _)| *address)
             {
-                self.cells.insert(
-                    index,
-                    (
-                        cell.downgrade(),
-                        [cell.car.get().word(), cell.cdr.get().word()],
-                    ),
-                );
+                self.cells.insert(index, entry);
             }
         }
 
@@ -4223,25 +4180,25 @@ pub(crate) mod tests {
                     continue;
                 }
                 if self.cells[..existing_len]
-                    .binary_search_by_key(&id, |(cell, _)| cell.identity())
+                    .binary_search_by_key(&id, |(address, _)| *address)
                     .is_err()
                 {
-                    self.cells.push((
-                        cell.downgrade(),
-                        [cell.car.get().word(), cell.cdr.get().word()],
-                    ));
+                    self.cells.push(Self::entry(&cell));
                 }
                 pending.push(cell.car.get());
                 pending.push(cell.cdr.get());
             }
-            self.cells.sort_unstable_by_key(|(cell, _)| cell.identity());
-            self.cells.dedup_by_key(|(cell, _)| cell.identity());
+            self.cells.sort_unstable_by_key(|(address, _)| *address);
+            self.cells.dedup_by_key(|(address, _)| *address);
         }
 
         pub(crate) fn is_current(&self) -> bool {
-            self.cells.iter().all(|(cell, words)| {
-                cell.upgrade()
-                    .is_some_and(|cell| [cell.car.get().word(), cell.cdr.get().word()] == *words)
+            self.cells.iter().all(|(address, words)| {
+                crate::lisp::alloc::cons_allocated_at(*address) && {
+                    // SAFETY: an allocated cell starts at ADDRESS.
+                    let cell = unsafe { &*(*address as *const ConsCell) };
+                    [cell.car.get().word(), cell.cdr.get().word()] == *words
+                }
             })
         }
     }
@@ -5039,26 +4996,20 @@ pub(crate) mod tests {
         );
         let pair = Value::cons(Value::Integer(13), Value::Integer(29));
         let (car, cdr) = pair.cons_cells().expect("cons");
-        let weak_car = car.downgrade();
-        let weak_cdr = cdr.downgrade();
+        // The fields taken again from the cons are the same field slots.
+        let (again_car, again_cdr) = pair.cons_cells().expect("the same cons");
         assert_eq!(car.cell_id(), pair.cons_id().expect("cell identity"));
         assert_eq!(car.cell_id(), cdr.cell_id());
-        assert!(car.ptr_eq(&weak_car.upgrade().expect("live car")));
-        assert!(cdr.ptr_eq(&weak_cdr.upgrade().expect("live cdr")));
+        assert!(car.ptr_eq(&again_car));
+        assert!(cdr.ptr_eq(&again_cdr));
         assert!(!car.ptr_eq(&cdr));
         car.set(pair);
         cdr.set(Value::Integer(53));
         let values = pair.cons_values().expect("shared fields");
         assert_eq!(values.0.word(), pair.word());
         assert_eq!(values.1, Value::Integer(53));
-        assert_eq!(
-            weak_car.upgrade().expect("same car").get().word(),
-            pair.word()
-        );
-        assert_eq!(
-            weak_cdr.upgrade().expect("same cdr").get(),
-            Value::Integer(53)
-        );
+        assert_eq!(again_car.get().word(), pair.word());
+        assert_eq!(again_cdr.get(), Value::Integer(53));
         car.set(Value::Nil);
     }
 

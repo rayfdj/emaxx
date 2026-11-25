@@ -71,39 +71,69 @@ fn tls_reads_wait_for_the_event_loop_to_finish_negotiation() {
     assert_eq!((transport.handshakes, transport.reads), (1, 1));
 }
 
+/// A weak-key `eq' table in the global variable NAME: what GNU's Lisp
+/// observes of a cons it no longer reaches, the entry gone after a
+/// collection.
+fn weak_key_table(interp: &mut Interpreter, name: &str) -> Value {
+    let table = crate::lisp::primitives::call(
+        interp,
+        "make-hash-table",
+        &[
+            Value::symbol(":test"),
+            Value::symbol("eq"),
+            Value::symbol(":weakness"),
+            Value::symbol("key"),
+        ],
+        &mut Env::new(),
+    )
+    .expect("make-hash-table");
+    interp.set_symbol_value_cell(name, table);
+    table
+}
+
+fn table_count(interp: &mut Interpreter, table: Value) -> Value {
+    crate::lisp::primitives::call(interp, "hash-table-count", &[table], &mut Env::new())
+        .expect("hash-table-count")
+}
+
 #[test]
 fn collection_frees_unreached_conses_and_expires_weak_slots() {
     // alloc.c's sweep: a chain no root reaches is returned to the free
-    // list by `garbage-collect', a weak observer of one of its cells
-    // answers nothing after, and a cell a root reaches survives.  The
-    // stack is scanned conservatively, so the chain is built out of this
-    // frame, its address kept hidden, and the frames below clobbered
-    // before the collection.
+    // list by `garbage-collect', a weak-key table's entry for one of its
+    // cells is gone after, and a cell a root reaches survives.  The stack
+    // is scanned conservatively, so the chain is built out of this frame
+    // and the frames below clobbered before the collection.
     #[inline(never)]
-    fn build_chain() -> (usize, u64) {
+    fn build_chain(interp: &mut Interpreter, table: Value) {
         let mut chain = Value::Nil;
         for index in 0..100_000 {
             chain = Value::cons(Value::float(index as f64), chain);
         }
-        let Kind::Cons(cell) = chain.kind() else {
-            unreachable!("constructed cons");
-        };
-        ((cell.as_ptr() as usize) ^ HIDE, cell.serial())
+        crate::lisp::primitives::call(
+            interp,
+            "puthash",
+            &[chain, Value::T, table],
+            &mut Env::new(),
+        )
+        .expect("puthash");
     }
-    const HIDE: usize = 0x5555_5555_5555_5555;
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     let kept = Value::cons(Value::Integer(37), Value::Nil);
     interp.set_symbol_value_cell("emaxx-gc-test-kept", kept);
+    let table = weak_key_table(&mut interp, "emaxx-gc-test-weak");
     let before = crate::lisp::types::census_live_conses();
     let floats_before = crate::lisp::types::census_live_floats();
-    let (hidden, serial) = build_chain();
+    build_chain(&mut interp, table);
     assert!(crate::lisp::types::census_live_conses() >= before + 100_000);
     assert!(crate::lisp::types::census_live_floats() >= floats_before + 100_000);
     crate::lisp::alloc::clobber_stack();
     crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env).expect("collect");
-    let weak = crate::lisp::types::WeakConsRef::from_parts(hidden ^ HIDE, serial);
-    assert!(weak.upgrade().is_none(), "the unreached chain is swept");
+    assert_eq!(
+        table_count(&mut interp, table),
+        Value::Integer(0),
+        "the unreached chain is swept"
+    );
     assert!(
         crate::lisp::types::census_live_conses() < before + 10_000,
         "the sweep returned the chain to the free list"
@@ -124,17 +154,16 @@ fn collection_frees_unreached_conses_and_expires_weak_slots() {
 
 #[test]
 fn a_swept_cell_taken_again_answers_no_earlier_weak_reference() {
-    // A cell's serial is given when a weak reference first asks for it
-    // and forgotten when the sweep frees the cell, so the allocation that
-    // takes the slot next is not the one an earlier weak reference names,
-    // and gets a serial of its own.  The doomed cells are interleaved
-    // with kept ones in new blocks, so that their blocks stay (a block the
-    // sweep finds all free goes back to the allocator) and the free list
-    // hands their slots out again; the stack is scanned conservatively,
-    // so the doomed chain is built out of this frame, its address kept
-    // hidden.
+    // The allocation that takes a swept cell's slot next is not the one a
+    // weak-key table held: the table's entry went with the swept cell, and
+    // the new cell at its address is no key of it until it is put there.
+    // The doomed cells are interleaved with kept ones in new blocks, so
+    // that their blocks stay (a block the sweep finds all free goes back
+    // to the allocator) and the free list hands their slots out again;
+    // the stack is scanned conservatively, so the doomed chain is built
+    // out of this frame, its address kept hidden.
     #[inline(never)]
-    fn build_chains(interp: &mut Interpreter) -> (usize, u64) {
+    fn build_chains(interp: &mut Interpreter, table: Value) -> usize {
         // The free list drained first, the chains take fresh cells of new
         // blocks, each doomed cell beside a kept one.
         let mut drain = Value::Nil;
@@ -149,19 +178,30 @@ fn a_swept_cell_taken_again_answers_no_earlier_weak_reference() {
             doomed = Value::cons(Value::Integer(index), doomed);
         }
         interp.set_symbol_value_cell("emaxx-gc-test-interleaved", kept);
+        crate::lisp::primitives::call(
+            interp,
+            "puthash",
+            &[doomed, Value::T, table],
+            &mut Env::new(),
+        )
+        .expect("puthash");
         let Kind::Cons(cell) = doomed.kind() else {
             unreachable!("constructed cons");
         };
-        ((cell.as_ptr() as usize) ^ HIDE, cell.serial())
+        (cell.as_ptr() as usize) ^ HIDE
     }
     const HIDE: usize = 0x5555_5555_5555_5555;
     let mut interp = Interpreter::new();
     let mut env = Env::new();
-    let (hidden, serial) = build_chains(&mut interp);
+    let table = weak_key_table(&mut interp, "emaxx-gc-test-reused");
+    let hidden = build_chains(&mut interp, table);
     crate::lisp::alloc::clobber_stack();
     crate::lisp::primitives::call(&mut interp, "garbage-collect", &[], &mut env).expect("collect");
-    let weak = crate::lisp::types::WeakConsRef::from_parts(hidden ^ HIDE, serial);
-    assert!(weak.upgrade().is_none(), "the doomed chain is swept");
+    assert_eq!(
+        table_count(&mut interp, table),
+        Value::Integer(0),
+        "the doomed chain is swept"
+    );
     // The collection's own value is consed after the sweep, from the head
     // of the free list, which may be the swept cell already; otherwise
     // Fcons takes the free list before a new block, so the slot comes
@@ -169,29 +209,29 @@ fn a_swept_cell_taken_again_answers_no_earlier_weak_reference() {
     let address = hidden ^ HIDE;
     let mut fresh = Value::Nil;
     for _ in 0..=crate::lisp::alloc::free_conses() {
-        // SAFETY: a lookup of an address, which reads nothing it does not
-        // find allocated.
-        if unsafe { crate::lisp::alloc::mem_find_cons(address) }.is_some() {
+        if crate::lisp::alloc::cons_allocated_at(address) {
             break;
         }
         fresh = Value::cons(Value::Nil, fresh);
     }
-    // SAFETY: as above; the slot's cell is allocated and no collection
-    // runs from here.
-    let found = unsafe { crate::lisp::alloc::mem_find_cons(address) }
-        .expect("the free list hands the swept slot out again");
-    // SAFETY: FOUND is an allocated cell, kept until the test ends.
-    let cell = unsafe { crate::lisp::alloc::ConsRef::from_raw(found) };
     assert!(
-        weak.upgrade().is_none(),
-        "the slot's new cell is not the one the weak reference names"
+        crate::lisp::alloc::cons_allocated_at(address),
+        "the free list hands the swept slot out again"
     );
-    assert_ne!(
-        cell.serial(),
-        serial,
-        "the new cell has a serial of its own"
+    // SAFETY: an allocated cell starts at ADDRESS, kept until the test ends.
+    let cell = Value::Cons(unsafe { crate::lisp::alloc::ConsRef::from_raw(address as *const _) });
+    let lookup = |interp: &mut Interpreter, key: Value| {
+        crate::lisp::primitives::call(interp, "gethash", &[key, table], &mut Env::new())
+            .expect("gethash")
+    };
+    assert!(
+        lookup(&mut interp, cell).is_nil(),
+        "the slot's new cell is not the one the weak table held"
     );
-    assert!(cell.downgrade().upgrade().is_some(), "and answers its own");
+    assert_eq!(table_count(&mut interp, table), Value::Integer(0));
+    crate::lisp::primitives::call(&mut interp, "puthash", &[cell, Value::T, table], &mut env)
+        .expect("puthash");
+    assert_eq!(lookup(&mut interp, cell), Value::T, "and answers its own");
     assert!(fresh.is_nil() || fresh.is_cons());
 }
 

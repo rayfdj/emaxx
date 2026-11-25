@@ -933,7 +933,6 @@ mod tests {
                 unreachable!("a cons")
             };
             let address = cell.as_ptr() as usize;
-            let serial = crate::lisp::alloc::allocated_serial(address);
             let borrower = std::thread::spawn(|| {
                 let mut interp = crate::lisp::eval::Interpreter::new();
                 fixnum(
@@ -942,7 +941,9 @@ mod tests {
                 )
             });
             assert_eq!(release_while(|| borrower.join()).expect("the borrower"), 3);
-            assert_eq!(crate::lisp::alloc::allocated_serial(address), serial);
+            // Still the cell's allocation: allocated where it was, and its
+            // car its own.
+            assert!(crate::lisp::alloc::cons_allocated_at(address));
             assert_eq!(kept.car().expect("a cons"), Value::Integer(41));
             assert!(!crate::lisp::primitives::profiler::profiler_memory_running_p().is_nil());
             std::hint::black_box(&kept);

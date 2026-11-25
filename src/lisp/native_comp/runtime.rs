@@ -6857,7 +6857,7 @@ mod tests {
             pair.word()
         );
         assert!(heap.decode(cdr_address | TAG_CONS).is_err());
-        assert!(crate::lisp::alloc::allocated_serial(cdr_address).is_none());
+        assert!(!crate::lisp::alloc::cons_allocated_at(cdr_address));
     }
 
     #[test]
@@ -6930,9 +6930,16 @@ mod tests {
 
     #[test]
     fn cons_weak_snapshots_reject_reused_slots_with_identical_fields() {
-        use crate::lisp::types::{WeakConsRef, tests::ConsMutationSnapshot};
+        use crate::lisp::types::tests::ConsMutationSnapshot;
+        // A snapshot keeps addresses, not cells, and a weak-key table's
+        // entry goes with its cons: what GNU's Lisp observes.  A cell
+        // later allocated at the swept one's address with the same words
+        // is no key of the table.
         #[inline(never)]
-        fn make_objects() -> (Value, usize, u64, ConsMutationSnapshot) {
+        fn make_objects(
+            interpreter: &mut Interpreter,
+            table: Value,
+        ) -> (Value, usize, ConsMutationSnapshot) {
             // Find two slots in the same block even when the old free list
             // has isolated holes. Root one so the victim's block stays mapped.
             let mut cells = Vec::new();
@@ -6950,13 +6957,21 @@ mod tests {
             let roots = Value::vector(cells);
             let snapshot = ConsMutationSnapshot::cell(&cell);
             assert!(snapshot.is_current());
-            (roots, victim.word() ^ HIDE, cell.serial(), snapshot)
+            crate::lisp::primitives::call(
+                interpreter,
+                "puthash",
+                &[victim, Value::T, table],
+                &mut Env::new(),
+            )
+            .expect("puthash");
+            (roots, victim.word() ^ HIDE, snapshot)
         }
         #[inline(never)]
         fn check_reclamation_and_reuse(
+            interpreter: &mut Interpreter,
+            table: Value,
             snapshot: &ConsMutationSnapshot,
             hidden: usize,
-            serial: u64,
         ) {
             // Keep every temporary unhidden pointer out of the caller's
             // collection frame, including those an optimizer can otherwise
@@ -6965,8 +6980,16 @@ mod tests {
                 !snapshot.is_current(),
                 "a weak dependency does not root its cons"
             );
-            let weak = WeakConsRef::from_parts((hidden ^ HIDE) & !TAG_MASK, serial);
-            assert!(weak.upgrade().is_none());
+            let count = |interpreter: &mut Interpreter| {
+                crate::lisp::primitives::call(
+                    interpreter,
+                    "hash-table-count",
+                    &[table],
+                    &mut Env::new(),
+                )
+                .expect("hash-table-count")
+            };
+            assert_eq!(count(interpreter), Value::Integer(0));
             let free = crate::lisp::alloc::free_conses();
             let mut replacements = crate::lisp::alloc::RootedVec::new();
             for _ in 0..free {
@@ -6974,12 +6997,20 @@ mod tests {
                 replacements.push(replacement);
                 if replacement.word() ^ HIDE == hidden {
                     assert!(
-                        weak.upgrade().is_none(),
+                        crate::lisp::primitives::call(
+                            interpreter,
+                            "gethash",
+                            &[replacement, table],
+                            &mut Env::new(),
+                        )
+                        .expect("gethash")
+                        .is_nil(),
                         "a reused address is a different allocation"
                     );
-                    assert!(
-                        !snapshot.is_current(),
-                        "identical words cannot revive a weak snapshot"
+                    assert_eq!(
+                        count(interpreter),
+                        Value::Integer(0),
+                        "identical words cannot revive a weak table's key"
                     );
                     assert_eq!(
                         replacement.car().expect("live reused cell"),
@@ -6992,11 +7023,24 @@ mod tests {
         }
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
+        let table = crate::lisp::primitives::call(
+            &mut interpreter,
+            "make-hash-table",
+            &[
+                Value::symbol(":test"),
+                Value::symbol("eq"),
+                Value::symbol(":weakness"),
+                Value::symbol("key"),
+            ],
+            &mut Env::new(),
+        )
+        .expect("make-hash-table");
+        interpreter.set_global_binding("native-weak-reuse-table", table);
         let mut heap = NativeHeap::new();
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
-        let (roots, hidden, serial, snapshot) = make_objects();
+        let (roots, hidden, snapshot) = make_objects(&mut interpreter, table);
         crate::lisp::alloc::clobber_stack();
         heap.collect(
             std::ptr::from_ref(&stack_marker),
@@ -7004,23 +7048,25 @@ mod tests {
             &mut interpreter,
             &environment,
         );
-        check_reclamation_and_reuse(&snapshot, hidden, serial);
+        check_reclamation_and_reuse(&mut interpreter, table, &snapshot, hidden);
     }
 
     #[test]
     fn native_gc_keeps_cons_arrays_across_blocks_and_reclaims_them() {
         #[inline(never)]
-        fn make_array(count: usize) -> (usize, Vec<(usize, u64)>) {
-            let mut witnesses = Vec::with_capacity(count);
+        fn make_array(interpreter: &mut Interpreter, table: Value, count: usize) -> usize {
             let root = Value::vector((0..count).map(|index| {
                 let value = Value::cons(Value::Integer(index as i64), Value::Nil);
-                let Kind::Cons(cell) = value.kind() else {
-                    unreachable!("new cons")
-                };
-                witnesses.push((value.word() ^ HIDE, cell.serial()));
+                crate::lisp::primitives::call(
+                    interpreter,
+                    "puthash",
+                    &[value, Value::T, table],
+                    &mut Env::new(),
+                )
+                .expect("puthash");
                 value
             }));
-            (root.word() ^ HIDE, witnesses)
+            root.word() ^ HIDE
         }
         #[inline(never)]
         fn collect_live(
@@ -7047,6 +7093,21 @@ mod tests {
         }
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
+        // Each cons is a key of a weak-key table: its entry goes when the
+        // cons does, as GNU's Lisp observes it.
+        let table = crate::lisp::primitives::call(
+            &mut interpreter,
+            "make-hash-table",
+            &[
+                Value::symbol(":test"),
+                Value::symbol("eq"),
+                Value::symbol(":weakness"),
+                Value::symbol("key"),
+            ],
+            &mut Env::new(),
+        )
+        .expect("make-hash-table");
+        interpreter.set_global_binding("native-weak-array-table", table);
         let mut heap = NativeHeap::new();
         heap.begin_call();
         let stack_marker = 0;
@@ -7057,7 +7118,7 @@ mod tests {
         let before = crate::lisp::alloc::cons_storage_for_test();
         let count =
             crate::lisp::alloc::free_conses() + crate::lisp::alloc::CELLS_PER_BLOCK * 4 + 17;
-        let (hidden, witnesses) = make_array(count);
+        let hidden = make_array(&mut interpreter, table, count);
         let allocated = crate::lisp::alloc::cons_storage_for_test();
         assert!(allocated[0] >= before[0] + 4);
         assert_eq!(allocated[1], 32768);
@@ -7080,14 +7141,17 @@ mod tests {
             heap.decode(hidden ^ HIDE).is_err(),
             "the dropped root is swept too"
         );
-        for (hidden, serial) in witnesses {
-            let weak =
-                crate::lisp::types::WeakConsRef::from_parts((hidden ^ HIDE) & !TAG_MASK, serial);
-            assert!(
-                weak.upgrade().is_none(),
-                "every unrooted cons must be reclaimed"
-            );
-        }
+        assert_eq!(
+            crate::lisp::primitives::call(
+                &mut interpreter,
+                "hash-table-count",
+                &[table],
+                &mut Env::new()
+            )
+            .expect("hash-table-count"),
+            Value::Integer(0),
+            "every unrooted cons must be reclaimed"
+        );
         let after = crate::lisp::alloc::cons_storage_for_test();
         assert!(
             after[0] < allocated[0],
@@ -13469,9 +13533,13 @@ mod tests {
         fn make_buffer(interpreter: &mut Interpreter) -> (u64, [usize; 4]) {
             let (id, _) = interpreter.create_buffer("retained-dead-buffer");
             let buffer = interpreter.buffer_object(id).expect("created buffer");
-            let property = Value::cons(Value::Integer(37), Value::Nil);
-            let undo = Value::cons(Value::Integer(81), Value::Nil);
-            let style = Value::cons(Value::Integer(283), Value::Nil);
+            // Each alone in its block, so that its address answers for it
+            // until the next cons is allocated after a sweep.
+            let property =
+                crate::lisp::alloc::cons_alone_in_new_block(Value::Integer(37), Value::Nil);
+            let undo = crate::lisp::alloc::cons_alone_in_new_block(Value::Integer(81), Value::Nil);
+            let style =
+                crate::lisp::alloc::cons_alone_in_new_block(Value::Integer(283), Value::Nil);
             {
                 let mut state = buffer.borrow_mut();
                 *state = crate::buffer::Buffer::from_text(
@@ -13505,7 +13573,7 @@ mod tests {
             for word in &hidden[1..] {
                 let address = (word ^ HIDE) & !TAG_MASK;
                 assert_eq!(
-                    crate::lisp::alloc::allocated_serial(address).is_some(),
+                    crate::lisp::alloc::cons_allocated_at(address),
                     editing_live,
                     "editing payload survives while live and is reclaimed after kill"
                 );
@@ -13571,7 +13639,7 @@ mod tests {
             // Two references to one object, as GNU Fcurrent_buffer returns.
             let typed_reference = native_reference;
             heap.encode(&native_reference).expect("initial buffer word");
-            let cons = Value::cons(typed_reference, Value::Nil);
+            let cons = crate::lisp::alloc::cons_alone_in_new_block(typed_reference, Value::Nil);
             let word = heap.encode(&cons).expect("cons containing the same buffer");
             interpreter.set_global_binding("retained-buffer-cons", cons);
             [
@@ -13587,7 +13655,7 @@ mod tests {
         fn check_payloads(hidden: [usize; 4], reachable: bool) {
             let cons_address = (hidden[0] ^ HIDE) & !TAG_MASK;
             assert_eq!(
-                crate::lisp::alloc::allocated_serial(cons_address).is_some(),
+                crate::lisp::alloc::cons_allocated_at(cons_address),
                 reachable,
                 "the rooted cons survives and is reclaimed after removing its root"
             );
@@ -13728,15 +13796,16 @@ mod tests {
     #[test]
     fn native_gc_traces_interpreter_roots_and_current_native_fields() {
         #[inline(never)]
-        fn build(
-            heap: &mut NativeHeap,
-            interpreter: &mut Interpreter,
-        ) -> ([usize; 3], (usize, u64)) {
+        fn build(heap: &mut NativeHeap, interpreter: &mut Interpreter) -> ([usize; 3], usize) {
+            // The old child alone in its block: its address answers for
+            // it until a cons is allocated after the sweep.
+            crate::lisp::alloc::abandon_cons_frontier();
             let old_child = heap.cons(TAG_FIXNUM_LOW, 0);
+            crate::lisp::alloc::abandon_cons_frontier();
             let new_child = heap.cons((9 << FIXNUM_BITS) + TAG_FIXNUM_LOW, 0);
             let parent = heap.cons(old_child, 0);
             let old_owner = match heap.decode(old_child).expect("old child").kind() {
-                Kind::Cons(cell) => (cell.as_ptr() as usize ^ HIDE, cell.serial()),
+                Kind::Cons(cell) => cell.as_ptr() as usize ^ HIDE,
                 _ => panic!("old cons"),
             };
             interpreter.set_global_binding("native-gc-root", heap.decode(parent).expect("parent"));
@@ -13752,8 +13821,7 @@ mod tests {
         heap.begin_call();
         let stack_marker = 0;
         heap.set_stack_bottom(std::ptr::from_ref(&stack_marker));
-        let ([old_child, new_child, parent], (old_address, old_serial)) =
-            build(&mut heap, &mut interpreter);
+        let ([old_child, new_child, parent], old_address) = build(&mut heap, &mut interpreter);
         crate::lisp::alloc::clobber_stack();
 
         heap.collect(
@@ -13771,9 +13839,8 @@ mod tests {
             heap.decode(old_child ^ HIDE).is_err(),
             "the replaced child is no longer allocated"
         );
-        let old_owner = crate::lisp::types::WeakConsRef::from_parts(old_address ^ HIDE, old_serial);
         assert!(
-            old_owner.upgrade().is_none(),
+            !crate::lisp::alloc::cons_allocated_at(old_address ^ HIDE),
             "the replaced child must leave the typed census too"
         );
     }
@@ -14061,15 +14128,20 @@ mod tests {
     #[test]
     fn native_gc_marks_reachable_generated_conses_and_frees_the_rest() {
         #[inline(never)]
-        fn garbage(heap: &mut NativeHeap) -> Vec<(usize, u64)> {
-            (0..5_000)
+        fn garbage(heap: &mut NativeHeap) -> Vec<usize> {
+            // In blocks of their own: no other cons shares them before the
+            // sweep, so an address answers for its cons until a cons is
+            // allocated after it.
+            crate::lisp::alloc::abandon_cons_frontier();
+            let garbage = (0..5_000)
                 .map(|index| {
                     let word = heap.cons((index << FIXNUM_BITS) | TAG_FIXNUM_LOW, 0);
-                    let serial = crate::lisp::alloc::allocated_serial(word & !TAG_MASK)
-                        .expect("allocated cons");
-                    (word ^ HIDE, serial)
+                    assert!(crate::lisp::alloc::cons_allocated_at(word & !TAG_MASK));
+                    word ^ HIDE
                 })
-                .collect()
+                .collect();
+            crate::lisp::alloc::abandon_cons_frontier();
+            garbage
         }
         let mut interpreter = Interpreter::new();
         let environment = Env::new();
@@ -14089,11 +14161,9 @@ mod tests {
         );
         assert!(heap.native_cons_is_live(head.wrapping_sub(TAG_CONS) as *const NativeCons));
         assert!(heap.native_cons_is_live(tail.wrapping_sub(TAG_CONS) as *const NativeCons));
-        for (hidden, serial) in garbage {
-            let weak =
-                crate::lisp::types::WeakConsRef::from_parts((hidden ^ HIDE) & !TAG_MASK, serial);
+        for hidden in garbage {
             assert!(
-                weak.upgrade().is_none(),
+                !crate::lisp::alloc::cons_allocated_at((hidden ^ HIDE) & !TAG_MASK),
                 "each of the 5,000 unreachable allocations must be reclaimed"
             );
         }
@@ -15097,8 +15167,10 @@ mod tests {
                 crate::lisp::eval::terminal::TerminalState::initial(),
             );
             interpreter.terminals.insert(0, object);
-            let payload = Value::cons(Value::Integer(97), Value::Nil);
-            let control = Value::cons(Value::Integer(113), Value::Nil);
+            let payload =
+                crate::lisp::alloc::cons_alone_in_new_block(Value::Integer(97), Value::Nil);
+            let control =
+                crate::lisp::alloc::cons_alone_in_new_block(Value::Integer(113), Value::Nil);
             object.set_parameter(Value::symbol("retained-terminal-value"), payload);
             [
                 Value::Terminal(object).word(),
@@ -15147,7 +15219,7 @@ mod tests {
             );
             for (word, expected) in hidden[1..].iter().zip([retained, false]) {
                 assert_eq!(
-                    crate::lisp::alloc::allocated_serial((word ^ HIDE) & !TAG_MASK).is_some(),
+                    crate::lisp::alloc::cons_allocated_at((word ^ HIDE) & !TAG_MASK),
                     expected,
                     "parameter survives with its terminal; unrooted control is reclaimed"
                 );
@@ -18076,17 +18148,18 @@ mod tests {
     fn native_gc_discards_cons_views_swept_by_another_heap() {
         #[inline(never)]
         fn make_cons(heap: &mut NativeHeap) -> usize {
+            crate::lisp::alloc::abandon_cons_frontier();
             let word = heap.cons((42 << FIXNUM_BITS) | TAG_FIXNUM_LOW, 0);
+            crate::lisp::alloc::abandon_cons_frontier();
             heap.decode(word).expect("attach a typed cons view");
             word ^ HIDE
         }
 
         #[inline(never)]
         fn check_reclaimed(hidden: usize) {
-            assert_eq!(
-                crate::lisp::alloc::allocated_serial((hidden ^ HIDE) - TAG_CONS),
-                None
-            );
+            assert!(!crate::lisp::alloc::cons_allocated_at(
+                (hidden ^ HIDE) - TAG_CONS
+            ));
         }
 
         #[inline(never)]
