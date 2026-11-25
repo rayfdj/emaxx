@@ -2711,6 +2711,207 @@ pub(crate) fn runtime_threads_start_with_process_signals_blocked() {
     );
 }
 
+/// The calls by which native code's helpers signal, `remember_helper_error'
+/// and `remember_active_helper_error', longjmp past the Rust frames between
+/// them and the handler or escape record they jump to (`jump_nonlocal'), as
+/// eval.c:unwind_to_catch longjmps past C frames.  Those frames must be
+/// plain: nothing in them is dropped, and nothing after the call runs.
+///
+/// What it checks, on the runtime's sources with comments and literals
+/// removed, for every call of either (but the functions' own definitions):
+/// that the call ends its arm or block, nothing following it there but a
+/// trivial value (`0', `false', `None', `Some(0)', a null pointer, or a
+/// `return' of one); and that no local of an owning type (Vec, SmallVec,
+/// String, Box, Rc, a Ref or RefMut, a MutexGuard: its type or its
+/// initializer naming one, or a call making one) is live at the call in the
+/// innermost function holding it: bound before it in a block that encloses
+/// it, and not given to `drop' before it; nor is a parameter of such a type.
+/// An initializer is read at its own level: the blocks in it (a closure's
+/// body, a block expression, a match arm) are not.
+///
+/// What it does not prove: that the frames further up (the function's
+/// callers, down to the handler) are plain; that a type it cannot see (an
+/// inferred one whose initializer names none of those at its own level)
+/// owns nothing; or that the call is on an error path.  Those rest on
+/// `jump_nonlocal''s rule and on review.
+pub(crate) fn native_helper_errors_leave_plain_frames() {
+    let call = regex::Regex::new(r"(?:^|[^\w:])(remember_(?:active_)?helper_error)\s*\(")
+        .expect("compile helper error call pattern");
+    let header =
+        regex::Regex::new(r"\bfn\s+(\w+)\s*(?:<[^>{]*>)?\s*\(").expect("compile fn pattern");
+    let binding = regex::Regex::new(r"\blet\s+(?:mut\s+)?").expect("compile let pattern");
+    let owning = regex::Regex::new(
+        r"\b(?:Vec|SmallVec|String|Box|Rc|Ref|RefMut|MutexGuard)\b|smallvec::|\bvec!|\bformat!|\.to_string\s*\(|\.to_owned\s*\(|\.to_vec\s*\(|\.collect\b|\.borrow(?:_mut)?\s*\(\s*\)\s*;$|\.lock\s*\(\s*\)",
+    )
+    .expect("compile owning type pattern");
+    let owning_parameter = regex::Regex::new(
+        r"\b\w+\s*:\s*(?:Vec|SmallVec|String|Box|Rc|MutexGuard)\b|\b\w+\s*:\s*smallvec::",
+    )
+    .expect("compile owning parameter pattern");
+    let trivial = regex::Regex::new(
+        r"^\s*(?:return\b\s*)?(?:0|false|None|Some\s*\(\s*0\s*\)|std::ptr::null_mut\s*\(\s*\))?\s*;?\s*$",
+    )
+    .expect("compile trivial tail pattern");
+    let root = repo_root();
+    let mut violations = Vec::new();
+    let mut calls_seen = 0usize;
+    for path in rust_files_below("src") {
+        let relative = path
+            .strip_prefix(root)
+            .expect("a source below the repository")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative.starts_with("src/bin/")
+            || relative.ends_with("/tests.rs")
+            || relative.ends_with("_tests.rs")
+            || relative.contains("/tests/")
+            || relative == "src/test_support.rs"
+            || relative == "src/anti_cheat.rs"
+        {
+            continue;
+        }
+        let text = without_test_modules(&code_only(
+            &fs::read_to_string(&path).expect("read a runtime source"),
+        ));
+        if !call.is_match(&text) {
+            continue;
+        }
+        // Each function's name, parameters and body (start, end).
+        let functions: Vec<(String, String, usize, usize)> = header
+            .captures_iter(&text)
+            .filter_map(|found| {
+                let whole = found.get(0).expect("the header");
+                let parameters = call_arguments(&text[whole.end() - 1..])?.to_owned();
+                let body = whole.end() - 1 + parameters.len();
+                let open = body + text[body..].find('{')?;
+                if text[body..open].contains(';') {
+                    return None;
+                }
+                let block = balanced_block(&text, open)?;
+                Some((found[1].to_owned(), parameters, open, open + block.len()))
+            })
+            .collect();
+        for found in call.captures_iter(&text) {
+            let name = found.get(1).expect("the called name");
+            let at = name.start();
+            if text[..at].trim_end().ends_with("fn") {
+                // A definition, not a call.
+                continue;
+            }
+            let line = text[..at].matches('\n').count() + 1;
+            let Some((function, parameters, start, end)) = functions
+                .iter()
+                .filter(|(_, _, start, end)| *start < at && at < *end)
+                .max_by_key(|(_, _, start, _)| *start)
+            else {
+                violations.push(format!("{relative}:{line}: a call outside a function"));
+                continue;
+            };
+            if function == "remember_helper_error" {
+                continue;
+            }
+            calls_seen += 1;
+            let arguments = call_arguments(&text[name.end()..]).expect("the call's arguments");
+            let after = &text
+                [name.end() + text[name.end()..].find('(').expect("a call") + arguments.len()..];
+            let after = after.trim_start_matches(|c: char| c == ')' || c.is_whitespace());
+            let tail_ends = after.starts_with(',')
+                || after.starts_with('}')
+                || after.starts_with(';')
+                    && after[1..]
+                        .find('}')
+                        .is_some_and(|close| trivial.is_match(&after[1..1 + close]));
+            if !tail_ends {
+                violations.push(format!(
+                    "{relative}:{line}: {function}: the call does not end its arm or block"
+                ));
+            }
+            if owning_parameter.is_match(parameters) {
+                violations.push(format!(
+                    "{relative}:{line}: {function}: a parameter of an owning type"
+                ));
+            }
+            let body = &text[*start..*end];
+            let call_offset = at - start;
+            for local in binding.find_iter(body) {
+                if local.start() >= call_offset {
+                    break;
+                }
+                // The statement, to its `;' outside brackets.
+                let mut depth = 0usize;
+                let mut statement_end = body.len();
+                for (offset, byte) in body[local.start()..].bytes().enumerate() {
+                    match byte {
+                        b'(' | b'[' | b'{' => depth += 1,
+                        b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                        b';' if depth == 0 => {
+                            statement_end = local.start() + offset + 1;
+                            break;
+                        }
+                        _ => {}
+                    }
+                }
+                if statement_end > call_offset {
+                    continue;
+                }
+                let statement = &body[local.start()..statement_end];
+                // The binding's type and its initializer's own level: what a
+                // block in it (a closure's body, a block expression, a match
+                // arm) binds ends with the block.
+                let mut level = String::new();
+                let mut depth = 0usize;
+                for character in statement.chars() {
+                    match character {
+                        '{' => depth += 1,
+                        '}' => depth = depth.saturating_sub(1),
+                        _ if depth == 0 => level.push(character),
+                        _ => {}
+                    }
+                }
+                if !owning.is_match(&level) {
+                    continue;
+                }
+                // The innermost block holding the binding must hold the call.
+                let mut depth = 0usize;
+                let mut encloses = true;
+                for byte in body[local.start()..call_offset].bytes() {
+                    match byte {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            if depth == 0 {
+                                encloses = false;
+                                break;
+                            }
+                            depth -= 1;
+                        }
+                        _ => {}
+                    }
+                }
+                let bound = body[local.end()..]
+                    .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                    .next()
+                    .unwrap_or_default();
+                let dropped = !bound.is_empty()
+                    && body[statement_end..call_offset].contains(&format!("drop({bound})"));
+                if encloses && !dropped {
+                    violations.push(format!(
+                        "{relative}:{line}: {function}: `{}' is live across the call",
+                        statement.split_whitespace().collect::<Vec<_>>().join(" ")
+                    ));
+                }
+            }
+        }
+    }
+    assert!(
+        calls_seen > 60,
+        "the gate must find the helpers' callers, found {calls_seen}"
+    );
+    assert!(
+        violations.is_empty(),
+        "native helper errors that jump past a frame with something to drop: {violations:#?}"
+    );
+}
+
 /// pdumper.c:dump_roots visits every staticpro'd slot.  Every root the
 /// mark phase visits (the `self.<field>' references of the root-marking
 /// function) must be written by the image (`dump_root_values' or
@@ -3150,6 +3351,10 @@ fn enforce_all_owned() -> Result<(), Vec<String>> {
             thread_locals_are_released_with_the_runtime_or_per_os_thread as fn(),
         ),
         (
+            "native_helper_errors_leave_plain_frames",
+            native_helper_errors_leave_plain_frames as fn(),
+        ),
+        (
             "runtime_threads_start_with_process_signals_blocked",
             runtime_threads_start_with_process_signals_blocked as fn(),
         ),
@@ -3294,6 +3499,11 @@ mod gate_tests {
     #[test]
     fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
         super::thread_locals_are_released_with_the_runtime_or_per_os_thread();
+    }
+
+    #[test]
+    fn native_helper_errors_leave_plain_frames() {
+        super::native_helper_errors_leave_plain_frames();
     }
 
     #[test]

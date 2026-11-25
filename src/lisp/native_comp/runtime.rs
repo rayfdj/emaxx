@@ -4534,19 +4534,21 @@ fn invoke_native_mapcar(active: &ActiveCall, arguments: &[NativeWord]) -> Option
         // mapcar1's Ffuncall, as `invoke_subr' reaches it for funcall: the
         // handlers brought to the ABI's state, then the direct path.
         let words = [*function, item];
-        mapped[mapped_count] = match unsafe { &mut *active.runtime }
-            .sync_handlers(unsafe { &mut *active.interpreter })
+        if let Err(error) =
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
         {
-            Err(error) => {
-                remember_helper_error(active, error);
-                0
-            }
-            Ok(()) => match plain_native_funcall(active, &words)
-                .or_else(|| invoke_native_funcall(active, &words))
-            {
-                Some(result) => result,
-                None => invoke_subr(funcall, &words),
-            },
+            // The results go before the signal jumps past this frame
+            // (`jump_nonlocal').
+            unsafe { &mut *active.runtime }.pop_ephemeral_root_range(mapped.len());
+            drop(mapped);
+            remember_helper_error(active, error);
+            return Some(0);
+        }
+        mapped[mapped_count] = match plain_native_funcall(active, &words)
+            .or_else(|| invoke_native_funcall(active, &words))
+        {
+            Some(result) => result,
+            None => invoke_subr(funcall, &words),
         };
         if native_call_has_pending_error(active) {
             unsafe { &mut *active.runtime }.pop_ephemeral_root_range(mapped.len());
@@ -4759,18 +4761,21 @@ fn invoke_native_make_closure(active: &ActiveCall, arguments: &[NativeWord]) -> 
             return 0;
         }
     };
-    let mut decoded_vars = smallvec::SmallVec::<[Value; 8]>::new();
-    for closure_var in closure_vars {
-        match decode_word(active, *closure_var) {
-            Ok(closure_var) => decoded_vars.push(closure_var),
-            Err(error) => {
-                remember_helper_error(active, error);
-                return 0;
-            }
-        }
-    }
-    let closure = match unsafe { &mut *active.interpreter }.make_closure(&prototype, &decoded_vars)
-    {
+    // The decoded words live in this block alone: a signal below jumps
+    // past this frame, which then holds nothing to drop (`jump_nonlocal').
+    let closure = {
+        let mut decoded_vars = smallvec::SmallVec::<[Value; 8]>::new();
+        closure_vars
+            .iter()
+            .try_for_each(|closure_var| {
+                decoded_vars.push(decode_word(active, *closure_var)?);
+                Ok(())
+            })
+            .and_then(|()| {
+                unsafe { &mut *active.interpreter }.make_closure(&prototype, &decoded_vars)
+            })
+    };
+    let closure = match closure {
         Ok(closure) => closure,
         Err(error) => {
             remember_helper_error(active, error);
@@ -5471,6 +5476,21 @@ unsafe extern "C" {
 
 /// longjmp to BUFFER: a handler's buffer, which generated code filled
 /// with `_setjmp', or an invocation's escape buffer.
+///
+/// The rule for a non-local exit past Rust frames.  eval.c:unwind_to_catch
+/// longjmps past C frames, which own nothing; a Rust frame this jump
+/// leaves is not unwound, so every frame between the call and BUFFER's
+/// `_setjmp' (the helper's, the closures `with_active' runs, the subr
+/// dispatch's and the shim's) must be a plain old frame: nothing in it has
+/// a destructor that would run later (no Vec, SmallVec, String, Box, Rc,
+/// borrow or lock guard is live in it), and nothing after the jumping call
+/// in it remains to be done.  A helper signals by calling
+/// `remember_helper_error' or `remember_active_helper_error' as the last
+/// thing on its error path, with what it owned already dropped; a Lisp
+/// error inside Rust is an `Err' until then, and a Rust panic never
+/// reaches native frames (an `extern "C"' boundary aborts on one).  The
+/// gate `native_helper_errors_leave_plain_frames' checks each caller's
+/// call and live locals, not the frames further up.
 unsafe fn jump_nonlocal(buffer: *mut c_void) -> ! {
     // SAFETY: both kinds of buffer are larger than 68 bytes, and glibc's
     // `_setjmp' wrote the word at 64 of a handler's.
@@ -7168,6 +7188,72 @@ mod tests {
         } else {
             value
         }
+    }
+
+    /// This process's resident set, in bytes (/proc/self/statm's second
+    /// field, in pages).
+    #[cfg(target_os = "linux")]
+    fn resident_bytes() -> usize {
+        let statm = std::fs::read_to_string("/proc/self/statm").expect("read statm");
+        let pages: usize = statm
+            .split_whitespace()
+            .nth(1)
+            .and_then(|field| field.parse().ok())
+            .expect("statm's resident field");
+        // SAFETY: sysconf reads a constant.
+        pages * usize::try_from(unsafe { libc::sysconf(libc::_SC_PAGESIZE) }).expect("page size")
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn a_signalling_native_many_call_leaks_nothing() {
+        // make-closure, a MANY subr, given more words than SmallVec keeps
+        // inline (the call's own arguments and the decoded closure
+        // variables both spill), signals wrong-type-argument through
+        // `remember_helper_error', whose jump passes the helper's frame:
+        // nothing it owned may be left behind (`jump_nonlocal').
+        std::thread::spawn(|| {
+            let mut interpreter = Interpreter::new();
+            let mut environment = Env::new();
+            let mut runtime = NativeRuntime::default();
+            let arguments: Vec<Value> = (1..=12).map(Value::Integer).collect();
+            let mut signal = |interpreter: &mut Interpreter, environment: &mut Env| {
+                runtime
+                    .invoke(
+                        interpreter,
+                        environment,
+                        direct_native_make_closure as *const c_void,
+                        NativeCallingConvention::Many,
+                        &arguments,
+                    )
+                    .expect_err("a fixnum is no closure prototype")
+                    .condition_type()
+                    == "wrong-type-argument"
+            };
+            let collect = |interpreter: &mut Interpreter, environment: &mut Env| {
+                crate::lisp::primitives::call(interpreter, "garbage-collect", &[], environment)
+                    .expect("collect");
+            };
+            for _ in 0..2_000 {
+                assert!(signal(&mut interpreter, &mut environment));
+            }
+            collect(&mut interpreter, &mut environment);
+            let before = resident_bytes();
+            for round in 0..100_000 {
+                assert!(signal(&mut interpreter, &mut environment));
+                if round % 5_000 == 4_999 {
+                    collect(&mut interpreter, &mut environment);
+                }
+            }
+            collect(&mut interpreter, &mut environment);
+            let grown = resident_bytes().saturating_sub(before);
+            assert!(
+                grown <= 1 << 20,
+                "100,000 signalling calls grew the resident set by {grown} bytes"
+            );
+        })
+        .join()
+        .expect("the signalling calls' thread");
     }
 
     #[test]
