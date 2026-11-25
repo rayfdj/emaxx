@@ -9529,3 +9529,13 @@ fn initial_default_file_modes() -> i64 {
 
 #[cfg(test)]
 mod function_cell_tests;
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the pooled frame details, which held Lisp objects, go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&FRAME_DETAIL_POOL, |pool| {
+        if let Ok(mut pool) = pool.try_borrow_mut() {
+            pool.clear();
+        }
+    });
+}

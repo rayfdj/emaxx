@@ -1,14 +1,6 @@
 use super::*;
 use crate::lisp::primitives::string_like;
 use crate::lisp::types::Kind;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::path::PathBuf;
-
-thread_local! {
-    static SEMANTIC_CPP_INCLUDE_TAG_CACHE: RefCell<HashMap<PathBuf, Vec<Value>>> =
-        RefCell::new(HashMap::new());
-}
 
 pub(crate) fn restore_unicode_menu_case_table(
     interp: &mut Interpreter,
@@ -1605,18 +1597,6 @@ pub(super) fn direct_symbol_name(
         _ => return Err(wrong_type_argument("symbolp", args[0])),
     };
     Ok(symbol_name.lisp_name())
-}
-
-/// Include tags are roots while cached. The captured Unicode menu table is
-/// marked with the editor that owns it.
-pub(crate) fn mark_semantic_cache_roots(mark: &mut dyn FnMut(&Value)) {
-    SEMANTIC_CPP_INCLUDE_TAG_CACHE.with_borrow(|cache| {
-        for tags in cache.values() {
-            for tag in tags {
-                mark(tag);
-            }
-        }
-    });
 }
 
 /// The `garbage-collect' primitive, callable directly (a subr's function

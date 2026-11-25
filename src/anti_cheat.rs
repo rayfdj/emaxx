@@ -1743,6 +1743,727 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
     );
 }
 
+/// The text of the brace-balanced item whose header starts at START (its
+/// first `{' and the matching `}').
+fn balanced_block(text: &str, start: usize) -> Option<&str> {
+    let open = start + text[start..].find('{')?;
+    let mut depth = 0usize;
+    for (offset, byte) in text[open..].bytes().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[start..=open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The argument list of the call whose name ends where TEXT starts (its
+/// first `(' and the matching `)').
+fn call_arguments(text: &str) -> Option<&str> {
+    let open = text.find('(')?;
+    let mut depth = 0usize;
+    for (offset, byte) in text[open..].bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[open..=open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// SOURCE without its `#[cfg(test)]' modules (inline or declared).
+fn without_test_modules(source: &str) -> String {
+    let module = regex::Regex::new(
+        r"(?m)^#\[cfg\(test\)\]\n(?:#\[[^\n]*\]\n)*(?:pub(?:\(crate\))? )?mod [a-z_0-9]+ *(;|\{)",
+    )
+    .expect("compile test module pattern");
+    let mut kept = String::new();
+    let mut rest = source;
+    while let Some(found) = module.captures(rest) {
+        let whole = found.get(0).expect("the module header");
+        kept.push_str(&rest[..whole.start()]);
+        let skip = if &found[1] == ";" {
+            whole.end()
+        } else {
+            whole.start()
+                + balanced_block(&rest[whole.start()..], 0)
+                    .map_or(rest.len() - whole.start(), str::len)
+        };
+        rest = &rest[skip..];
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// A thread-local that holds Lisp objects must not outlive the runtime's
+/// stay on its OS thread: such a root is marked only by a collection on
+/// that thread (`mark_static_roots_into' reads the collecting thread's
+/// thread-locals), so one left behind names objects another thread's
+/// collection frees.  Every `thread_local!' of the runtime (src/, less
+/// binaries, test modules and test support) is therefore reset by its
+/// module's `release_thread_state' (reached from the runtime's, which every
+/// release of the runtime runs) or by the allocation frontier's `take'
+/// (which the runtime's release calls), or is listed below with the reason
+/// it is the OS thread's own.  A thread-local whose type holds a Lisp handle
+/// (a Lisp object word or handle type, a closure, or a crate type holding
+/// one, three levels down) may be listed only in the second table, with the
+/// reason it is not editor state.
+pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
+    // Not editor state, and no Lisp object in it.
+    const PER_OS_THREAD: &[(&str, &str, &str)] = &[
+        (
+            "src/allocator.rs",
+            "SMALL_BLOCKS",
+            "the host allocator's per-thread free lists",
+        ),
+        (
+            "src/allocator.rs",
+            "FLUSH_AT_EXIT",
+            "returns the host allocator's blocks when the thread exits",
+        ),
+        (
+            "src/compat.rs",
+            "BOOT_ENV_WRITE_HELD",
+            "this thread holds the boot-environment write guard",
+        ),
+        (
+            "src/tty.rs",
+            "TERMINAL_GONE",
+            "the frontend's terminal hangup flag, no Lisp object",
+        ),
+        (
+            "src/tty.rs",
+            "PAINT_TERMINAL",
+            "the frontend's terminal colors and sent strings, no Lisp object",
+        ),
+        (
+            "src/lisp/alloc.rs",
+            "PARKED_STACKS",
+            "this OS thread's parked coroutine stacks",
+        ),
+        (
+            "src/lisp/alloc.rs",
+            "DRIVER_REGIONS",
+            "this OS thread's stacks driving coroutines",
+        ),
+        (
+            "src/lisp/alloc.rs",
+            "STACK_TOP",
+            "this OS thread's collection's stack top",
+        ),
+        (
+            "src/lisp/alloc/strings.rs",
+            "LIVE_GUARDS",
+            "the string guards alive on this OS thread's stacks",
+        ),
+        (
+            "src/lisp/runtime.rs",
+            "ENTERED",
+            "how this OS thread holds the runtime",
+        ),
+        (
+            "src/lisp/runtime.rs",
+            "TENURE",
+            "gives this OS thread's tenure back at its exit",
+        ),
+        (
+            "src/lisp/reader.rs",
+            "INFILE_LOADS",
+            "a count of nested loads, no Lisp object",
+        ),
+        (
+            "src/lisp/modules/mod.rs",
+            "MODULE_GC",
+            "set during a module call's collection",
+        ),
+        (
+            "src/lisp/bytecode/verify.rs",
+            "CACHE",
+            "verified code by address, checked against CODE_CHANGES and VECTOR_SWEEPS",
+        ),
+        (
+            "src/lisp/bytecode/verify.rs",
+            "VERIFIED",
+            "verified code by address, checked against CODE_CHANGES and VECTOR_SWEEPS",
+        ),
+        (
+            "src/lisp/bytecode/verify.rs",
+            "CLOSURES_SWEPT",
+            "the VECTOR_SWEEPS count CLOSURES was filled at",
+        ),
+        (
+            "src/lisp/native_comp/loader.rs",
+            "ACTIVE_COMPILER",
+            "set during a native compilation call",
+        ),
+        (
+            "src/lisp/native_comp/runtime.rs",
+            "ACTIVE_GC",
+            "set during a native call's collection",
+        ),
+        (
+            "src/lisp/native_comp/runtime.rs",
+            "ACTIVE_GC_TRIGGER",
+            "a native call's collection counter",
+        ),
+        (
+            "src/lisp/native_comp/runtime.rs",
+            "NATIVE_EXECUTION_ACTIVATIONS",
+            "this OS thread's native activations",
+        ),
+        (
+            "src/lisp/native_comp/runtime.rs",
+            "NATIVE_EXECUTION_LOCK_HELD",
+            "this OS thread's hold of the native lock",
+        ),
+        (
+            "src/lisp/primitives/accessors_random.rs",
+            "RANDOM",
+            "the random state, a C global without Lisp objects",
+        ),
+        (
+            "src/lisp/primitives/file_io.rs",
+            "AUTO_SAVING",
+            "fileio.c's auto_saving, a C flag",
+        ),
+        (
+            "src/lisp/primitives/file_io.rs",
+            "AUTO_SAVE_MODE_BITS",
+            "fileio.c's auto_save_mode_bits, a C int",
+        ),
+        (
+            "src/lisp/primitives/file_io.rs",
+            "AUTO_SAVE_ERROR_OCCURRED",
+            "fileio.c's auto_save_error_occurred, a C flag",
+        ),
+        (
+            "src/lisp/primitives/file_io.rs",
+            "AUTO_SAVING_DIR_UMASK",
+            "fileio.c's auto_saving_dir_umask, a C int",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "SYMBOL_WITH_POS_FLAG_READ_COUNT",
+            "a count of flag reads, no Lisp object",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "TTY_CURSOR_IN_ECHO_AREA",
+            "a C flag of the tty cursor",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "TTY_READ_END_TIME",
+            "the tty read's deadline, a time",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "RAW_EVENT_READ",
+            "a C flag of the tty read",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "TTY_IDLE_START",
+            "keyboard.c's timer_idleness_start_time, a time",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "TTY_LAST_IDLE_START",
+            "keyboard.c's timer_last_idleness_start_time, a time",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "READ_CHAR_RETRY",
+            "a C flag of read_char",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "READ_RECORDED",
+            "a C flag of read_char",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "READ_USED_MOUSE_MENU",
+            "a C flag of read_char",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "READ_MENU_EXIT",
+            "a C flag of read_char",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "LAST_EVENT_SOURCE",
+            "where the last event came from, an enumeration",
+        ),
+        (
+            "src/lisp/primitives/search.rs",
+            "PATTERN_CODES",
+            "the compiler's scratch codes",
+        ),
+        (
+            "src/lisp/primitives/search.rs",
+            "COMPILES",
+            "a count of compiled patterns",
+        ),
+        (
+            "src/lisp/primitives/tz.rs",
+            "TZFILES",
+            "time zone files by name, host data",
+        ),
+        (
+            "src/lisp/primitives/tz.rs",
+            "ZONES",
+            "time zones by name, host data",
+        ),
+        (
+            "src/lisp/primitives/window.rs",
+            "INTERACTIVE_WINDOW_METRICS",
+            "the frontend's window end, a position",
+        ),
+        (
+            "src/lisp/primitives/window.rs",
+            "SCROLL_PRESERVE",
+            "window.c's scroll positions, two integers",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "KEYBOARD_WAITING_THREAD",
+            "a thread id",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "FORCE_QUIT_COUNT",
+            "keyboard.c's force_quit_count, a C int",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "WAITING_FOR_INPUT",
+            "keyboard.c's waiting_for_input, a C flag",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "QUIT_THROWN_TO_READ_CHAR",
+            "a C flag of read_char",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "QUIT_CHAR",
+            "keyboard.c's quit_char, a C int",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "TTY_INPUT_MODES",
+            "the terminal's input modes, host data",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "FRAME_GARBAGED",
+            "frame_garbaged, a C flag",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "TTY_SHOWING_MENU",
+            "a C flag of the tty menu",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "INPUT_WAS_PENDING",
+            "keyboard.c's input_was_pending, a C flag",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "REDISPLAY_INPUT_PENDING",
+            "a C flag of redisplay",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "LAST_AUTO_SAVE",
+            "keyboard.c's last_auto_save, a C int",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "LAST_NON_MINIBUF_SIZE",
+            "keyboard.c's last_non_minibuf_size, a C int",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "REDISPLAYING_P",
+            "xdisp.c's redisplaying_p, a C flag",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "DEV_TTY",
+            "whether the terminal is /dev/tty, a flag",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "TTY_ERASE_CHAR",
+            "the terminal's erase character, a byte",
+        ),
+        (
+            "src/lisp/primitives/dispatch/display.rs",
+            "ECHO_PRESERVE_REDISPLAY",
+            "a C flag of the echo area",
+        ),
+        (
+            "src/lisp/primitives/dispatch/display.rs",
+            "ECHO_FROM_PRINT",
+            "a C flag of the echo area",
+        ),
+        (
+            "src/lisp/primitives/dispatch/display.rs",
+            "MESSAGE_LOG_NEED_NEWLINE",
+            "xdisp.c's message_log_need_newline, a C flag",
+        ),
+        (
+            "src/lisp/primitives/dispatch/display.rs",
+            "ECHO_MESSAGE_TICK",
+            "a count of echo-area messages",
+        ),
+        (
+            "src/lisp/primitives/dispatch/misc.rs",
+            "DOC_FILE_CACHE",
+            "documentation text by file, host data",
+        ),
+        (
+            "src/lisp/primitives/dispatch/misc.rs",
+            "LISP_SOURCE_DOC_CACHE",
+            "documentation text by file, host data",
+        ),
+        (
+            "src/lisp/primitives/dispatch/display/mode_line.rs",
+            "LINE_NUMBER_DISPLAYED",
+            "xdisp.c's line_number_displayed, a C flag",
+        ),
+        (
+            "src/lisp/primitives/print/object.rs",
+            "PRINT_OBJECTS",
+            "a count of print calls",
+        ),
+        (
+            "src/lisp/eval/continuations.rs",
+            "CURRENT_STACK_BASE",
+            "this OS thread's stack base",
+        ),
+        (
+            "src/lisp/eval/continuations.rs",
+            "CURRENT_STACK_LIMIT",
+            "this OS thread's stack limit",
+        ),
+        (
+            "src/lisp/eval/continuations.rs",
+            "C_STACK_FLOOR",
+            "this OS thread's stack floor",
+        ),
+        (
+            "src/lisp/eval/core.rs",
+            "PROFILE_CHILD_STACK",
+            "the host profiler's timings",
+        ),
+        (
+            "src/lisp/eval/core.rs",
+            "PROFILE_TABLE",
+            "the host profiler's table",
+        ),
+        (
+            "src/lisp/eval/core.rs",
+            "PROFILE_DUMP_COUNTDOWN",
+            "the host profiler's countdown",
+        ),
+        (
+            "src/lisp/eval/terminal.rs",
+            "DEFAULT_TTY_COLORS",
+            "terminal color strings, host data",
+        ),
+        (
+            "src/lisp/eval/terminal.rs",
+            "TPUTS_OUTPUT",
+            "tputs's output buffer, bytes",
+        ),
+        (
+            "src/lisp/eval/threads.rs",
+            "READ_BUFFER",
+            "a read buffer, bytes",
+        ),
+        (
+            "src/lisp/regex_emacs/compile.rs",
+            "WORK",
+            "the regex compiler's scratch",
+        ),
+        (
+            "src/lisp/regex_emacs/exec.rs",
+            "SPARE_STATE",
+            "the matcher's scratch",
+        ),
+    ];
+    // Lisp words or handles that are not editor state: each is set only
+    // for the length of a call (and empty between calls, when the runtime
+    // can go), or is checked against a global epoch before use.
+    const LISP_PER_OS_THREAD: &[(&str, &str, &str)] = &[
+        (
+            "src/lisp/modules/mod.rs",
+            "ACTIVE_ENVS",
+            "a module call's activations, set only during the call",
+        ),
+        (
+            "src/lisp/modules/mod.rs",
+            "ACTIVE_RUNTIMES",
+            "a module call's environments, set only during the call",
+        ),
+        (
+            "src/lisp/bytecode/verify.rs",
+            "CLOSURES",
+            "closure entries by address, rebuilt when VECTOR_SWEEPS changes",
+        ),
+        (
+            "src/lisp/bytecode/verify.rs",
+            "CLOSURE_TABLE",
+            "closure entries by address, rebuilt when VECTOR_SWEEPS changes",
+        ),
+        (
+            "src/lisp/native_comp/loader.rs",
+            "ACTIVE_REGISTERED_RUNTIME",
+            "the native runtime of a load, set only during it",
+        ),
+        (
+            "src/lisp/native_comp/runtime.rs",
+            "ACTIVE_CALL",
+            "the running native call, set only during it",
+        ),
+        (
+            "src/lisp/eval/continuations.rs",
+            "CURRENT_RESUME",
+            "the running coroutine's resume context, set only while it runs",
+        ),
+    ];
+    let lisp_handle = regex::Regex::new(
+        r"\b(Value|FrameRef|TerminalRef|WindowRef|BufferRef|SymbolName|ConsRef|StringObjectRef|VectorRef|CharTableRef|RecordRef|MarkerRef|OverlayRef|Env|Symbols|SharedStringState)\b|dyn\s+Fn",
+    )
+    .expect("compile Lisp handle pattern");
+    let definition = regex::Regex::new(
+        r"(?m)^\s*(?:pub(?:\((?:crate|super)\))?\s+)?(?:struct|enum|type)\s+([A-Z][A-Za-z0-9_]*)\b",
+    )
+    .expect("compile definition pattern");
+    let identifier =
+        regex::Regex::new(r"\b[A-Z][A-Za-z0-9_]*\b").expect("compile identifier pattern");
+    let local = regex::Regex::new(
+        r"(?m)^\s*(?:pub(?:\((?:crate|super)\))?\s+)?static\s+([A-Z][A-Z0-9_]*)\s*:\s*(.+?)\s*=",
+    )
+    .expect("compile thread-local pattern");
+    let root = repo_root();
+    let sources: Vec<(String, String)> = rust_files_below("src")
+        .into_iter()
+        .map(|path| {
+            let relative = path
+                .strip_prefix(root)
+                .expect("a source below the repository")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let text = fs::read_to_string(&path).expect("read a runtime source");
+            (relative, without_test_modules(&text))
+        })
+        .collect();
+    // Crate definitions by name, for the types a thread-local's names.
+    let mut definitions: std::collections::HashMap<String, Vec<String>> = Default::default();
+    for (_, text) in &sources {
+        for found in definition.captures_iter(text) {
+            let whole = found.get(0).expect("the definition");
+            let rest = &text[whole.end()..];
+            let body = match (rest.find(';'), rest.find('{')) {
+                (Some(semi), Some(brace)) if brace < semi => {
+                    balanced_block(rest, 0).unwrap_or(&rest[..semi])
+                }
+                (Some(semi), _) => &rest[..semi],
+                (None, Some(_)) => balanced_block(rest, 0).unwrap_or(rest),
+                (None, None) => rest,
+            };
+            definitions
+                .entry(found[1].to_owned())
+                .or_default()
+                .push(body.to_owned());
+        }
+    }
+    fn holds_lisp(
+        kind: &str,
+        depth: usize,
+        seen: &mut std::collections::BTreeSet<String>,
+        handle: &regex::Regex,
+        identifier: &regex::Regex,
+        definitions: &std::collections::HashMap<String, Vec<String>>,
+    ) -> bool {
+        if handle.is_match(kind) {
+            return true;
+        }
+        depth > 0
+            && identifier.find_iter(kind).any(|name| {
+                seen.insert(name.as_str().to_owned())
+                    && definitions.get(name.as_str()).is_some_and(|bodies| {
+                        bodies.iter().any(|body| {
+                            holds_lisp(body, depth - 1, seen, handle, identifier, definitions)
+                        })
+                    })
+            })
+    }
+    let runtime_file = |path: &str| {
+        !(path.starts_with("src/bin/")
+            || path.ends_with("/tests.rs")
+            || path.ends_with("_tests.rs")
+            || path.contains("/tests/")
+            || path == "src/test_support.rs"
+            || path == "src/anti_cheat.rs")
+    };
+    let function_body = |text: &str, header: &str| -> Option<String> {
+        let at = text.find(header)?;
+        balanced_block(text, at).map(str::to_owned)
+    };
+    let stem = |path: &str| {
+        let file = path.rsplit('/').next().unwrap_or(path);
+        file.trim_end_matches(".rs").to_owned()
+    };
+    // The release path: runtime.rs's release, run at every release.
+    let runtime = &sources
+        .iter()
+        .find(|(path, _)| path == "src/lisp/runtime.rs")
+        .expect("the runtime's source")
+        .1;
+    for (owner, header) in [
+        ("impl Drop for Tenure {", "release_thread_state();"),
+        ("impl Drop for Scope {", "release_thread_state();"),
+        (
+            "fn release(&self, poison: bool) {",
+            "crate::lisp::alloc::Frontier::take()",
+        ),
+    ] {
+        let body =
+            function_body(runtime, owner).unwrap_or_else(|| panic!("{owner} in the runtime"));
+        assert!(body.contains(header), "{owner} must call {header}");
+    }
+    let release_bodies: Vec<(String, String)> = sources
+        .iter()
+        .filter(|(path, _)| runtime_file(path))
+        .filter_map(|(path, text)| {
+            function_body(text, "fn release_thread_state() {").map(|body| (path.clone(), body))
+        })
+        .collect();
+    let frontier_bodies: Vec<(String, String)> = sources
+        .iter()
+        .filter(|(path, _)| runtime_file(path))
+        .filter_map(|(path, text)| {
+            let frontier = text.find("impl Frontier {")?;
+            function_body(&text[frontier..], "fn take() -> Self {").map(|body| (path.clone(), body))
+        })
+        .collect();
+    let called = |path: &str, call: &str| {
+        release_bodies
+            .iter()
+            .chain(&frontier_bodies)
+            .any(|(caller, body)| caller != path && body.contains(call))
+            || (path == "src/lisp/alloc.rs" && runtime.contains("alloc::Frontier::take()"))
+    };
+    let mut violations = Vec::new();
+    for (path, _) in &release_bodies {
+        if path != "src/lisp/runtime.rs"
+            && !called(path, &format!("{}::release_thread_state()", stem(path)))
+        {
+            violations.push(format!("{path}: its release_thread_state is not called"));
+        }
+    }
+    for (path, _) in &frontier_bodies {
+        if !called(path, &format!("{}::Frontier::take()", stem(path))) {
+            violations.push(format!("{path}: its Frontier::take is not called"));
+        }
+    }
+    let mut found = std::collections::BTreeSet::new();
+    // A release writes the thread-local: it replaces, sets or takes its
+    // cell, or it passes it to `release_local' (or reads it with `with')
+    // in a closure that assigns, sets, replaces, takes or clears.
+    let write = regex::Regex::new(r"\*\w+ = |\.(?:set|replace|take|store)\(|\.clear\(\)")
+        .expect("compile write pattern");
+    let resets = |text: &str, name: &str| {
+        let direct = regex::Regex::new(&format!(r"\b{name}\.(?:replace|set|take|store)\("))
+            .expect("compile direct write pattern");
+        let call = regex::Regex::new(&format!(r"release_local\(&{name},|\b{name}\.with\("))
+            .expect("compile release call pattern");
+        direct.is_match(text)
+            || call.find_iter(text).any(|at| {
+                call_arguments(&text[at.start()..])
+                    .is_some_and(|arguments| write.is_match(arguments))
+            })
+    };
+    for (path, text) in sources.iter().filter(|(path, _)| runtime_file(path)) {
+        let mut rest = text.as_str();
+        while let Some(at) = rest.find("thread_local! {") {
+            let block = balanced_block(rest, at).expect("a thread_local! block");
+            for local in local.captures_iter(block) {
+                let (name, kind) = (&local[1], &local[2]);
+                found.insert((path.clone(), name.to_owned()));
+                let released = release_bodies
+                    .iter()
+                    .chain(&frontier_bodies)
+                    .any(|(owner, body)| owner == path && resets(body, name));
+                let plain = PER_OS_THREAD
+                    .iter()
+                    .any(|(file, listed, _)| file == path && *listed == name);
+                let lisp_listed = LISP_PER_OS_THREAD
+                    .iter()
+                    .any(|(file, listed, _)| file == path && *listed == name);
+                let lisp = holds_lisp(
+                    kind,
+                    3,
+                    &mut Default::default(),
+                    &lisp_handle,
+                    &identifier,
+                    &definitions,
+                );
+                match (released, plain, lisp_listed, lisp) {
+                    (true, false, false, _) | (false, true, false, false) | (false, false, true, true) => {}
+                    (false, false, false, _) => violations.push(format!(
+                        "{path}: {name}: {kind} is neither released with the runtime nor the OS thread's own"
+                    )),
+                    (false, true, false, true) => violations.push(format!(
+                        "{path}: {name}: {kind} holds Lisp objects: release it, or list why it is not editor state"
+                    )),
+                    (false, false, true, false) => violations.push(format!(
+                        "{path}: {name}: {kind} holds no Lisp object: list it with the plain entries"
+                    )),
+                    _ => violations.push(format!("{path}: {name}: both released and listed")),
+                }
+            }
+            rest = &rest[at + block.len()..];
+        }
+    }
+    for (file, name, reason) in PER_OS_THREAD.iter().chain(LISP_PER_OS_THREAD) {
+        assert!(!reason.is_empty(), "{file}: {name}: give the reason");
+        if !found.contains(&((*file).to_owned(), (*name).to_owned())) {
+            violations.push(format!(
+                "{file}: {name}: listed but not a thread-local there"
+            ));
+        }
+    }
+    assert!(
+        found.len() > 100,
+        "the inventory must find the runtime's thread-locals, found {}",
+        found.len()
+    );
+    assert!(
+        violations.is_empty(),
+        "thread-locals not released with the runtime nor documented as the OS thread's own: {violations:#?}"
+    );
+}
+
 /// pdumper.c:dump_roots visits every staticpro'd slot.  Every root the
 /// mark phase visits (the `self.<field>' references of the root-marking
 /// function) must be written by the image (`dump_root_values' or
@@ -2178,6 +2899,10 @@ fn enforce_all_owned() -> Result<(), Vec<String>> {
             interpreter_value_fields_are_gc_roots_or_documented as fn(),
         ),
         (
+            "thread_locals_are_released_with_the_runtime_or_per_os_thread",
+            thread_locals_are_released_with_the_runtime_or_per_os_thread as fn(),
+        ),
+        (
             "gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration",
             gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration as fn(),
         ),
@@ -2313,6 +3038,11 @@ mod gate_tests {
     #[test]
     fn interpreter_value_fields_are_gc_roots_or_documented() {
         super::interpreter_value_fields_are_gc_roots_or_documented();
+    }
+
+    #[test]
+    fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
+        super::thread_locals_are_released_with_the_runtime_or_per_os_thread();
     }
 
     #[test]

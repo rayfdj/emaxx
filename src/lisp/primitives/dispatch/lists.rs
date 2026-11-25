@@ -218,6 +218,7 @@ struct ReadMinibufArgs<'a> {
     history: Value,
     defalt: Value,
     allow_props: bool,
+    inherit_input_method: bool,
 }
 
 /// minibuf.c:read_minibuf past its noninteractive reader: the minibuffer
@@ -238,6 +239,7 @@ fn read_minibuf(
         history,
         defalt,
         allow_props,
+        inherit_input_method,
     } = args;
     let histvar = match history.cons_values() {
         Some((variable, _)) => variable,
@@ -249,6 +251,13 @@ fn read_minibuf(
     } else {
         histvar
     };
+    // `current-input-method' is buffer local: remembered in INPUT_METHOD
+    // before the minibuffer is made current.
+    let input_method = inherit_input_method.then(|| {
+        interp
+            .symbol_value_key(cached_symbol!("current-input-method"))
+            .unwrap_or(Value::Nil)
+    });
     let minibuffer = crate::lisp::primitives::activate_minibuffer_with_history(
         interp,
         prompt,
@@ -258,7 +267,7 @@ fn read_minibuf(
         env,
     )?;
     let buffer_id = minibuffer.buffer_id;
-    let val = run_active_minibuffer(interp, env, minibuffer, |interp, env| {
+    let val = run_active_minibuffer(interp, env, minibuffer, input_method, |interp, env| {
         crate::lisp::primitives::recursive_edit_1(interp, env)?;
         // Make minibuffer contents into a string: with properties when
         // the caller allowed them or `minibuffer-allow-text-properties' is
@@ -1707,7 +1716,6 @@ define_dispatch!(
                     let inherit = args
                         .get(if name == "read-from-minibuffer" { 6 } else { 4 })
                         .is_some_and(Value::is_truthy);
-                    crate::lisp::primitives::inherit_minibuffer_input_method(interp, inherit);
                     let allow_props = interp
                         .forwarded_c_value("minibuffer-allow-text-properties")
                         .is_some_and(|value| value.is_truthy());
@@ -1721,6 +1729,7 @@ define_dispatch!(
                             history,
                             defalt: default,
                             allow_props,
+                            inherit_input_method: inherit,
                         },
                     )?;
                     // If Lisp form desired instead of string, parse it.

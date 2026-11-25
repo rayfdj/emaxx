@@ -2475,3 +2475,13 @@ mod c_string_match_tests {
         }
     }
 }
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the compiled patterns, which hold their patterns' translate tables, go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&SEARCHBUFS, |bufs| {
+        if let Ok(mut bufs) = bufs.try_borrow_mut() {
+            *bufs = SearchBufs::default();
+        }
+    });
+}

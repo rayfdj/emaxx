@@ -938,3 +938,13 @@ fn adjust_point_for_property(
     }
     Ok(())
 }
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the frontend's echo-area resize hook goes.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&RESIZE_ECHO_AREA_EXACTLY, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+}

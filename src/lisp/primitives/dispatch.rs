@@ -526,7 +526,6 @@ pub(crate) fn mark_thread_local_roots(mark: &mut dyn FnMut(&Value)) {
     crate::lisp::eval::terminal::mark_frame_route(mark);
     crate::lisp::types::mark_interned_symbol_roots(mark);
     display::mark_echo_area_roots(mark);
-    misc_keymaps::mark_semantic_cache_roots(mark);
 }
 
 /// decode_live_frame for the primitives outside dispatch: nil the
@@ -536,4 +535,9 @@ pub(crate) fn decode_live_frame(
     value: Option<&Value>,
 ) -> Result<crate::lisp::types::FrameRef, LispError> {
     frames::decode_live_frame(interp, value, true)
+}
+
+/// The dispatchers' share of `runtime::release_thread_state'.
+pub(crate) fn release_thread_state() {
+    display::release_thread_state();
 }

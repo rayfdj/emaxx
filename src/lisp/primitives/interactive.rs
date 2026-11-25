@@ -3433,3 +3433,32 @@ pub(crate) fn clear_this_command(interp: &mut Interpreter) {
         interp.set_symbol_value_cell(name, Value::Nil);
     }
 }
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the frontend's event, redraw and discard hooks, and the echo area's
+/// previous message, a Lisp object, go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&TTY_EVENT_READER, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+    crate::lisp::runtime::release_local(&TTY_EVENT_POLLER, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+    crate::lisp::runtime::release_local(&TTY_FRAME_REDRAW, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+    crate::lisp::runtime::release_local(&PREVIOUS_ECHO_AREA_MESSAGE, |cell| cell.set(None));
+    crate::lisp::runtime::release_local(&TTY_INPUT_DISCARD, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+    kbd_input::release_thread_state();
+    command_loop::release_thread_state();
+}

@@ -3362,3 +3362,10 @@ pub(super) fn parse_partial_sexp(
         },
     ]))
 }
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// gl_state and the scan's remembered start, which name Lisp objects, go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&GL_STATE, |cell| cell.set(None));
+    crate::lisp::runtime::release_local(&FIND_START, |cell| cell.set(None));
+}

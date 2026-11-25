@@ -76,6 +76,7 @@ impl Drop for Tenure {
                 tenure: false,
                 ..entered
             });
+            release_thread_state();
             // The thread's own panic was caught before its thread-locals
             // went: a failed test does not poison the runtime for the next.
             RUNTIME.release(false);
@@ -272,13 +273,29 @@ pub(crate) fn release_while<R>(wait: impl FnOnce() -> R) -> R {
     if !held() {
         return wait();
     }
-    let entered = ENTERED.replace(Entered {
-        tenure: false,
-        boundary: false,
+    // alloc.c:mark_threads marks every thread's stack, and GNU's C globals
+    // are the process's.  Ours mark the collecting OS thread's stacks and
+    // thread-locals only: the lender's editor state, which it keeps, and
+    // its stacks are entered in the heap-root registry for the wait.
+    let mut roots = Vec::new();
+    let mut keep = |value: &crate::lisp::types::Value| roots.push(*value);
+    crate::lisp::primitives::profiler::mark_profiler(&mut keep);
+    crate::lisp::primitives::atimer::mark_atimers(&mut keep);
+    crate::lisp::primitives::mark_thread_local_roots(&mut keep);
+    let roots = crate::lisp::alloc::RootedVec::from_vec(roots);
+    let base = crate::lisp::eval::continuations::current_stack_base().map(|base| base as usize);
+    // The runtime is taken again before the stacks leave the registry.
+    let result = crate::lisp::alloc::with_stacks_lent(base, || {
+        let entered = ENTERED.replace(Entered {
+            tenure: false,
+            boundary: false,
+        });
+        RUNTIME.release(false);
+        let _retake = Retake(entered);
+        wait()
     });
-    RUNTIME.release(false);
-    let _retake = Retake(entered);
-    wait()
+    drop(roots);
+    result
 }
 
 /// The outermost scoped entry on an OS thread. It holds the runtime for
@@ -318,8 +335,40 @@ impl Drop for Scope {
             ..ENTERED.get()
         });
         if self.acquired {
+            release_thread_state();
             RUNTIME.release(std::thread::panicking());
         }
+    }
+}
+
+/// The editor state the runtime leaves in this OS thread's thread-locals
+/// when it goes: GNU's C globals of the process, which a later holder
+/// finds as a new process does.  Those that hold Lisp objects are marked
+/// only by a collection on this thread (`mark_static_roots_into'), so one
+/// left behind would name objects another thread's collection freed.
+/// Each module resets its own (the anti-cheat gate
+/// `thread_locals_are_released_with_the_runtime_or_per_os_thread' checks
+/// that every thread-local is reset here or is the OS thread's own).  A
+/// thread that lends the runtime keeps its state (`release_while').
+fn release_thread_state() {
+    crate::lisp::primitives::profiler::release_thread_state();
+    crate::lisp::primitives::atimer::release_thread_state();
+    crate::lisp::primitives::release_thread_state();
+    crate::lisp::eval::terminal::release_thread_state();
+    crate::lisp::eval::release_thread_state();
+    crate::lisp::reader::release_thread_state();
+    crate::lisp::types::release_thread_state();
+}
+
+/// RESET the thread-local KEY of the runtime that leaves this OS thread,
+/// unless the thread's exit has already destroyed it (its contents went
+/// with it).
+pub(crate) fn release_local<T: 'static>(
+    key: &'static std::thread::LocalKey<T>,
+    reset: impl FnOnce(&T),
+) {
+    if key.try_with(reset).is_err() {
+        // Destroyed: nothing of it is left to release.
     }
 }
 
@@ -810,5 +859,53 @@ mod tests {
             .or_else(|| refused.downcast_ref::<String>().map(String::as_str))
             .expect("the assertion's message");
         assert!(message.contains("outlived"), "{message}");
+    }
+
+    #[test]
+    fn a_release_leaves_no_editor_state_on_the_thread() {
+        // GNU's C globals are the process's: a scoped entry's editor state
+        // goes with the runtime, as a later call finds a new process's.
+        std::thread::spawn(|| {
+            with_runtime(|| {
+                let mut interp = crate::lisp::eval::Interpreter::new();
+                assert_eq!(fixnum(&mut interp, "(progn (profiler-memory-start) 1)"), 1);
+                assert!(!crate::lisp::primitives::profiler::profiler_memory_running_p().is_nil());
+            });
+            assert!(!held());
+            assert!(crate::lisp::primitives::profiler::profiler_memory_running_p().is_nil());
+        })
+        .join()
+        .expect("the scoped entry's thread");
+    }
+
+    #[test]
+    fn a_lender_keeps_its_editor_state_and_its_objects() {
+        // A thread that lends the runtime keeps its editor state, and the
+        // objects only its stack and its thread-locals hold survive the
+        // borrower's collections (alloc.c's mark_threads).
+        std::thread::spawn(|| {
+            let mut interp = crate::lisp::eval::Interpreter::new();
+            assert_eq!(fixnum(&mut interp, "(progn (profiler-memory-start) 1)"), 1);
+            let kept = std::hint::black_box(Value::cons(Value::Integer(41), Value::Nil));
+            let Kind::Cons(cell) = kept.kind() else {
+                unreachable!("a cons")
+            };
+            let address = cell.as_ptr() as usize;
+            let serial = crate::lisp::alloc::allocated_serial(address);
+            let borrower = std::thread::spawn(|| {
+                let mut interp = crate::lisp::eval::Interpreter::new();
+                fixnum(
+                    &mut interp,
+                    "(let ((i 0)) (while (< i 3) (make-list 5000 nil) (garbage-collect) (setq i (1+ i))) i)",
+                )
+            });
+            assert_eq!(release_while(|| borrower.join()).expect("the borrower"), 3);
+            assert_eq!(crate::lisp::alloc::allocated_serial(address), serial);
+            assert_eq!(kept.car().expect("a cons"), Value::Integer(41));
+            assert!(!crate::lisp::primitives::profiler::profiler_memory_running_p().is_nil());
+            std::hint::black_box(&kept);
+        })
+        .join()
+        .expect("the lender's thread");
     }
 }

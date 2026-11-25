@@ -1245,3 +1245,18 @@ fn thrown_to_read_char(interp: &mut Interpreter, env: &mut Env) -> Result<bool, 
     quit_throw_to_read_char(interp, env, false)?;
     Ok(take_quit_thrown_to_read_char())
 }
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the frontend's keyboard terminal and sys-modes hook go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&KEYBOARD_TERMINAL, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+    crate::lisp::runtime::release_local(&SYS_MODES_HOOK, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+}

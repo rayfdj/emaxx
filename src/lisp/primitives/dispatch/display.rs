@@ -8578,6 +8578,31 @@ fn redraw_frame_flags(interp: &mut Interpreter, frame: crate::lisp::types::Frame
     }
 }
 
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the echo area's messages, their face spans and its display hook go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&ECHO_AREA_MESSAGE, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+    crate::lisp::runtime::release_local(&ECHO_AREA_MESSAGE_VALUE, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+    crate::lisp::runtime::release_local(&ECHO_AREA_LAST_DISPLAYED, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+    crate::lisp::runtime::release_local(&ECHO_AREA_DISPLAY, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

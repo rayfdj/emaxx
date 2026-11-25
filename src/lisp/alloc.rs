@@ -1444,6 +1444,65 @@ pub(crate) fn mark_all_stacks(current_base: Option<usize>, mut mark: impl FnMut(
     }
 }
 
+/// alloc.c:mark_threads marks the stack of every thread, those waiting
+/// for the global lock included; `mark_all_stacks' scans the collecting OS
+/// thread's.  A thread that gives the runtime up while BODY waits
+/// (`runtime::release_while') enters its stacks in the heap-root registry
+/// for that time: its own, from the registers spilled here to BASE (else
+/// its OS stack's base), its parked coroutines' and the stacks driving
+/// them.  BODY takes the runtime again before it returns.
+#[cfg(test)]
+#[inline(never)]
+pub(crate) fn with_stacks_lent<R>(base: Option<usize>, body: impl FnOnce() -> R) -> R {
+    struct Lent(Vec<usize>);
+    impl Drop for Lent {
+        fn drop(&mut self) {
+            let mut roots = heap_roots();
+            for &slot in &self.0 {
+                roots.regions[slot] = None;
+                roots.free_slots.push(slot);
+            }
+        }
+    }
+    let mut spill = [0usize; 16];
+    spill_registers(&mut spill);
+    let top = spill.as_ptr() as usize;
+    let mut regions = Vec::new();
+    if let Some(base) = base.or_else(os_stack_base).filter(|&base| base > top) {
+        regions.push((top, base - top));
+    }
+    for (base, sp) in PARKED_STACKS.with_borrow(Clone::clone) {
+        if base > sp {
+            regions.push((sp, base - sp));
+        }
+    }
+    for (sp, base) in DRIVER_REGIONS.with_borrow(Clone::clone) {
+        if base > sp {
+            regions.push((sp, base - sp));
+        }
+    }
+    let lent = {
+        let mut roots = heap_roots();
+        Lent(
+            regions
+                .into_iter()
+                .map(|region| {
+                    let slot = roots.free_slots.pop().unwrap_or_else(|| {
+                        roots.regions.push(None);
+                        roots.regions.len() - 1
+                    });
+                    roots.regions[slot] = Some(region);
+                    slot
+                })
+                .collect(),
+        )
+    };
+    let result = body();
+    drop(lent);
+    std::hint::black_box(&spill);
+    result
+}
+
 /// `Lisp_Object' for a cons: the cell's address, copied freely, valid
 /// while the collector can reach the cell.
 /// GNU's CONS_BLOCK/CONS_INDEX arithmetic: a cell's block is found by

@@ -101,3 +101,43 @@ fn public_ert_entry_preserves_complete_inventory_and_unexpected_failures() {
     assert_eq!(failure.expected, Some(false));
     assert_eq!(emaxx::compat::report_execution_issues(&report).len(), 1);
 }
+
+#[test]
+fn editor_state_left_by_one_os_thread_is_not_read_after_another_collects() {
+    // A public call leaves nothing of its editor in its OS thread's
+    // thread-locals: GNU's C globals are the process's, and the next call
+    // finds them as a new process does.  Before, the memory profiler one
+    // call started still ran in its thread's next call, its log naming
+    // vectors that another thread's collection could free.
+    fn run(form: &str) {
+        let options = BatchRunOptions {
+            no_loadup: true,
+            no_site_lisp: true,
+            eval: vec![form.to_owned()],
+            ..Default::default()
+        };
+        let result = run_batch_process_with_large_stack(options, |outcome| {
+            assert_eq!(outcome, BatchRunOutcome::Exit(0), "{form}");
+            Ok(0)
+        });
+        assert_eq!(result.expect("complete public editor call"), 0);
+    }
+    let (started_tx, started_rx) = std::sync::mpsc::channel();
+    let (collected_tx, collected_rx) = std::sync::mpsc::channel::<()>();
+    let first = std::thread::spawn(move || {
+        run("(progn (profiler-memory-start) (make-vector 128 nil) (make-list 128 nil) nil)");
+        started_tx.send(()).expect("announce the first call");
+        collected_rx.recv().expect("wait for the collection");
+        run(
+            "(if (profiler-memory-running-p) (error \"an earlier call's profiler still runs\") nil)",
+        );
+    });
+    started_rx.recv().expect("the first call ends");
+    std::thread::spawn(|| run("(progn (garbage-collect) nil)"))
+        .join()
+        .expect("the collecting call");
+    collected_tx
+        .send(())
+        .expect("let the first thread call again");
+    first.join().expect("the first thread's calls");
+}

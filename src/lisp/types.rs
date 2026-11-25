@@ -4127,6 +4127,12 @@ pub fn eq_symbol_named(value: impl std::borrow::Borrow<Value>, name: &str) -> bo
     PropertyKey::is(name, *value.borrow())
 }
 
+/// The object types' share of `runtime::release_thread_state'.
+pub(crate) fn release_thread_state() {
+    symbols::release_thread_state();
+    string_data::release_thread_state();
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::{
