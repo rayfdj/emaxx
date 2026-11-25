@@ -1627,6 +1627,8 @@ pub(super) fn direct_garbage_collect(
 #[inline(never)]
 fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value {
     let cons_size = crate::lisp::eval::GNU_CONS_SIZE as i64;
+    // alloc.c's report: each kind's free column is gcstat's, the sweep's.
+    let free = census.free;
     let entry = |name: &str, rest: &[i64]| {
         Value::list(
             std::iter::once(Value::Symbol(name.into()))
@@ -1634,13 +1636,16 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
         )
     };
     Value::list([
-        entry("conses", &[cons_size, census.conses as i64, 0]),
+        entry(
+            "conses",
+            &[cons_size, census.conses as i64, free.conses as i64],
+        ),
         entry(
             "symbols",
             &[
                 crate::lisp::eval::SYMBOL_SIZE as i64,
                 census.symbols as i64,
-                0,
+                free.symbols as i64,
             ],
         ),
         entry(
@@ -1648,7 +1653,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
             &[
                 crate::lisp::eval::STRING_HEADER_SIZE as i64,
                 census.strings as i64,
-                0,
+                free.strings as i64,
             ],
         ),
         entry("string-bytes", &[1, census.string_bytes as i64]),
@@ -1664,7 +1669,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
             &[
                 crate::lisp::eval::GNU_VECTOR_SLOT_SIZE as i64,
                 census.vector_slots as i64,
-                0,
+                free.vector_slots as i64,
             ],
         ),
         entry(
@@ -1672,7 +1677,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
             &[
                 crate::lisp::eval::GNU_FLOAT_SIZE as i64,
                 census.floats as i64,
-                0,
+                free.floats as i64,
             ],
         ),
         entry(
@@ -1680,7 +1685,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
             &[
                 crate::lisp::eval::GNU_INTERVAL_SIZE as i64,
                 census.intervals as i64,
-                0,
+                free.intervals as i64,
             ],
         ),
         entry(

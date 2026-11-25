@@ -1243,10 +1243,6 @@ pub(crate) fn allocate_symbol(cell: SymbolCell) -> SymbolRef {
         // SAFETY: a free cell's first word is the free-list link.
         let next = unsafe { (*head.cast::<FreeSymbol>()).next };
         SYMBOL_FREE_LIST.set(next);
-        FREE_SYMBOLS.store(
-            FREE_SYMBOLS.load(Ordering::Relaxed).saturating_sub(1),
-            Ordering::Relaxed,
-        );
         head
     };
     LIVE_SYMBOLS.store(LIVE_SYMBOLS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
@@ -1441,6 +1437,12 @@ pub(crate) fn allocated_uninterned_symbols() -> usize {
 
 pub(crate) fn live_symbols() -> usize {
     LIVE_SYMBOLS.load(Ordering::Relaxed)
+}
+
+/// gcstat's `total_free_symbols': the last sweep's count (Fmake_symbol does
+/// not lower it).
+pub(crate) fn free_symbols() -> usize {
+    FREE_SYMBOLS.load(Ordering::Relaxed)
 }
 
 #[cfg(test)]

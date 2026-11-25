@@ -729,7 +729,9 @@ pub(crate) fn borrowed_string_roots() -> Vec<Value> {
 }
 
 /// alloc.c:sweep_strings runs after symbol names are no longer needed.
-pub(crate) fn sweep_strings(epoch: u32) {
+/// Returns gcstat's `total_free_strings': the free cells of the blocks it
+/// kept.
+pub(crate) fn sweep_strings(epoch: u32) -> usize {
     let mut free_list = std::ptr::null_mut();
     let mut free_count = 0;
     let (mut strings, mut bytes, mut spans) = (0, 0, 0);
@@ -811,6 +813,7 @@ pub(crate) fn sweep_strings(epoch: u32) {
     LIVE_STRINGS.store(strings, Ordering::Relaxed);
     LIVE_BYTES.store(bytes, Ordering::Relaxed);
     LIVE_SPANS.store(spans, Ordering::Relaxed);
+    free_count
 }
 
 /// A checked build's test of an image block a sweep leaves unread: every

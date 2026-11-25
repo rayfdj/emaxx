@@ -6288,10 +6288,11 @@ impl NativeHeap {
         // symbols, whose weak names must remain readable during their sweep.
         crate::lisp::alloc::sweep_conses(epoch);
         crate::lisp::alloc::sweep_floats(epoch);
-        crate::lisp::alloc::sweep_vectors(epoch);
+        let free_vector_slots = crate::lisp::alloc::sweep_vectors(epoch);
         crate::lisp::eval::purge_freed_records_in_live_states(interpreter);
         crate::lisp::types::sweep_symbol_cells(epoch);
-        crate::lisp::alloc::sweep_strings(epoch);
+        let free_strings = crate::lisp::alloc::sweep_strings(epoch);
+        interpreter.note_sweeps_free_counts(free_strings, free_vector_slots);
     }
 
     #[inline(always)]

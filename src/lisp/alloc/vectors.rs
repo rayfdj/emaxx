@@ -1686,8 +1686,9 @@ pub(crate) fn close_native_units_for_runtime(thread_cell: *mut std::ffi::c_void)
     }
 }
 
-/// alloc.c's `sweep_vectors'.
-pub(crate) fn sweep_vectors(epoch: u32) {
+/// alloc.c's `sweep_vectors'.  Returns gcstat's `total_free_vector_slots':
+/// the words of the free runs it put on the vector blocks' free lists.
+pub(crate) fn sweep_vectors(epoch: u32) -> usize {
     // The byte-code entry cache of this thread forgets each closure freed
     // below, and stays in step; other threads' empty theirs.
     let closures_in_sweep = crate::lisp::bytecode::verify::closures_in_sweep();
@@ -1736,6 +1737,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     }
     clear_free_lists();
     let mut stats = SweepStats::default();
+    let mut free_slots = 0usize;
     // When no vector in the image's blocks died, they are left unread
     // (checked builds read them and assert so).
     let image_unchanged = super::IMAGE_VECTORS.unchanged();
@@ -1814,6 +1816,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
                     setup_free_unlinked(vector, total);
                 } else {
                     setup_on_free_list(vector, total);
+                    free_slots += total / std::mem::size_of::<usize>();
                 }
                 vector = next;
             }
@@ -1855,6 +1858,7 @@ pub(crate) fn sweep_vectors(epoch: u32) {
     LIVE_RECORDS.store(stats.records, Ordering::Relaxed);
     LIVE_RECORD_SLOTS.store(stats.record_slots, Ordering::Relaxed);
     crate::lisp::bytecode::verify::closures_swept(closures_in_sweep);
+    free_slots
 }
 
 /// The vector census (gcstat's `total_vectors' and `total_vector_slots'

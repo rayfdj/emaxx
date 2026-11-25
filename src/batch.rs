@@ -88,6 +88,7 @@ pub fn run_batch_process_with_large_stack(
             let actions = batch_actions(&options);
             let mut interpreter = initialize_batch_interpreter(&options)?;
             let outcome = run_initialized_batch(&mut interpreter, &options, &actions)?;
+            write_physical_record_if_requested(&interpreter)?;
             interpreter.release_external_resources_for_exit();
             // FINISH ends the process: an exit closes the output streams
             // (close_output_streams), and a restart is Fkill_emacs's
@@ -95,6 +96,23 @@ pub fn run_batch_process_with_large_stack(
             finish(outcome)
         })
     })?
+}
+
+/// The perf harness's physical record of the heap at exit, when it named a
+/// file for one (`EMAXX_PERF_PHYSICAL_RECORD'): an account outside Lisp of
+/// what the census reports at GNU's sizes.
+fn write_physical_record_if_requested(interpreter: &Interpreter) -> Result<(), String> {
+    let Some(path) = env::var_os("EMAXX_PERF_PHYSICAL_RECORD") else {
+        return Ok(());
+    };
+    let record = serde_json::to_string_pretty(&interpreter.physical_record())
+        .map_err(|error| format!("encode the physical record: {error}"))?;
+    fs::write(&path, record).map_err(|error| {
+        format!(
+            "write the physical record {}: {error}",
+            Path::new(&path).display()
+        )
+    })
 }
 
 pub(crate) fn with_batch_stack<R>(body: impl FnOnce() -> R) -> Result<R, String> {

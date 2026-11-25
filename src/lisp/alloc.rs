@@ -49,7 +49,7 @@ pub(crate) const STRING_CELL_BYTES: usize = strings::STRING_CELL_SIZE;
 #[cfg(test)]
 pub(crate) use symbols::allocated_uninterned_symbols;
 pub(crate) use symbols::{
-    LispFwd, SymbolInterned, SymbolText, adopt_image_symbol_blocks, allocate_symbol,
+    LispFwd, SymbolInterned, SymbolText, adopt_image_symbol_blocks, allocate_symbol, free_symbols,
     image_cell_words, image_symbol_bytes, image_symbol_offset, live_symbols, sweep_symbols,
 };
 pub use vectors::{ClosureRef, VectorHeader, VectorRef, VectorTag, VectorlikeRef};
@@ -695,10 +695,6 @@ pub(crate) fn allocate_float(value: f64) -> FloatRef {
         // SAFETY: a free cell's first word is the free-list link.
         let next = unsafe { (*head.cast::<FreeFloat>()).next };
         FLOAT_FREE_LIST.set(next);
-        FREE_FLOATS.store(
-            FREE_FLOATS.load(Ordering::Relaxed).saturating_sub(1),
-            Ordering::Relaxed,
-        );
         head
     };
     LIVE_FLOATS.store(LIVE_FLOATS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
@@ -2400,6 +2396,96 @@ pub(crate) fn clobber_stack() {
 
 pub(crate) fn live_conses() -> usize {
     LIVE_CONSES.load(Ordering::Relaxed)
+}
+
+/// One kind of block as the perf harness's physical record states it:
+/// the blocks registered and the image's among them, a block's bytes, and
+/// for a kind of fixed-size cells the cells a block holds and their size
+/// (the rest of the block is its metadata and padding).
+#[derive(Clone, Copy, Debug)]
+pub(crate) struct BlockRecord {
+    pub(crate) kind: &'static str,
+    pub(crate) blocks: usize,
+    pub(crate) image_blocks: usize,
+    pub(crate) block_bytes: usize,
+    pub(crate) cells_per_block: usize,
+    pub(crate) cell_bytes: usize,
+}
+
+/// The block records of every kind, from the registry.
+pub(crate) fn block_records() -> Vec<BlockRecord> {
+    let registry = BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    let count = |kind: BlockKind| {
+        let blocks = &registry.by_kind[kind as usize];
+        (
+            blocks.len(),
+            blocks.values().filter(|&&image| image).count(),
+        )
+    };
+    [
+        (
+            "cons",
+            BlockKind::Cons,
+            block_bytes(BlockKind::Cons),
+            CELLS_PER_BLOCK,
+            CELL_SIZE,
+        ),
+        (
+            "float",
+            BlockKind::Float,
+            block_bytes(BlockKind::Float),
+            FLOATS_PER_BLOCK,
+            FLOAT_CELL_SIZE,
+        ),
+        (
+            "symbol",
+            BlockKind::Symbol,
+            block_bytes(BlockKind::Symbol),
+            SYMBOLS_PER_BLOCK,
+            symbols::SYMBOL_CELL_SIZE,
+        ),
+        (
+            "string",
+            BlockKind::String,
+            block_bytes(BlockKind::String),
+            strings::STRINGS_PER_BLOCK,
+            strings::STRING_CELL_SIZE,
+        ),
+        (
+            "vector",
+            BlockKind::VectorBlock,
+            vectors::VECTOR_BLOCK_SIZE,
+            0,
+            0,
+        ),
+        ("large-vector", BlockKind::LargeVector, 0, 0, 0),
+    ]
+    .into_iter()
+    .map(
+        |(kind, block_kind, block_bytes, cells_per_block, cell_bytes)| {
+            let (blocks, image_blocks) = count(block_kind);
+            BlockRecord {
+                kind,
+                blocks,
+                image_blocks,
+                block_bytes,
+                cells_per_block,
+                cell_bytes,
+            }
+        },
+    )
+    .collect()
+}
+
+/// A float cell's bytes, for the physical record.
+pub(crate) const FLOAT_CELL_BYTES: usize = FLOAT_CELL_SIZE;
+
+/// gcstat's `total_free_floats': the last sweep's count (make_float does
+/// not lower it).
+pub(crate) fn free_floats() -> usize {
+    FREE_FLOATS.load(Ordering::Relaxed)
 }
 
 /// gcstat's `total_free_conses': the last sweep's count (Fcons does not
