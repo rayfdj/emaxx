@@ -2549,6 +2549,33 @@ mod cache_root_tests {
         release_pattern(lent);
     }
 
+    /// The match's syntax setup, in a frame of its own: what it reads (a
+    /// `syntax-table' property's table) is left in the match's gl_state,
+    /// and in this frame's words, which the caller clears when it returns.
+    #[inline(never)]
+    fn set_up_syntax(menv: &mut LispMatchEnv<'_, '_>, at: usize) {
+        menv.setup_syntax(at);
+    }
+
+    /// A match in progress whose gl_state read the text's properties:
+    /// the setup's frames cleared, its quit check runs the debugger, which
+    /// collects there.
+    #[inline(never)]
+    fn collect_in_a_match_reading_properties(interp: &mut Interpreter, env: &mut Env) {
+        crate::lisp::alloc::clobber_stack();
+        // SAFETY: nothing runs Lisp before the quit check keeps the text.
+        let snapshot = unsafe { BufferSnapshot::take(interp) };
+        interp.set_symbol_value_key(cached_symbol!("quit-flag"), Value::T);
+        let mut menv = LispMatchEnv::new(interp, env, None);
+        menv.reads(&snapshot);
+        set_up_syntax(&mut menv, 0);
+        assert!(menv.gl.is_some(), "the match reads the text's properties");
+        // No word of the setup's frames is left to name the table: the
+        // match's gl_state alone holds it from here.
+        crate::lisp::alloc::clobber_stack();
+        assert!(menv.maybe_quit().is_ok(), "the debugger returned");
+    }
+
     #[test]
     fn a_cached_pattern_s_syntax_table_lives_through_a_match_s_collection() {
         // search.c staticpros searchbufs[i].syntax_table: a pattern that
@@ -2599,7 +2626,8 @@ mod cache_root_tests {
         // syntax.c staticpros gl_state.current_syntax_table and old_prop:
         // a match reading `syntax-table' properties holds the property's
         // table, and a collection while it runs (its debugger, which
-        // first takes the property away) keeps the table.
+        // first takes the property away, so that the match's gl_state in
+        // use is all that holds the table) keeps the table.
         let mut interp = initialized_upstream_batch_interpreter();
         let mut env = Env::new();
         lisp(
@@ -2625,7 +2653,7 @@ mod cache_root_tests {
                                   (setq gl-seen (hash-table-count gl-witness))
                                   nil)))"#,
         );
-        collect_in_a_match(&mut interp, &mut env, 0);
+        collect_in_a_match_reading_properties(&mut interp, &mut env);
         crate::lisp::alloc::clobber_stack();
         assert_eq!(
             lisp(&mut interp, &mut env, "gl-seen"),
