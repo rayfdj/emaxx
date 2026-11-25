@@ -13155,9 +13155,19 @@ mod tests {
 
     #[test]
     fn native_gc_marks_current_cons_fields_car_first() {
-        let interpreter = Interpreter::new();
-        for generated in [true, false] {
-            let mut heap = NativeHeap::new();
+        // A collection traces a cons's current fields, the car a native
+        // store wrote and the cdr, and no object it does not reach: the
+        // cons, its fields and an unrelated cons given the same car are a
+        // weak table's keys, made in a frame of its own that is cleared
+        // before the collection (the cons the value of a global).  The
+        // order the marker takes the fields in is its own and is not seen
+        // here.
+        #[inline(never)]
+        fn build(
+            interpreter: &mut Interpreter,
+            heap: &mut NativeHeap,
+            generated: bool,
+        ) -> crate::lisp::types::HashTableRef {
             let car = Value::vector([Value::Integer(1)]);
             let cdr = Value::vector([Value::Integer(2)]);
             let root = if generated {
@@ -13167,23 +13177,46 @@ mod tests {
             };
             let value = heap.decode(root).expect("actual cons");
             let unrelated = Value::cons(Value::Nil, Value::Nil);
-            let Kind::Cons(unrelated_cell) = unrelated.kind() else {
-                unreachable!()
-            };
             unsafe {
                 (*(root.wrapping_sub(TAG_CONS) as *const NativeCons)).set_car(car.word());
                 (*(unrelated.word().wrapping_sub(TAG_CONS) as *const NativeCons))
                     .set_car(car.word());
             }
-            let before = crate::lisp::alloc::vectors::live_vector_census();
-            let (epoch, reached) =
-                crate::lisp::eval::LispReachability::trace_order_for_test(&interpreter, value);
-            assert_eq!(reached, [value, car, cdr]);
+            interpreter.set_global_binding("native-car-first-root", value);
+            crate::test_support::weak_witness_table(
+                interpreter,
+                "native-car-first-witnesses",
+                &[
+                    (value, Value::symbol("cons")),
+                    (car, Value::symbol("car")),
+                    (cdr, Value::symbol("cdr")),
+                    (unrelated, Value::symbol("unrelated")),
+                ],
+            )
+        }
+        let mut interpreter = Interpreter::new();
+        for generated in [true, false] {
+            let mut heap = NativeHeap::new();
+            let table = build(&mut interpreter, &mut heap, generated);
+            crate::lisp::alloc::clobber_stack();
+            let reached = crate::test_support::weak_tags_after_collection(
+                &mut interpreter,
+                &Env::new(),
+                table,
+            );
+            assert_eq!(
+                reached,
+                [
+                    Value::symbol("cons"),
+                    Value::symbol("car"),
+                    Value::symbol("cdr")
+                ]
+            );
             assert!(
-                !unrelated_cell.mark_bit().is_marked(epoch),
+                !reached.contains(&Value::symbol("unrelated")),
                 "only reached objects are marked"
             );
-            assert_eq!(crate::lisp::alloc::vectors::live_vector_census(), before);
+            interpreter.set_global_binding("native-car-first-root", Value::Nil);
         }
     }
 
@@ -13880,25 +13913,28 @@ mod tests {
         });
         assert!(!handler.is_null());
         signaling_frame(&mut interpreter, &table);
-        let error = wrong_type_argument("stringp", Value::Nil);
-        let collect = |interpreter: &mut Interpreter, environment: &Env| {
-            crate::lisp::alloc::clobber_stack();
-            let reachable = interpreter.weak_hash_reachability(environment, &[]);
-            crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachable);
-            id.count()
-        };
+        let collect =
+            |interpreter: &mut Interpreter, environment: &Env, runtime: &mut NativeRuntime| {
+                crate::lisp::alloc::clobber_stack();
+                runtime.begin_garbage_collection(interpreter, environment);
+                id.count()
+            };
         assert_eq!(
-            collect(&mut interpreter, &environment),
+            collect(&mut interpreter, &environment, &mut runtime),
             1,
             "the live argument is rooted"
         );
+        // Made after the collection: its data, in the error's own storage,
+        // is no collection's root (as a signal's data is the signaling C
+        // frame's until it is thrown).
+        let error = wrong_type_argument("stringp", Value::Nil);
         let jump = runtime.prepare_nonlocal_exit(&mut interpreter, &mut environment, error);
         assert_eq!(jump, unsafe {
             handler.cast::<u8>().add(HANDLER_JMP_OFFSET).cast()
         });
         assert_eq!(interpreter.backtrace_frames_len(), 0);
         assert_eq!(
-            collect(&mut interpreter, &environment),
+            collect(&mut interpreter, &environment, &mut runtime),
             0,
             "a caught signal no longer owns its arguments"
         );

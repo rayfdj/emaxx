@@ -2,9 +2,16 @@ use super::*;
 
 #[test]
 fn generic_record_slots_are_the_public_native_payload_and_gc_edges() {
-    let mut interpreter = Interpreter::new();
-    let mut env = Env::new();
-    for count in [0, 1, 9, 257, 4094] {
+    // For one slot, a collection traces the replacement a native store
+    // wrote and not the child it replaced: both are a weak table's keys,
+    // and the record the value of a global, made in a frame of its own
+    // that is cleared before the collection.
+    #[inline(never)]
+    fn check(
+        interpreter: &mut Interpreter,
+        env: &mut Env,
+        count: usize,
+    ) -> Option<crate::lisp::types::HashTableRef> {
         let type_tag = Value::symbol(&format!("inline-record-type-{count}"));
         let old = Value::vector([Value::Integer(17)]);
         let object = interpreter.create_record_with_type(type_tag, vec![old; count]);
@@ -33,44 +40,57 @@ fn generic_record_slots_are_the_public_native_payload_and_gc_edges() {
             object.word()
         );
         assert_eq!(heap.decode(object.word()).expect("checked record"), object);
-        if count == 1 {
-            let current = Value::vector([Value::Integer(43)]);
-            // No Rust payload borrow or reconciliation step surrounds a
-            // native store. The interpreter and tracer read these fields.
-            unsafe { words.add(2).write(current.word()) };
-            assert_eq!(
-                crate::lisp::primitives::call(
-                    &mut interpreter,
-                    "aref",
-                    &[object, Value::Integer(1)],
-                    &mut env
-                )
-                .expect("read the native store"),
-                current
-            );
-            let mut reached = crate::lisp::eval::LispReachability::default();
-            reached.mark(&interpreter, &object);
-            let epoch = crate::lisp::types::current_mark_epoch();
-            let (Kind::Vector(current), Kind::Vector(old)) = (current.kind(), old.kind()) else {
-                unreachable!("vector children")
-            };
-            assert!(
-                current.mark_bit().is_marked(epoch),
-                "trace the replacement child"
-            );
-            assert!(
-                !old.mark_bit().is_marked(epoch),
-                "do not trace the replaced child"
-            );
-            crate::lisp::primitives::call(
-                &mut interpreter,
-                "aset",
-                &[object, Value::Integer(1), Value::Integer(73)],
-                &mut env,
-            )
-            .expect("Lisp writes the same field");
-            assert_eq!(unsafe { words.add(2).read() }, Value::Integer(73).word());
+        if count != 1 {
+            return None;
         }
+        let current = Value::vector([Value::Integer(43)]);
+        // No Rust payload borrow or reconciliation step surrounds a
+        // native store. The interpreter and tracer read these fields.
+        unsafe { words.add(2).write(current.word()) };
+        assert_eq!(
+            crate::lisp::primitives::call(interpreter, "aref", &[object, Value::Integer(1)], env)
+                .expect("read the native store"),
+            current
+        );
+        interpreter.set_global_binding("inline-record-edges-object", object);
+        Some(crate::test_support::weak_witness_table(
+            interpreter,
+            "inline-record-edges-witnesses",
+            &[
+                (current, Value::symbol("current")),
+                (old, Value::symbol("old")),
+            ],
+        ))
+    }
+    let mut interpreter = Interpreter::new();
+    let mut env = Env::new();
+    for count in [0, 1, 9, 257, 4094] {
+        let Some(table) = check(&mut interpreter, &mut env, count) else {
+            continue;
+        };
+        crate::lisp::alloc::clobber_stack();
+        let reached =
+            crate::test_support::weak_tags_after_collection(&mut interpreter, &env, table);
+        assert!(
+            reached.contains(&Value::symbol("current")),
+            "trace the replacement child"
+        );
+        assert!(
+            !reached.contains(&Value::symbol("old")),
+            "do not trace the replaced child"
+        );
+        let object = interpreter
+            .symbol_value("inline-record-edges-object")
+            .expect("the record");
+        let words = (object.word() & !TAG_MASK) as *mut usize;
+        crate::lisp::primitives::call(
+            &mut interpreter,
+            "aset",
+            &[object, Value::Integer(1), Value::Integer(73)],
+            &mut env,
+        )
+        .expect("Lisp writes the same field");
+        assert_eq!(unsafe { words.add(2).read() }, Value::Integer(73).word());
     }
 }
 
@@ -110,10 +130,17 @@ fn make_bytecode_layout_object(
 
 #[test]
 fn bytecode_closure_header_and_words_are_the_native_payload() {
-    let mut interpreter = Interpreter::new();
-    let mut environment = Env::new();
-    for count in 4..=6 {
-        let object = make_bytecode_layout_object(&mut interpreter, &mut environment, count);
+    // A collection traces the constants a native store wrote and not the
+    // ones they replaced: both are a weak table's keys, and the closure
+    // the value of a global, made in a frame of its own that is cleared
+    // before the collection.
+    #[inline(never)]
+    fn check(
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        count: usize,
+    ) -> crate::lisp::types::HashTableRef {
+        let object = make_bytecode_layout_object(interpreter, environment, count);
         let words = (object.word() & !TAG_MASK) as *mut usize;
         // alloc.c:Fmake_byte_code allocates an ordinary vector, then sets
         // PVEC_CLOSURE. Its Lisp fields immediately follow the header.
@@ -124,10 +151,10 @@ fn bytecode_closure_header_and_words_are_the_native_payload() {
         let mut fields = Vec::new();
         for index in 0..count {
             let field = crate::lisp::primitives::call(
-                &mut interpreter,
+                interpreter,
                 "aref",
                 &[object, Value::Integer(index as i64)],
-                &mut environment,
+                environment,
             )
             .expect("ordinary closure field read");
             assert_eq!(unsafe { words.add(index + 1).read() }, field.word());
@@ -144,27 +171,37 @@ fn bytecode_closure_header_and_words_are_the_native_payload() {
         unsafe { words.add(3).write(current.word()) };
         assert_eq!(
             crate::lisp::primitives::call(
-                &mut interpreter,
+                interpreter,
                 "aref",
                 &[object, Value::Integer(2)],
-                &mut environment,
+                environment,
             )
             .expect("read actual native field"),
             current
         );
-        let mut reached = crate::lisp::eval::LispReachability::default();
-        reached.mark(&interpreter, &object);
-        let epoch = crate::lisp::types::current_mark_epoch();
-        let (Kind::Vector(current), Kind::Vector(old)) = (current.kind(), old_constants.kind())
-        else {
-            unreachable!("constant vectors")
-        };
+        interpreter.set_global_binding("closure-constants-edges-object", object);
+        crate::test_support::weak_witness_table(
+            interpreter,
+            "closure-constants-edges-witnesses",
+            &[
+                (current, Value::symbol("current")),
+                (old_constants, Value::symbol("old")),
+            ],
+        )
+    }
+    let mut interpreter = Interpreter::new();
+    let mut environment = Env::new();
+    for count in 4..=6 {
+        let table = check(&mut interpreter, &mut environment, count);
+        crate::lisp::alloc::clobber_stack();
+        let reached =
+            crate::test_support::weak_tags_after_collection(&mut interpreter, &environment, table);
         assert!(
-            current.mark_bit().is_marked(epoch),
+            reached.contains(&Value::symbol("current")),
             "trace current constants"
         );
         assert!(
-            !old.mark_bit().is_marked(epoch),
+            !reached.contains(&Value::symbol("old")),
             "do not trace replaced constants"
         );
     }

@@ -6,57 +6,83 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
 fn file_notification_roots_follow_queue_dispatch_and_error_requeue() {
+    // The queued inputs are made in a frame of their own, cleared before
+    // each collection, so that no test-owned reference conceals an omitted
+    // edge in the queue's root set: each is a weak table's key, and a
+    // collection keeps exactly what the queue holds.
+    #[inline(never)]
+    fn queue(interp: &mut Interpreter, env: &mut Env) -> crate::lisp::types::HashTableRef {
+        let callback = interp
+            .eval(
+                &Reader::new(
+                    "(lambda (event) (garbage-collect)
+                       (if (eq (car event) 'fail) (error \"notification control\")
+                         (setq notification-control-result (length (cadr event)))))",
+                )
+                .read()
+                .expect("read collecting callback")
+                .expect("callback form"),
+                env,
+            )
+            .expect("create collecting callback");
+        let descriptor = Value::cons(Value::Integer(37), Value::Integer(4));
+        let events = [
+            Value::list([Value::symbol("fail")]),
+            Value::list([Value::symbol("second"), Value::string(&"x".repeat(257))]),
+            Value::list([Value::symbol("third"), Value::string(&"y".repeat(113))]),
+        ];
+        for event in events {
+            interp
+                .pending_file_notifications
+                .push(PendingFileNotification {
+                    path: String::new(),
+                    secondary_path: None,
+                    action: String::new(),
+                    callbacks: vec![(descriptor, callback)],
+                    raw_event: Some(event),
+                });
+        }
+        crate::test_support::weak_witness_table(
+            interp,
+            "file-notification-witnesses",
+            &[
+                (events[0], Value::symbol("event-0")),
+                (events[1], Value::symbol("event-1")),
+                (events[2], Value::symbol("event-2")),
+                (descriptor, Value::symbol("descriptor")),
+                (callback, Value::symbol("callback")),
+            ],
+        )
+    }
+    let tags = |names: &[&str]| {
+        names
+            .iter()
+            .map(|name| Value::symbol(name))
+            .collect::<Vec<_>>()
+    };
     let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
     let mut env = Env::new();
-    let callback = interp
-        .eval(
-            &Reader::new(
-                "(lambda (event) (garbage-collect)
-                   (if (eq (car event) 'fail) (error \"notification control\")
-                     (setq notification-control-result (length (cadr event)))))",
-            )
-            .read()
-            .expect("read collecting callback")
-            .expect("callback form"),
-            &mut env,
-        )
-        .expect("create collecting callback");
-    let descriptor = Value::cons(Value::Integer(37), Value::Integer(4));
-    let events = [
-        Value::list([Value::symbol("fail")]),
-        Value::list([Value::symbol("second"), Value::string(&"x".repeat(257))]),
-        Value::list([Value::symbol("third"), Value::string(&"y".repeat(113))]),
-    ];
-    for event in events {
-        interp
-            .pending_file_notifications
-            .push(PendingFileNotification {
-                path: String::new(),
-                secondary_path: None,
-                action: String::new(),
-                callbacks: vec![(descriptor, callback)],
-                raw_event: Some(event),
-            });
-    }
-    // A graph census excludes conservative Rust locals, so a test-owned
-    // reference cannot conceal an omitted edge in the queue's root set.
-    let mut queued = LispReachability::default();
-    interp.mark_static_roots_into(&mut queued);
-    for value in events.into_iter().chain([descriptor, callback]) {
-        assert!(queued.contains(&value), "queued input lost a Lisp edge");
+    let table = queue(&mut interp, &mut env);
+    crate::lisp::alloc::clobber_stack();
+    let queued = crate::test_support::weak_tags_after_collection(&mut interp, &env, table);
+    for tag in tags(&["event-0", "event-1", "event-2", "descriptor", "callback"]) {
+        assert!(queued.contains(&tag), "queued input lost a Lisp edge");
     }
     let error = interp
         .run_pending_file_notifications(&mut env)
         .expect_err("the collecting first callback must propagate its error");
     assert!(error.to_string().contains("notification control"));
     assert_eq!(interp.pending_file_notifications.len(), 2);
-    let mut requeued = LispReachability::default();
-    interp.mark_static_roots_into(&mut requeued);
+    crate::lisp::alloc::clobber_stack();
+    let requeued = crate::test_support::weak_tags_after_collection(&mut interp, &env, table);
     assert!(
-        !requeued.contains(&events[0]),
+        !requeued.contains(&Value::symbol("event-0")),
         "consumed event is no longer a queue root"
     );
-    assert!(requeued.contains(&events[1]) && requeued.contains(&events[2]));
+    assert!(
+        requeued.contains(&Value::symbol("event-1"))
+            && requeued.contains(&Value::symbol("event-2"))
+    );
     assert!(
         interp
             .run_pending_file_notifications(&mut env)
@@ -67,11 +93,11 @@ fn file_notification_roots_follow_queue_dispatch_and_error_requeue() {
         Some(Value::Integer(113))
     );
     assert!(interp.pending_file_notifications.is_empty());
-    let mut finished = LispReachability::default();
-    interp.mark_static_roots_into(&mut finished);
-    for value in events.into_iter().chain([descriptor, callback]) {
+    crate::lisp::alloc::clobber_stack();
+    let finished = crate::test_support::weak_tags_after_collection(&mut interp, &env, table);
+    for tag in tags(&["event-0", "event-1", "event-2", "descriptor", "callback"]) {
         assert!(
-            !finished.contains(&value),
+            !finished.contains(&tag),
             "finished batch retained its Lisp input"
         );
     }
@@ -79,12 +105,15 @@ fn file_notification_roots_follow_queue_dispatch_and_error_requeue() {
 
 #[test]
 fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth() {
-    thread::Builder::new()
-        .stack_size(2 * 1024 * 1024)
-        .spawn(|| {
-            let interp = Interpreter::new();
-            let leaf = Value::String("deep reachable leaf".into());
-            for along_car in [false, true] {
+    // A collection on a 2 MiB stack marks a 100,000-cons path, along the
+    // cdrs and along the cars, and a cycle, to their end: the leaf at the
+    // end, a weak table's key reached only through the path (made in a
+    // frame of its own, cleared before the collection), is kept.
+    #[inline(never)]
+    fn hold(interp: &mut Interpreter, along_car: Option<bool>) -> crate::lisp::types::HashTableRef {
+        let leaf = Value::String("deep reachable leaf".into());
+        let root = match along_car {
+            Some(along_car) => {
                 let mut root = leaf;
                 for _ in 0..100_000 {
                     root = if along_car {
@@ -93,23 +122,48 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
                         Value::cons(Value::Nil, root)
                     };
                 }
-                let mut reached = LispReachability::default();
-                assert!(reached.mark(&interp, &root));
-                assert!(reached.contains(&leaf));
-                assert!(!reached.mark(&interp, &root));
-                assert!(reached.pending.is_empty());
-                let _ = root;
+                root
             }
-            let cycle = Value::cons(Value::vector([leaf]), Value::Nil);
-            let Kind::Cons(cell) = cycle.kind() else {
-                unreachable!("constructed cons");
-            };
-            cell.cdr.set(cycle);
-            let mut reached = LispReachability::default();
-            assert!(reached.mark(&interp, &cycle));
-            assert!(reached.contains(&leaf));
-            assert!(reached.pending.is_empty());
-            cell.cdr.set(Value::Nil);
+            None => {
+                let cycle = Value::cons(Value::vector([leaf]), Value::Nil);
+                let Kind::Cons(cell) = cycle.kind() else {
+                    unreachable!("constructed cons");
+                };
+                cell.cdr.set(cycle);
+                cycle
+            }
+        };
+        interp.set_global_binding("deep-reachable-root", root);
+        crate::test_support::weak_witness_table(
+            interp,
+            "deep-reachable-witnesses",
+            &[(leaf, Value::symbol("leaf"))],
+        )
+    }
+    // The frames `hold' left, cleared (`clobber_stack' is deeper than this
+    // stack).
+    #[inline(never)]
+    fn clear_below() {
+        let mut scratch = std::mem::MaybeUninit::<[usize; 1 << 14]>::uninit();
+        // SAFETY: a write of every word of the array on this frame.
+        unsafe { std::ptr::write_bytes(scratch.as_mut_ptr().cast::<u8>(), 1, 8 << 14) };
+        std::hint::black_box(&scratch);
+    }
+    thread::Builder::new()
+        .stack_size(2 * 1024 * 1024)
+        .spawn(|| {
+            let mut interp = Interpreter::new();
+            let env = Env::new();
+            for along_car in [Some(false), Some(true), None] {
+                let table = hold(&mut interp, along_car);
+                clear_below();
+                assert_eq!(
+                    crate::test_support::weak_tags_after_collection(&mut interp, &env, table),
+                    [Value::symbol("leaf")],
+                    "the leaf at the path's end is reached"
+                );
+                interp.set_global_binding("deep-reachable-root", Value::Nil);
+            }
         })
         .expect("small-stack collector control")
         .join()

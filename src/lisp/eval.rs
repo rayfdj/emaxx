@@ -4815,18 +4815,6 @@ impl LispReachability {
         self.trace_pending(interp)
     }
 
-    #[cfg(test)]
-    pub(crate) fn trace_order_for_test(interp: &Interpreter, value: Value) -> (u32, Vec<Value>) {
-        let mut marked = Self::default();
-        let mut visited = Vec::new();
-        marked.enqueue(&value);
-        while let Some(value) = marked.pending.pop() {
-            visited.push(value);
-            marked.trace_fields(interp, &value);
-        }
-        (marked.epoch, visited)
-    }
-
     /// alloc.c:process_mark_stack: pop an object and push what it holds;
     /// true when something not yet marked was reached since the last
     /// answer (by this drain or by the enqueues before it).

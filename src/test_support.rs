@@ -575,6 +575,53 @@ pub(crate) fn oracle_program_ascii(program: &str) -> String {
     escaped
 }
 
+/// A weak-key `eq' table, the value of the global NAME, holding each of
+/// ENTRIES' keys with its tag: the tags a collection leaves in it name the
+/// keys that collection kept (`weak_tags_after_collection'), as alloc.c's
+/// sweep_weak_hash_tables removes the entry of every key it did not mark.
+/// The caller makes the keys in a frame of its own and clears the stack
+/// under it (`clobber_stack') before the collection, or the conservative
+/// scan keeps them as a C local's objects.
+pub(crate) fn weak_witness_table(
+    interpreter: &mut Interpreter,
+    name: &str,
+    entries: &[(Value, Value)],
+) -> crate::lisp::types::HashTableRef {
+    let mut environment = Env::new();
+    let table = crate::lisp::primitives::call(
+        interpreter,
+        "make-hash-table",
+        &[
+            Value::symbol(":test"),
+            Value::symbol("eq"),
+            Value::symbol(":weakness"),
+            Value::symbol("key"),
+        ],
+        &mut environment,
+    )
+    .expect("a weak-key table");
+    let crate::lisp::types::Kind::HashTable(id) = table.kind() else {
+        panic!("a hash table")
+    };
+    interpreter.set_global_binding(name, table);
+    for &(key, tag) in entries {
+        crate::lisp::primitives::call(interpreter, "puthash", &[key, tag, table], &mut environment)
+            .expect("a weak entry");
+    }
+    id
+}
+
+/// A collection, and the tags TABLE (`weak_witness_table') holds after it,
+/// in the order they were put.
+pub(crate) fn weak_tags_after_collection(
+    interpreter: &mut Interpreter,
+    environment: &Env,
+    table: crate::lisp::types::HashTableRef,
+) -> Vec<Value> {
+    crate::lisp::native_comp::begin_garbage_collection(interpreter, environment);
+    table.entries().map(|(_, _, tag)| tag).collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::{

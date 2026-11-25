@@ -4793,24 +4793,15 @@ mod forwarded_eval_cell_tests {
         table
     }
 
-    /// The values of TABLE's entries a collection keeps.
+    /// The values of TABLE's entries a collection keeps: those left after
+    /// one (alloc.c's sweep_weak_hash_tables drops the others).
     #[inline(never)]
     fn kept(
-        interp: &Interpreter,
+        interp: &mut Interpreter,
         env: &Env,
         table: crate::lisp::types::HashTableRef,
     ) -> Vec<Value> {
-        let marked = interp.weak_hash_reachability(env, &[]);
-        let (_, remove) = marked
-            .tables
-            .iter()
-            .find(|(id, _)| *id == table)
-            .expect("the weak table is marked");
-        table
-            .entries()
-            .filter(|(slot, _, _)| !remove.contains(slot))
-            .map(|(_, _, value)| value)
-            .collect()
+        crate::test_support::weak_tags_after_collection(interp, env, table)
     }
 
     #[test]
@@ -4828,7 +4819,7 @@ mod forwarded_eval_cell_tests {
                 if std::ptr::eq(variable.as_ptr(), &interp.c_variables.load_path)
         ));
         crate::lisp::alloc::clobber_stack();
-        assert_eq!(kept(&interp, &env, table), [Value::Integer(1)]);
+        assert_eq!(kept(&mut interp, &env, table), [Value::Integer(1)]);
         for _ in 0..3 {
             primitives::call(&mut interp, "garbage-collect", &[], &mut env).expect("a collection");
         }
@@ -4852,7 +4843,7 @@ mod forwarded_eval_cell_tests {
         )
         .expect("a store of load-path");
         crate::lisp::alloc::clobber_stack();
-        assert_eq!(kept(&interp, &env, table), Vec::<Value>::new());
+        assert_eq!(kept(&mut interp, &env, table), Vec::<Value>::new());
     }
 
     #[test]
@@ -5082,7 +5073,7 @@ mod forwarded_eval_cell_tests {
         let mut env = Env::new();
         let table = hold_in_a_second_kboard(&mut interp, &mut env);
         crate::lisp::alloc::clobber_stack();
-        assert_eq!(kept(&interp, &env, table), [Value::Integer(1)]);
+        assert_eq!(kept(&mut interp, &env, table), [Value::Integer(1)]);
     }
 
     #[test]
