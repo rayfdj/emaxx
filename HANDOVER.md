@@ -157,6 +157,15 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   plan (docs/plans/d14-symbols.md: one name for the host text, identity
   carried as text and the comparisons with literals made symbols and
   keys, the host text deleted) belongs to A3.6 and is not done.
+- **How a mechanism GNU does not have is judged** (the owner's rule,
+  restated 25 November 2026): Emaxx does a thing GNU's way.  A way of
+  its own stays only where Rust's soundness forces it, with the
+  constraint and its measured cost recorded, or where it is clearly and
+  strictly better in every respect; one that costs anything GNU's does
+  not pay is removed, not tuned.  Applied first to the allocator's
+  mark bits, which a block's epoch cleared lazily at an allocation
+  (a test on every allocation that alloc.c does not make): they are to
+  be cleared by the sweep, as sweep_conses does.
 - **How the exit test is judged on a noisy host** (decided 24
   November 2026): each workload's median at or under 1.00 of GNU in
   the diagnostic run, and the bound of 1.03 applied to each workload
@@ -193,8 +202,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   and thread access; the plan: docs/plans/runtime-ownership.md, stages
   0 to 9).  Round 388: stages 0 to 2; the runtime lock names its
   holder, an editor is built only by the thread holding it, and the
-  tests' gates take one order.  The library tests still need one test
-  thread until allocation takes the lock (stage 3).
+  tests' gates take one order.  Round 389: stages 3 and 4; the
+  allocation frontier and the host obarray are the runtime's, so no OS
+  thread allocates without it; two test threads run without D43's
+  crash when the fixture image exists.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -20717,6 +20728,57 @@ setup_process_coding_systems's check now refuses). A 13-form
   are the lock, the thread's entry flags and the tenure (GNU's
   global_lock, current_thread and run_thread's hold), and of changed
   infrastructure the test-thread setting and the test support's boot.
+- **Round 389: the allocation frontier and the host obarray are the
+  runtime's (M2, stages 3 and 4 of A2.5, C5.3 and D43; none closed).**
+  **The frontier**: the allocator's free lists and bump regions for
+  conses, floats, symbols and string headers, its current string-data
+  blocks and its vector free lists were process statics any OS thread
+  could reach; they are now nineteen cells of the thread that holds the
+  runtime, each named after its alloc.c global (cons_free_list and the
+  current block's next and end, and the same for floats, symbols and
+  strings; current_sblock; vector_free_lists and
+  last_inserted_vector_free_idx), returned to the runtime under its
+  lock whenever the thread releases it (a scoped entry's end, the
+  thread's exit, a lend to a joined thread) and installed when it takes
+  it.  A thread that does not hold the runtime finds its cells empty,
+  and every path that would make a block or a large object takes the
+  runtime first, so no OS thread allocates from the shared heap
+  without it, as no thread conses in GNU without global_lock; a region
+  a thread is handed and leaves is reclaimed by the next sweep, which
+  only the holder makes.  **The host obarray**, which heap operations
+  without an editor intern into, was a process static whose unsafe
+  `Sync' claimed one Lisp thread at a time; it is the runtime's now,
+  reached only holding it, and that claim and two unsafe `Send' impls
+  of the SQLite states, which nothing sent, are gone.  **Lisp sees
+  nothing change**; the library tests run on two test threads without
+  the crash D43 recorded, when the fixture image exists (without it, a
+  test permit still unordered with the runtime can deadlock two tests,
+  and tests that read the allocation counters without the runtime can
+  count another thread's allocations: the next stage's).  **Counts**
+  (before = round 386's build): a cons allocation loop 2,342.1
+  instructions an iteration and 2,342.0 after; without collections
+  2,212.8 both; `make-symbol' 1,283.3 to 1,281.3; a vector 1,245.7 to
+  1,246.8 (alignment padding; one real instruction fewer); a float
+  605.6 to 604.6; the call and interpreter guards unchanged; the
+  release build reaches each cell with one `%fs:'-relative instruction.
+  The independent review (the one question: does the round cheat or
+  break something) read every allocation path for a thread without the
+  runtime, every release path for the frontier's return, the sweep
+  against handed regions, and the host obarray's new owner, ran the
+  allocator's, the types', the image's, the thread and template tests
+  and a two-thread run from the round's test binary, the thread, timer
+  and allocation probes and the command line on the build before and
+  this one, which answered alike, and checked the counts and the
+  machine code.  It found no cheat and nothing broken.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,646 passed, 0 failed, 2 ignored (seven
+  library tests more); cli 30, cli_parity 187, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 3; clippy `-D warnings' and
+  rustfmt clean.  The round audit reports no hard finding, 1,037
+  changed lines with 7 tests and 23 assertions added; its notes of new
+  state are the frontier's cells, which replace the allocator's
+  statics one for one.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24180,6 +24242,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   integration targets (230) and the binaries' tests (61), none failed.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 389 and its review), within the
+  plan's later stages.**  One line each: the canonical empty strings
+  and vector stay outside the frontier, with a borrow count that is not
+  atomic (a race only parallel runs open); string data chooses its
+  block chain before taking the runtime, so a thread that waited
+  through another's image load may put its data where it is never
+  compacted (memory, not correctness); a thread's first allocation
+  starts a new block of its kind; the process-test permit, still
+  unordered with the runtime, can now deadlock more tests run in
+  parallel; the host obarray's check for a shared clone fires after
+  the release.
 - **Found after the scope lock (round 388 and its review), within the
   plan's later stages.**  One line each: the build-time check that heap
   handles are neither `Send' nor `Sync' names eleven types and misses
