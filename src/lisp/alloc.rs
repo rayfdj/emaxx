@@ -1382,12 +1382,21 @@ pub(crate) fn os_stack_base() -> Option<usize> {
     os_stack_range().map(|(_, end)| end)
 }
 
-/// This OS thread's own stack, its lowest address and its base.
+/// This OS thread's own stack, its lowest address and its base.  GNU's
+/// stack ends at a local of the thread's first frame (emacs.c:main's and
+/// thread.c:run_thread's stack_bottom); a thread whose first frame is not
+/// Emacs's ends where its stack does.  pthread_attr_getstack reports more:
+/// glibc keeps a thread's descriptor (pthread_self) and its static TLS
+/// blocks at the top of that block (allocatestack.c), the descriptor above
+/// the blocks on x86-64 (TLS_TCB_AT_TP) and below them on aarch64
+/// (TLS_DTV_AT_TP), so the stack ends below the lowest of them that lies in
+/// the block.  The process's main thread keeps both off its stack, which
+/// stays whole.
 #[cfg(target_os = "linux")]
 pub(crate) fn os_stack_range() -> Option<(usize, usize)> {
     // SAFETY: the pthread attribute calls on the calling thread, the
     // attribute object destroyed after the read.
-    unsafe {
+    let (start, end) = unsafe {
         let mut attributes = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
         if libc::pthread_getattr_np(libc::pthread_self(), attributes.as_mut_ptr()) != 0 {
             return None;
@@ -1397,8 +1406,47 @@ pub(crate) fn os_stack_range() -> Option<(usize, usize)> {
         let mut size = 0;
         let status = libc::pthread_attr_getstack(&attributes, &mut start, &mut size);
         libc::pthread_attr_destroy(&mut attributes);
-        (status == 0).then(|| (start as usize, start as usize + size))
+        if status != 0 {
+            return None;
+        }
+        (start as usize, start as usize + size)
+    };
+    // SAFETY: a query about the calling thread.
+    let descriptor = unsafe { libc::pthread_self() } as usize;
+    let mut range = (
+        start,
+        if descriptor > start && descriptor < end {
+            descriptor
+        } else {
+            end
+        },
+    );
+    /// Lower RANGE's base to a module's TLS block in this thread inside it.
+    unsafe extern "C" fn below_tls_block(
+        info: *mut libc::dl_phdr_info,
+        _size: libc::size_t,
+        range: *mut libc::c_void,
+    ) -> libc::c_int {
+        // SAFETY: dl_iterate_phdr's INFO for this call, and the RANGE
+        // passed below.
+        let (info, range) = unsafe { (&*info, &mut *range.cast::<(usize, usize)>()) };
+        // dlpi_tls_data: the calling thread's block of the module, null
+        // when it has none or none allocated yet.
+        let block = info.dlpi_tls_data as usize;
+        if block > range.0 && block < range.1 {
+            range.1 = block;
+        }
+        0
     }
+    // SAFETY: the callback reads each INFO only during its call, and RANGE
+    // outlives the iteration.
+    unsafe {
+        libc::dl_iterate_phdr(
+            Some(below_tls_block),
+            std::ptr::from_mut(&mut range).cast::<libc::c_void>(),
+        )
+    };
+    Some(range)
 }
 
 #[cfg(not(any(target_os = "macos", target_os = "linux")))]
@@ -2655,4 +2703,72 @@ pub(crate) fn spill_registers(_spill: &mut [usize; 16]) {}
 pub(crate) fn approximate_stack_pointer() -> usize {
     let marker = 0u8;
     std::hint::black_box(std::ptr::addr_of!(marker) as usize)
+}
+
+#[cfg(test)]
+#[cfg(target_os = "linux")]
+mod stack_range_tests {
+    /// The block pthread reports for the calling thread.
+    fn pthread_block() -> (usize, usize) {
+        // SAFETY: as in `os_stack_range'.
+        unsafe {
+            let mut attributes = std::mem::MaybeUninit::<libc::pthread_attr_t>::uninit();
+            assert_eq!(
+                libc::pthread_getattr_np(libc::pthread_self(), attributes.as_mut_ptr()),
+                0
+            );
+            let mut attributes = attributes.assume_init();
+            let mut start = std::ptr::null_mut();
+            let mut size = 0;
+            assert_eq!(
+                libc::pthread_attr_getstack(&attributes, &mut start, &mut size),
+                0
+            );
+            libc::pthread_attr_destroy(&mut attributes);
+            (start as usize, start as usize + size)
+        }
+    }
+
+    #[test]
+    fn a_thread_s_stack_ends_below_its_descriptor_and_its_thread_locals() {
+        // thread.c:run_thread records a local of the thread's first frame
+        // as its stack bottom, and mark_c_stack scans up to it.  A thread
+        // that records none is scanned up to its stack's own base, below
+        // the descriptor and the static TLS blocks glibc puts at the top
+        // of the block pthread reports.
+        std::thread::Builder::new()
+            .name("stack range".into())
+            .spawn(|| {
+                let first_frame_local = 0usize;
+                let local = std::ptr::from_ref(&first_frame_local) as usize;
+                let (start, base) = super::os_stack_range().expect("this thread's stack");
+                let (block_start, block_end) = pthread_block();
+                assert!(
+                    start < local && local < base,
+                    "the first frame's local is on the stack"
+                );
+                // SAFETY: queries about the calling thread.
+                let descriptor = unsafe { libc::pthread_self() } as usize;
+                let errno = unsafe { libc::__errno_location() } as usize;
+                let own = super::STACK_TOP.with(|top| std::ptr::from_ref(top) as usize);
+                for (what, address) in [
+                    ("the thread's descriptor", descriptor),
+                    ("this crate's thread-local", own),
+                    ("libc's thread-local errno", errno),
+                ] {
+                    assert!(
+                        (block_start..block_end).contains(&address),
+                        "{what} is in the block pthread reports"
+                    );
+                    assert!(
+                        !(start..base).contains(&address),
+                        "{what} is not on the stack"
+                    );
+                }
+                std::hint::black_box(&first_frame_local);
+            })
+            .expect("spawn a thread")
+            .join()
+            .expect("the thread's checks pass");
+    }
 }
