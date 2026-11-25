@@ -754,7 +754,15 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
             return Ok(());
         }
         self.keep_text();
-        self.interp.maybe_quit(self.env)
+        // Its handler runs with the match's gl_state a root.
+        match self.gl.as_deref() {
+            Some(gl) => {
+                let env = &mut *self.env;
+                self.interp
+                    .with_lisp_stack_roots(gl, |interp| interp.maybe_quit(env))
+            }
+            None => self.interp.maybe_quit(self.env),
+        }
     }
 }
 
@@ -2568,6 +2576,57 @@ mod cache_root_tests {
                      (with-syntax-table table (char-syntax ?x)))"#,
             ),
             Value::Integer(i64::from(b' ')),
+            "and it is intact"
+        );
+    }
+
+    #[test]
+    fn a_match_s_gl_state_keeps_its_syntax_table_through_a_collection() {
+        // syntax.c staticpros gl_state.current_syntax_table and old_prop:
+        // a match reading `syntax-table' properties holds the property's
+        // table, and a collection while it runs (its debugger, which
+        // first takes the property away) keeps the table.
+        let mut interp = initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (setq gl-witness (make-hash-table :test 'eq :weakness 'key))
+                 (set-buffer (get-buffer-create "gl root"))
+                 ;; No undo entry keeps the property's table.
+                 (buffer-disable-undo)
+                 (insert "xyz")
+                 (setq-local parse-sexp-lookup-properties t)
+                 (let ((table (make-syntax-table)))
+                   (modify-syntax-entry ?x "w" table)
+                   (puthash table t gl-witness)
+                   (put-text-property 1 4 'syntax-table table))
+                 (goto-char 1)
+                 (setq debug-on-quit t
+                       debugger (lambda (&rest _)
+                                  (let ((inhibit-modification-hooks t))
+                                    (remove-text-properties 1 4 '(syntax-table nil)))
+                                  (garbage-collect)
+                                  (setq gl-seen (hash-table-count gl-witness))
+                                  nil)))"#,
+        );
+        collect_in_a_match(&mut interp, &mut env, 0);
+        crate::lisp::alloc::clobber_stack();
+        assert_eq!(
+            lisp(&mut interp, &mut env, "gl-seen"),
+            Value::Integer(1),
+            "the match's gl_state table lived through the collection"
+        );
+        assert_eq!(
+            lisp(
+                &mut interp,
+                &mut env,
+                r#"(let (table)
+                     (maphash (lambda (key _) (setq table key)) gl-witness)
+                     (with-syntax-table table (char-syntax ?x)))"#,
+            ),
+            Value::Integer(i64::from(b'w')),
             "and it is intact"
         );
     }
