@@ -170,6 +170,43 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
         .expect("the complete reachable graph is marked without overflowing");
 }
 
+#[test]
+fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
+    // alloc.c's sweeps unmark what they keep (XUNMARK_CONS, the float
+    // blocks' bits, the vector blocks' ARRAY_MARK_FLAG), and Fcons and
+    // make_float give a new object no mark: after a collection no bit of a
+    // cons, float or vector block is set, an object made between
+    // collections is unmarked until the next one marks it, and that one
+    // leaves it unmarked again, kept.
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(garbage-collect)")
+        .expect("a collection");
+    assert!(crate::lisp::alloc::every_mark_bit_clear());
+    let cons = Value::cons(Value::Integer(5), Value::Nil);
+    let float = Value::Float(crate::lisp::alloc::allocate_float(0.25));
+    let vector = Value::vector([cons, float]);
+    let Kind::Cons(cell) = cons.kind() else {
+        unreachable!("constructed cons");
+    };
+    let Kind::Float(cell_float) = float.kind() else {
+        unreachable!("constructed float");
+    };
+    assert!(!cell.mark_bit().is_marked());
+    assert!(!cell_float.mark_bit().is_marked());
+    interp.set_symbol_value_cell("zz-made-between", vector);
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(garbage-collect)")
+        .expect("the next collection");
+    assert!(crate::lisp::alloc::every_mark_bit_clear());
+    assert!(!cell.mark_bit().is_marked() && !cell_float.mark_bit().is_marked());
+    assert_eq!(
+        crate::test_support::eval_lisp(&mut interp, &mut env, "zz-made-between")
+            .expect("the vector")
+            .to_string(),
+        "[(5) 0.25]"
+    );
+}
+
 fn panic_eval_error(interp: &mut Interpreter, error: LispError) -> ! {
     let rendered_error = match error.kind() {
         LispErrorKind::SignalValue(value) => crate::lisp::primitives::render_prin1_ephemeral(

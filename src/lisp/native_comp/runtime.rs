@@ -6274,6 +6274,20 @@ impl NativeHeap {
             }
         }
 
+        // A cons, float or vector is made unmarked (the sweeps clear the
+        // marks they read, and allocation sets none), so one made after the
+        // mark phase starts and before its kind's sweep would be freed
+        // there: this collector, as alloc.c's, makes none in between, which
+        // alloc.c's counters of them show (a checked build's guard, as
+        // alloc.c's eassert of !gc_in_progress).
+        let consed = || {
+            use crate::lisp::alloc::counters::{
+                CONS_CELLS_CONSED, FLOATS_CONSED, VECTOR_CELLS_CONSED,
+            };
+            [&CONS_CELLS_CONSED, &FLOATS_CONSED, &VECTOR_CELLS_CONSED]
+                .map(|counter| counter.load(std::sync::atomic::Ordering::Relaxed))
+        };
+        let before_marks = consed();
         let lisp_roots = crate::lisp::alloc::conservative_values(pending);
         let reachability = interpreter.weak_hash_reachability(environment, &lisp_roots);
         // From here to the sweep, no other mark phase may begin (a checked
@@ -6286,8 +6300,15 @@ impl NativeHeap {
         crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachability);
         // alloc.c:gc_sweep, after the weak entries are gone. Strings follow
         // symbols, whose weak names must remain readable during their sweep.
+        debug_assert_eq!(consed()[0], before_marks[0], "a cons made in a collection");
         crate::lisp::alloc::sweep_conses(epoch);
-        crate::lisp::alloc::sweep_floats(epoch);
+        debug_assert_eq!(consed()[1], before_marks[1], "a float made in a collection");
+        crate::lisp::alloc::sweep_floats();
+        debug_assert_eq!(
+            consed()[2],
+            before_marks[2],
+            "a vector made in a collection"
+        );
         let free_vector_slots = crate::lisp::alloc::sweep_vectors(epoch);
         crate::lisp::eval::purge_freed_records_in_live_states(interpreter);
         crate::lisp::types::sweep_symbol_cells(epoch);

@@ -156,8 +156,10 @@ const _: () = {
     assert!(std::mem::align_of::<VectorBlockMarks>() <= ROUNDUP_SIZE);
 };
 
+/// A vector block's mark bits (alloc.c's ARRAY_MARK_FLAG on the header),
+/// one for each VBLOCK_BYTES_MIN of the block by a vector's start: set by
+/// the mark phase, cleared by `sweep_vectors' once it has read them.
 struct VectorBlockMarks {
-    epoch: Cell<u32>,
     /// Registered while an image loaded (see `ImageCells').
     image: bool,
     words: [Cell<usize>; VECTOR_MARK_WORDS],
@@ -166,7 +168,6 @@ struct VectorBlockMarks {
 impl VectorBlockMarks {
     const fn new(image: bool) -> Self {
         Self {
-            epoch: Cell::new(0),
             image,
             words: [const { Cell::new(0) }; VECTOR_MARK_WORDS],
         }
@@ -184,10 +185,9 @@ impl VectorMark<'_> {
     pub(crate) fn is_marked(&self, epoch: u32) -> bool {
         match self.0 {
             VectorMarkStorage::Block(block, index) => {
-                block.epoch.get() == epoch
-                    && block.words[index / usize::BITS as usize].get()
-                        & (1 << (index % usize::BITS as usize))
-                        != 0
+                block.words[index / usize::BITS as usize].get()
+                    & (1 << (index % usize::BITS as usize))
+                    != 0
             }
             VectorMarkStorage::Separate(mark) => mark.is_marked(epoch),
         }
@@ -196,12 +196,6 @@ impl VectorMark<'_> {
     pub(crate) fn mark(&self, epoch: u32) -> bool {
         match self.0 {
             VectorMarkStorage::Block(block, index) => {
-                if block.epoch.get() != epoch {
-                    for word in &block.words {
-                        word.set(0);
-                    }
-                    block.epoch.set(epoch);
-                }
                 let word = &block.words[index / usize::BITS as usize];
                 let mask = 1 << (index % usize::BITS as usize);
                 let old = word.get();
@@ -215,6 +209,28 @@ impl VectorMark<'_> {
             VectorMarkStorage::Separate(mark) => mark.mark(epoch),
         }
     }
+}
+
+/// The marks of the vector block at BLOCK.
+///
+/// # Safety
+/// BLOCK is a registered vector block: its initialized bitmap occupies the
+/// reserved tail of the block until the block is released.
+unsafe fn block_marks<'a>(block: usize) -> &'a VectorBlockMarks {
+    // SAFETY: the caller's contract.
+    unsafe { &*((block + VECTOR_BLOCK_BYTES) as *const VectorBlockMarks) }
+}
+
+/// `super::every_mark_bit_clear' for the vector blocks.
+#[cfg(test)]
+pub(super) fn every_mark_bit_clear() -> bool {
+    blocks_of(BlockKind::VectorBlock).into_iter().all(|block| {
+        // SAFETY: a registered vector block.
+        unsafe { block_marks(block) }
+            .words
+            .iter()
+            .all(|word| word.get() == 0)
+    })
 }
 
 impl VectorHeader {
@@ -240,10 +256,11 @@ impl VectorHeader {
         }
         let base = address & !(VECTOR_BLOCK_SIZE - 1);
         let index = (address - base) / VBLOCK_BYTES_MIN;
-        // SAFETY: small vector blocks are aligned to VECTOR_BLOCK_SIZE;
-        // their initialized bitmap occupies the reserved tail of the block.
-        let block = unsafe { &*((base + VECTOR_BLOCK_BYTES) as *const VectorBlockMarks) };
-        VectorMark(VectorMarkStorage::Block(block, index))
+        // SAFETY: small vector blocks are aligned to VECTOR_BLOCK_SIZE.
+        VectorMark(VectorMarkStorage::Block(
+            unsafe { block_marks(base) },
+            index,
+        ))
     }
 
     fn is_marked(&self, epoch: u32) -> bool {
@@ -900,15 +917,12 @@ pub(crate) unsafe fn adopt_image_vectors(
         start.is_multiple_of(VECTOR_BLOCK_SIZE),
         "unaligned image vectors"
     );
-    let epoch = super::super::types::current_mark_epoch();
     let small = blocks
         .checked_mul(VECTOR_BLOCK_SIZE)
         .filter(|&bytes| bytes <= limit)
         .ok_or("the image's vector blocks are outside the image")?;
     for block in 0..blocks {
         let base = start + block * VECTOR_BLOCK_SIZE;
-        let marks = VectorBlockMarks::new(true);
-        marks.epoch.set(epoch);
         let mut at = 0;
         while at <= VECTOR_BLOCK_BYTES - VBLOCK_BYTES_MIN {
             // SAFETY: an aligned word of the block, whose usable bytes
@@ -925,9 +939,6 @@ pub(crate) unsafe fn adopt_image_vectors(
             if nbytes > VBLOCK_BYTES_MAX {
                 return Err(format!("a large image vector at {base:#x} is in a block"));
             }
-            let index = at / VBLOCK_BYTES_MIN;
-            let word = &marks.words[index / usize::BITS as usize];
-            word.set(word.get() | 1 << (index % usize::BITS as usize));
             let first = block * VECTOR_BLOCK_SIZE + at;
             vector(ImageVector {
                 start: first,
@@ -942,7 +953,7 @@ pub(crate) unsafe fn adopt_image_vectors(
             (base as *mut u8)
                 .add(VECTOR_BLOCK_BYTES)
                 .cast::<VectorBlockMarks>()
-                .write(marks)
+                .write(VectorBlockMarks::new(true))
         };
     }
     let mut at = small;
@@ -959,11 +970,7 @@ pub(crate) unsafe fn adopt_image_vectors(
             return Err(format!("invalid large image vector at {:#x}", start + at));
         }
         // SAFETY: the mark's word after the footprint, inside the bytes.
-        unsafe {
-            let mark = (start + at + nbytes) as *mut MarkBit;
-            mark.write(MarkBit::default());
-            (*mark).set_raw(epoch);
-        }
+        unsafe { ((start + at + nbytes) as *mut MarkBit).write(MarkBit::default()) };
         vector(ImageVector {
             start: at,
             lisp: at + lisp,
@@ -1042,9 +1049,6 @@ impl VectorRef {
         // moved out of the vector, which is emptied without dropping.
         unsafe {
             (*header).size = len;
-            (*header)
-                .mark_bit()
-                .mark(super::super::types::current_mark_epoch());
             std::ptr::copy_nonoverlapping(slots.as_ptr(), payload(header).cast::<Value>(), len);
             slots.set_len(0);
         }
@@ -1077,9 +1081,6 @@ impl VectorRef {
         // before the header is published.
         unsafe {
             (*header).size = len;
-            (*header)
-                .mark_bit()
-                .mark(super::super::types::current_mark_epoch());
             let slots = payload(header).cast::<Value>();
             for index in 0..len {
                 slots.add(index).write(value);
@@ -1103,9 +1104,6 @@ impl VectorRef {
         // Read each source Cell without exposing a shared Value reference.
         unsafe {
             (*header).size = len;
-            (*header)
-                .mark_bit()
-                .mark(super::super::types::current_mark_epoch());
             let target = payload(header).cast::<Cell<Value>>();
             for (index, field) in self.cells().iter().enumerate() {
                 target.add(index).write(Cell::new(field.get()));
@@ -1225,9 +1223,6 @@ impl ClosureRef {
         // Every traced slot is initialized before the object is published.
         unsafe {
             (*header).size = VectorHeader::pseudovector_slots_word(VectorTag::Closure, nbytes, len);
-            (*header)
-                .mark_bit()
-                .mark(super::super::types::current_mark_epoch());
             let target = payload(header).cast::<Cell<Value>>();
             for index in 0..len {
                 target.add(index).write(Cell::new(field(index)));
@@ -1381,9 +1376,6 @@ impl<T: Vectorlike> VectorlikeRef<T> {
         // SAFETY: fresh storage of NBYTES; the payload is aligned for T.
         unsafe {
             (*header).size = VectorHeader::pseudovector_slots_word(T::TAG, nbytes, T::LISP_SLOTS);
-            (*header)
-                .mark_bit()
-                .mark(super::super::types::current_mark_epoch());
             payload(header).cast::<T>().write(value);
             census_on_allocate(header);
             if T::TAG == VectorTag::Buffer {
@@ -1743,6 +1735,9 @@ pub(crate) fn sweep_vectors(epoch: u32) -> usize {
     let image_unchanged = super::IMAGE_VECTORS.unchanged();
     let mut image_live = 0;
     for (block, image_block) in sweep_blocks_of(BlockKind::VectorBlock) {
+        // SAFETY: a registered vector block, released below at the
+        // earliest.
+        let marks = unsafe { block_marks(block) };
         if image_block && image_unchanged {
             if cfg!(debug_assertions) {
                 let mut vector = block as *mut VectorHeader;
@@ -1758,6 +1753,9 @@ pub(crate) fn sweep_vectors(epoch: u32) -> usize {
                     }
                 }
             }
+            // Its vectors unmarked (alloc.c's sweep_vectors clears
+            // ARRAY_MARK_FLAG on each it keeps): the bitmap alone is read.
+            super::clear_bits(&marks.words);
             continue;
         }
         let mut free_this_block = false;
@@ -1821,6 +1819,9 @@ pub(crate) fn sweep_vectors(epoch: u32) -> usize {
                 vector = next;
             }
         }
+        // The vectors kept are unmarked, as alloc.c's sweep_vectors leaves
+        // them.
+        super::clear_bits(&marks.words);
         if free_this_block {
             release_vector_block(block);
         }

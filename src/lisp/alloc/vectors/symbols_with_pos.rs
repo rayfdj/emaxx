@@ -18,9 +18,6 @@ impl SymbolWithPosRef {
         unsafe {
             (*header).size =
                 VectorHeader::pseudovector_slots_word(VectorTag::SymbolWithPos, logical_bytes, 2);
-            (*header)
-                .mark_bit()
-                .mark(super::super::super::types::current_mark_epoch());
             let fields = payload(header).cast::<Cell<Value>>();
             fields.write(Cell::new(symbol));
             fields.add(1).write(Cell::new(position));

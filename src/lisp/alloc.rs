@@ -65,8 +65,8 @@ pub(crate) use vectors::{
 /// GNU's mark bits: the allocation state.
 const C_BLOCK_BYTES: usize = (1 << 15) - 8;
 const CELL_SIZE: usize = std::mem::size_of::<ConsCell>();
-/// The 16-byte conses after the block's metadata: its epoch and two
-/// bitmaps of a bit for each 16 bytes of the block (`CONS_BITMAP_WORDS'),
+/// The 16-byte conses after the block's metadata: two bitmaps of a bit
+/// for each 16 bytes of the block (`CONS_BITMAP_WORDS'),
 /// the mark and the allocation, which conservative scanning and checked
 /// native decoding read.  A cell's bit is its slot's from the block's
 /// address, so the marking and allocating paths take no offset; the bits
@@ -296,6 +296,16 @@ pub(crate) static IMAGE_STRINGS: ImageCells = ImageCells::new();
 pub(crate) static IMAGE_SYMBOLS: ImageCells = ImageCells::new();
 pub(crate) static IMAGE_VECTORS: ImageCells = ImageCells::new();
 
+/// Clear the bitmap WORDS, writing only the words with a bit set (an
+/// image block's marks are in its mapped pages).
+fn clear_bits(words: &[Cell<usize>]) {
+    for word in words {
+        if word.get() != 0 {
+            word.set(0);
+        }
+    }
+}
+
 /// A mark epoch begins: no image cell is marked in it yet.
 pub(crate) fn begin_image_mark_epoch() {
     for cells in [&IMAGE_STRINGS, &IMAGE_SYMBOLS, &IMAGE_VECTORS] {
@@ -514,13 +524,12 @@ const _: () = {
     assert!(FLOAT_CELLS != 0);
 };
 
-/// alloc.c:float_block.gcmarkbits. One epoch for the block allows the
-/// runtime's independent reachability passes to use these compact marks:
-/// the first mark of a new pass clears the old bitmap. There is no epoch
-/// or allocation-state load on an ordinary release-build float read.
+/// alloc.c:float_block.gcmarkbits, with the cells' allocation bits: the
+/// mark phase sets a reached float's mark bit and `sweep_floats' clears
+/// every bit it reads, as alloc.c's does.  There is no allocation-state
+/// load on an ordinary release-build float read.
 #[repr(C)]
 struct FloatMarks {
-    epoch: Cell<u32>,
     allocated: [Cell<usize>; FLOAT_BITMAP_WORDS],
     marked: [Cell<usize>; FLOAT_BITMAP_WORDS],
 }
@@ -528,7 +537,6 @@ struct FloatMarks {
 impl FloatMarks {
     const fn new() -> Self {
         Self {
-            epoch: Cell::new(0),
             allocated: [const { Cell::new(0) }; FLOAT_BITMAP_WORDS],
             marked: [const { Cell::new(0) }; FLOAT_BITMAP_WORDS],
         }
@@ -556,29 +564,25 @@ impl FloatMark<'_> {
     }
 
     #[inline]
-    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
+    pub(crate) fn is_marked(&self) -> bool {
         let (word, mask) = self.bit();
-        self.block.epoch.get() == epoch && self.block.marked[word].get() & mask != 0
+        self.block.marked[word].get() & mask != 0
     }
 
-    pub(crate) fn mark(&self, epoch: u32) -> bool {
+    /// XMARK_FLOAT: true when the float was not yet marked.
+    pub(crate) fn mark(&self) -> bool {
         debug_assert!(self.allocated(), "marking a free float");
-        if self.block.epoch.get() != epoch {
-            for word in &self.block.marked {
-                word.set(0);
-            }
-            self.block.epoch.set(epoch);
-        }
         let (word, mask) = self.bit();
         let old = self.block.marked[word].get();
         self.block.marked[word].set(old | mask);
         old & mask == 0
     }
 
-    fn allocate(&self, epoch: u32) {
+    /// make_float's cell: allocated, and unmarked as the sweep left it.
+    fn allocate(&self) {
         let (word, mask) = self.bit();
+        debug_assert!(self.block.marked[word].get() & mask == 0);
         self.block.allocated[word].set(self.block.allocated[word].get() | mask);
-        self.mark(epoch);
     }
 }
 
@@ -702,10 +706,10 @@ pub(crate) fn allocate_float(value: f64) -> FloatRef {
     LIVE_FLOATS.store(LIVE_FLOATS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     counters::tally(&counters::FLOATS_CONSED, 1);
     // SAFETY: SLOT is a free cell of a float block. Initialize its one word
-    // and the block's allocation/mark bits before publishing a handle.
+    // and the block's allocation bit before publishing a handle.
     unsafe {
         std::ptr::write(slot, FloatCell { value });
-        float_mark(slot).allocate(super::types::current_mark_epoch());
+        float_mark(slot).allocate();
         FloatRef(NonNull::new_unchecked(slot))
     }
 }
@@ -725,7 +729,7 @@ fn bump_float() -> *mut FloatCell {
 }
 
 /// alloc.c:sweep_floats, as `sweep_conses' below.
-pub(crate) fn sweep_floats(epoch: u32) -> usize {
+pub(crate) fn sweep_floats() -> usize {
     let bump_next = FLOAT_BUMP_NEXT.get();
     let bump_end = FLOAT_BUMP_END.get();
     let mut free_list: *mut FloatCell = std::ptr::null_mut();
@@ -743,10 +747,10 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
         // SAFETY: a registered float block's marks stay initialized until
         // the block is released.
         let marks = unsafe { &*std::ptr::addr_of!((*(start as *const FloatBlock)).marks) };
-        let current = marks.epoch.get() == epoch;
         // A bitmap word at a time: an unmarked cell holds no owned storage,
-        // so its bits are cleared (and, outside the image, it is linked
-        // through its one word, in address order).
+        // so its allocation bit is cleared (and, outside the image, it is
+        // linked through its one word, in address order); the live cells
+        // are unmarked (`XUNMARK_FLOAT').
         for word in 0..lim.div_ceil(usize::BITS as usize) {
             let first = word * usize::BITS as usize;
             let valid = if lim - first >= usize::BITS as usize {
@@ -755,11 +759,13 @@ pub(crate) fn sweep_floats(epoch: u32) -> usize {
                 (1usize << (lim - first)) - 1
             };
             let marked = marks.marked[word].get();
-            let live = if current { marked } else { 0 } & valid;
+            if marked != 0 {
+                marks.marked[word].set(0);
+            }
+            let live = marked & valid;
             let mut free = !live & valid;
             if free != 0 {
                 marks.allocated[word].set(marks.allocated[word].get() & !free);
-                marks.marked[word].set(marked & !free);
             }
             if !image_block {
                 num_used += live.count_ones() as usize;
@@ -1559,11 +1565,9 @@ const CONS_BLOCK_ALIGN: usize = 1 << 15;
 /// A bit for each cell-sized span of the block, metadata included: the
 /// metadata then fits before the first cell.
 const CONS_BITMAP_WORDS: usize = CONS_BLOCK_ALIGN / CELL_SIZE / usize::BITS as usize;
-/// The metadata's bytes, to a cell's alignment: the epoch, then the two
-/// bitmaps.
-const CONS_METADATA_BYTES: usize = (std::mem::size_of::<u64>()
-    + 2 * CONS_BITMAP_WORDS * std::mem::size_of::<usize>())
-.next_multiple_of(CELL_SIZE);
+/// The metadata's bytes, to a cell's alignment: the two bitmaps.
+const CONS_METADATA_BYTES: usize =
+    (2 * CONS_BITMAP_WORDS * std::mem::size_of::<usize>()).next_multiple_of(CELL_SIZE);
 
 /// The metadata starts the block and the cells follow it, as in
 /// `FloatBlock': Fcons marks a new cell allocated through the block's
@@ -1591,7 +1595,6 @@ fn cons_cell(start: usize, index: usize) -> *mut ConsCell {
 
 #[repr(C)]
 struct ConsMetadata {
-    epoch: Cell<u32>,
     /// A bit for each cell, by its slot from the block's address (the
     /// metadata's slots' bits unused).
     allocated: [Cell<usize>; CONS_BITMAP_WORDS],
@@ -1599,14 +1602,13 @@ struct ConsMetadata {
 }
 
 impl ConsMetadata {
-    /// A new block's metadata, every cell free: the epoch and the bitmaps.
+    /// A new block's metadata, every cell free and unmarked: the bitmaps.
     ///
     /// # Safety
     /// METADATA is a new block's metadata, not yet in use.
     unsafe fn init(metadata: *mut Self) {
         // SAFETY: the caller's contract.
         unsafe {
-            std::ptr::addr_of_mut!((*metadata).epoch).write(Cell::new(0));
             std::ptr::addr_of_mut!((*metadata).allocated)
                 .write([const { Cell::new(0) }; CONS_BITMAP_WORDS]);
             std::ptr::addr_of_mut!((*metadata).marked)
@@ -1656,49 +1658,35 @@ impl ConsMark<'_> {
     }
 
     #[inline]
-    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
-        self.allocated()
-            && self.block.epoch.get() == epoch
-            && self.block.marked[self.bit().0].get() & self.bit().1 != 0
+    pub(crate) fn is_marked(&self) -> bool {
+        self.allocated() && self.block.marked[self.bit().0].get() & self.bit().1 != 0
     }
 
-    pub(crate) fn mark(&self, epoch: u32) -> bool {
+    /// XMARK_CONS: true when the cons was not yet marked.
+    pub(crate) fn mark(&self) -> bool {
         debug_assert!(self.allocated(), "marking a free cons");
-        if self.block.epoch.get() != epoch {
-            self.clear_marks(epoch);
-        }
         let (word, mask) = self.bit();
         let old = self.block.marked[word].get();
         self.block.marked[word].set(old | mask);
         old & mask == 0
     }
 
+    /// Fcons's cell: allocated, and unmarked as the sweep left it.
     #[inline(always)]
-    fn allocate(&self, epoch: u32) {
+    fn allocate(&self) {
         let (word, mask) = self.bit();
         debug_assert!(self.index() < CELLS_PER_BLOCK);
+        debug_assert!(self.block.marked[word].get() & mask == 0);
         // SAFETY: `cons_mark' made this mark for a payload slot: its index
         // is below CELLS_PER_BLOCK, and its word below CONS_BITMAP_WORDS.
-        let (allocated, marked) = unsafe {
-            (
-                self.block.allocated.get_unchecked(word),
-                self.block.marked.get_unchecked(word),
-            )
-        };
+        let allocated = unsafe { self.block.allocated.get_unchecked(word) };
         allocated.set(allocated.get() | mask);
-        if self.block.epoch.get() != epoch {
-            self.clear_marks(epoch);
-        }
-        marked.set(marked.get() | mask);
     }
 
     /// `allocate' for this cell and the COUNT - 1 after it in its block,
     /// a bitmap word at a time.
-    fn allocate_run(&self, count: usize, epoch: u32) {
+    fn allocate_run(&self, count: usize) {
         debug_assert!(self.index() + count <= CELLS_PER_BLOCK);
-        if self.block.epoch.get() != epoch {
-            self.clear_marks(epoch);
-        }
         let bits = usize::BITS as usize;
         let mut slot = self.slot;
         let end = slot + count;
@@ -1709,20 +1697,8 @@ impl ConsMark<'_> {
             let mask = (usize::MAX >> (bits - (last - first))) << first;
             let allocated = &self.block.allocated[word];
             allocated.set(allocated.get() | mask);
-            let marked = &self.block.marked[word];
-            marked.set(marked.get() | mask);
             slot += last - first;
         }
-    }
-
-    /// A block's first mark of a collection: the marks of the last one
-    /// are stale.
-    #[cold]
-    fn clear_marks(&self, epoch: u32) {
-        for word in &self.block.marked {
-            word.set(0);
-        }
-        self.block.epoch.set(epoch);
     }
 }
 
@@ -1882,7 +1858,6 @@ pub(crate) unsafe fn adopt_image_cons_blocks(start: *mut u8, count: usize) {
         start.is_multiple_of(CONS_BLOCK_ALIGN),
         "unaligned image conses"
     );
-    let epoch = super::types::current_mark_epoch();
     let mut blocks = Vec::with_capacity(count.div_ceil(CELLS_PER_BLOCK));
     for block in 0..count.div_ceil(CELLS_PER_BLOCK) {
         let base = start + block * CONS_BLOCK_BYTES;
@@ -1892,7 +1867,7 @@ pub(crate) unsafe fn adopt_image_cons_blocks(start: *mut u8, count: usize) {
         // stay free.
         unsafe {
             ConsMetadata::init(std::ptr::addr_of_mut!((*(base as *mut ConsBlock)).metadata));
-            cons_mark(cons_cell(base, 0)).allocate_run(cells, epoch);
+            cons_mark(cons_cell(base, 0)).allocate_run(cells);
         }
         blocks.push((base, CONS_BLOCK_BYTES));
     }
@@ -1923,11 +1898,10 @@ unsafe fn fill_cons(slot: *mut ConsCell, cell: ConsCell) -> ConsRef {
     // handle is made.
     unsafe {
         std::ptr::write(slot, cell);
-        // A cell born during a collection (the weak-table sweep conses
-        // between the mark and the sweep) carries the collection's epoch
-        // and survives its sweep; born outside one, it carries the last
-        // epoch, which the next collection does not reuse.
-        cons_mark(slot).allocate(super::types::current_mark_epoch());
+        // Its mark bit is clear, as the last sweep left every cell's: a
+        // collection conses nothing between its mark and its sweep, as
+        // alloc.c's does not (`collect_below_stack_top' checks it).
+        cons_mark(slot).allocate();
         ConsRef(NonNull::new_unchecked(slot))
     }
 }
@@ -2091,6 +2065,20 @@ pub(crate) fn cons_allocated_at(address: usize) -> bool {
     unsafe { mem_find_cons(address) }.is_some_and(|cell| cell as usize == address)
 }
 
+/// For tests: whether every mark bit of the cons, float and vector blocks
+/// is clear, as a collection's sweeps leave them.
+#[cfg(test)]
+pub(crate) fn every_mark_bit_clear() -> bool {
+    let clear = |words: &[Cell<usize>]| words.iter().all(|word| word.get() == 0);
+    blocks_of(BlockKind::Cons).into_iter().all(|start| {
+        // SAFETY: a registered cons block's metadata.
+        clear(&unsafe { &*std::ptr::addr_of!((*(start as *const ConsBlock)).metadata) }.marked)
+    }) && blocks_of(BlockKind::Float).into_iter().all(|start| {
+        // SAFETY: a registered float block's marks.
+        clear(&unsafe { &*std::ptr::addr_of!((*(start as *const FloatBlock)).marks) }.marked)
+    }) && vectors::every_mark_bit_clear()
+}
+
 /// For tests: a cons alone in a new block, with no other cons in its block
 /// until the next sweep (`cons_allocated_at').
 #[cfg(test)]
@@ -2165,14 +2153,13 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
         // SAFETY: a registered block's metadata stays initialized until the
         // block is released.
         let metadata = unsafe { &*std::ptr::addr_of!((*(start as *const ConsBlock)).metadata) };
-        // A block no mark reached this collection holds stale marks only.
-        let current = metadata.epoch.get() == epoch;
         // A bitmap word at a time, as alloc.c's sweep_conses reads its mark
-        // words: a cell is live when allocated and marked; an allocated
-        // cell that is not becomes free (its bits cleared; a cons has
-        // nothing to drop); every cell that is not live goes on the free
-        // list, in address order as before.  The bits are the slots'; the
-        // first word's below the first cell are the metadata's.
+        // words: a cell is live when allocated and marked, and is unmarked
+        // (XUNMARK_CONS; the word cleared); an allocated cell that is not
+        // becomes free (its allocation bit cleared; a cons has nothing to
+        // drop); every cell that is not live goes on the free list, in
+        // address order as before.  The bits are the slots'; the first
+        // word's below the first cell are the metadata's.
         let word_bits = usize::BITS as usize;
         let end = CONS_FIRST_SLOT + lim;
         for word in CONS_FIRST_SLOT / word_bits..end.div_ceil(word_bits) {
@@ -2187,11 +2174,13 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
             let first = (word * word_bits).wrapping_sub(CONS_FIRST_SLOT);
             let allocated = metadata.allocated[word].get();
             let marked = metadata.marked[word].get();
-            let live = allocated & if current { marked } else { 0 } & valid;
+            if marked != 0 {
+                metadata.marked[word].set(0);
+            }
+            let live = allocated & marked & valid;
             let dead = allocated & !live & valid;
             if dead != 0 {
                 metadata.allocated[word].set(allocated & !dead);
-                metadata.marked[word].set(marked & !dead);
                 if cfg!(debug_assertions) {
                     let mut bits = dead;
                     while bits != 0 {
@@ -2260,7 +2249,7 @@ fn verify_marking(epoch: u32) {
             let cell = cons_cell(start, index);
             // SAFETY: a registered cons block, including its metadata.
             let mark = unsafe { cons_mark(cell) };
-            if !mark.is_marked(epoch) {
+            if !mark.is_marked() {
                 continue;
             }
             let live = unsafe { &*cell };
@@ -2277,7 +2266,7 @@ fn verify_marking(epoch: u32) {
                     // SAFETY: a cons field holds a Lisp object in a live block.
                     let target_mark = unsafe { cons_mark(target.as_ptr()) };
                     assert!(
-                        target_mark.is_marked(epoch),
+                        target_mark.is_marked(),
                         "marked cons {:#x} holds unmarked cons {:#x} (allocated {}) in {which} at epoch {epoch}",
                         cell as usize,
                         target.as_ptr() as usize,

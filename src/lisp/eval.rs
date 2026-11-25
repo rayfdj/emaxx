@@ -4712,9 +4712,10 @@ pub(crate) struct LispReachability {
     /// Whether an object was marked since `trace_pending' last answered.
     reached: bool,
     weak_tables: Vec<crate::lisp::types::HashTableRef>,
-    /// This collection's number: a cons, string, vector or symbol is
-    /// marked by carrying it (alloc.c's mark bit, on the object); the
-    /// other kinds are marked by address or id below.
+    /// This collection's number: a string, symbol or large vector is
+    /// marked by carrying it (alloc.c's mark bit, on the object); a cons,
+    /// float or vector in a block by its block's mark bit, which the sweep
+    /// clears; the other kinds are marked by address or id below.
     epoch: u32,
     /// The retention pass after the live sets are taken: every slot of
     /// every record is traced, a weak table's actual entries included, so
@@ -4734,9 +4735,11 @@ impl LispReachability {
     }
 }
 
-impl Default for LispReachability {
-    /// A fresh collection: its own epoch, so nothing is marked in it yet.
-    fn default() -> Self {
+impl LispReachability {
+    /// A collection's mark phase starts (`weak_hash_reachability', which
+    /// only the collector runs, and its sweeps follow): its own epoch, so
+    /// nothing is marked in it yet.
+    fn for_collection() -> Self {
         let mut marker = Self::default_without_epoch();
         marker.epoch = crate::lisp::types::begin_mark_epoch();
         marker
@@ -4769,12 +4772,12 @@ impl LispReachability {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
             Kind::BigInteger(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Float(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Float(value) => value.mark_bit().is_marked(),
             Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
             // alloc.c:survives_gc_p tests the symbol's mark. A live owner's
             // obarray marks its symbols; a retired owner's names are not roots.
             Kind::Symbol(symbol) => symbol.mark_bit().is_marked(self.epoch),
-            Kind::Cons(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Cons(value) => value.mark_bit().is_marked(),
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Closure(value) => value.mark_bit().is_marked(self.epoch),
             Kind::NativeFunction(value) => value.mark_bit().is_marked(self.epoch),
@@ -4852,10 +4855,10 @@ impl LispReachability {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => false,
             Kind::BigInteger(value) => value.mark_bit().mark(self.epoch),
-            Kind::Float(value) => value.mark_bit().mark(self.epoch),
+            Kind::Float(value) => value.mark_bit().mark(),
             Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
             Kind::Symbol(symbol) => symbol.mark(self.epoch),
-            Kind::Cons(value) => value.mark_bit().mark(self.epoch),
+            Kind::Cons(value) => value.mark_bit().mark(),
             Kind::Vector(value) => value.mark_bit().mark(self.epoch),
             Kind::Closure(value) => value.mark_bit().mark(self.epoch),
             Kind::NativeFunction(value) => value.mark_bit().mark(self.epoch),
@@ -5538,7 +5541,7 @@ impl Interpreter {
         // Check exclusive Rust string borrows before advancing the epoch.
         // Shared guards are roots even when held off the scanned stacks.
         let borrowed_strings = crate::lisp::alloc::borrowed_string_roots();
-        let mut marked = LispReachability::default();
+        let mut marked = LispReachability::for_collection();
         for value in borrowed_strings {
             marked.mark(self, &value);
         }
