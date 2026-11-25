@@ -50,6 +50,12 @@ impl TraceLispRoots for Value {
     }
 }
 
+impl TraceLispRoots for crate::lisp::types::SymbolName {
+    fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
+        marker.value(&Value::Symbol(*self));
+    }
+}
+
 impl TraceLispRoots for [Value] {
     fn trace_lisp_roots(&self, marker: &mut LispRootMarker<'_>) {
         for value in self {
