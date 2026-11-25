@@ -258,9 +258,10 @@ fn take_tenure() {
 /// again after, as thread.c's thread_join_callback waits on the joined
 /// thread's condition variable (sys_cond_wait gives global_lock up) and
 /// then post_acquire_global_lock.  The test harness waits so for the
-/// thread it continues a test on.  GNU's collector scans every thread's
-/// stack (mark_threads) and ours scans only its own OS thread's, so the
-/// waiting thread must not count on its stack alone to keep an object.
+/// thread it continues a test on, and for the process-test permit.  GNU's
+/// collector scans every thread's stack (mark_threads) and ours scans the
+/// collecting OS thread's, so the waiting thread's stacks are entered in
+/// the heap-root registry while it waits.
 #[cfg(test)]
 pub(crate) fn release_while<R>(wait: impl FnOnce() -> R) -> R {
     struct Retake(Entered);

@@ -52,6 +52,22 @@ impl HostTestGate {
         }
     }
 
+    /// The exclusive permit if no permit is held or wanted now.
+    fn try_acquire_exclusive(&'static self) -> Option<HostTestPermit> {
+        let mut state = self
+            .state
+            .lock()
+            .unwrap_or_else(|poisoned| poisoned.into_inner());
+        if state.exclusive_active || state.shared_active > 0 || state.exclusive_waiters > 0 {
+            return None;
+        }
+        state.exclusive_active = true;
+        Some(HostTestPermit {
+            gate: self,
+            kind: HostTestPermitKind::Exclusive,
+        })
+    }
+
     fn acquire_exclusive(&'static self) -> HostTestPermit {
         let mut state = self
             .state
@@ -186,16 +202,22 @@ pub(crate) fn acquire_exclusive_host_test_permit() -> HostTestPermit {
 /// host-heavy gate. Large-stack tests acquire the latter before their body
 /// runs, so sharing a gate here would make nested process calls self-deadlock.
 ///
-/// It is taken with or without the Lisp runtime, which it does not take: a
-/// test may run GNU on its own thread, which takes the permit, and build its
-/// editor on a larger stack it then joins, which taking the runtime here
-/// would keep out for good.  The permit is its thread's until the thread
-/// exits either way, so the runtime adds no wait between one test's
-/// threads; two tests run at once can wait for each other (D43).
+/// The permit comes before the Lisp runtime: no thread waits for it while
+/// it holds the runtime.  A test may run GNU on its own thread, which takes
+/// the permit and no runtime, and then join a thread of its own that builds
+/// an editor; a thread that holds the runtime and finds the permit taken
+/// lends the runtime while it waits (`runtime::release_while', as
+/// thread-join gives global_lock up), so the two orders cannot meet.  The
+/// permit is its thread's until the thread exits.
 pub(crate) fn mark_process_test() {
     PROCESS_TEST_PERMIT.with(|slot| {
         if slot.borrow().is_none() {
-            *slot.borrow_mut() = Some(process_test_gate().acquire_exclusive());
+            let permit = process_test_gate()
+                .try_acquire_exclusive()
+                .unwrap_or_else(|| {
+                    crate::lisp::runtime::release_while(|| process_test_gate().acquire_exclusive())
+                });
+            *slot.borrow_mut() = Some(permit);
         }
     });
 }
@@ -556,7 +578,8 @@ pub(crate) fn oracle_program_ascii(program: &str) -> String {
 #[cfg(test)]
 mod tests {
     use super::{
-        HostTestGate, HostTestPermitKind, acquire_batch_source_bootstrap_permit, mark_process_test,
+        HostTestGate, HostTestPermitKind, acquire_batch_source_bootstrap_permit,
+        holds_process_test_permit, mark_process_test,
     };
     use crate::lisp::eval::Interpreter;
     use crate::lisp::types::{Env, Value};
@@ -774,5 +797,38 @@ mod tests {
         );
         second.join().expect("the second editor's thread");
         assert_eq!(IMAGE_TEMPLATE_ACTIVE.load(Ordering::SeqCst), 0);
+    }
+
+    #[test]
+    fn the_process_test_permit_comes_before_the_runtime() {
+        // A thread that holds the permit and no runtime joins a thread that
+        // needs the runtime, while a thread that holds the runtime asks for
+        // the permit: it lends the runtime while it waits, so both finish.
+        let (marked_tx, marked_rx) = mpsc::channel();
+        let (go_tx, go_rx) = mpsc::channel::<()>();
+        let permit_holder = thread::spawn(move || {
+            mark_process_test();
+            marked_tx.send(()).expect("announce the permit");
+            go_rx.recv().expect("wait for the runtime's holder");
+            thread::spawn(|| {
+                let mut interp = Interpreter::new();
+                super::eval_lisp(&mut interp, &mut Env::new(), "(+ 1 2)").expect("evaluate")
+                    == Value::Integer(3)
+            })
+            .join()
+            .expect("the editor's thread")
+        });
+        marked_rx.recv().expect("the permit is taken");
+        let (holding_tx, holding_rx) = mpsc::channel();
+        let runtime_holder = thread::spawn(move || {
+            crate::lisp::runtime::ensure_held();
+            holding_tx.send(()).expect("announce the runtime");
+            mark_process_test();
+            crate::lisp::runtime::held() && holds_process_test_permit()
+        });
+        holding_rx.recv().expect("the runtime is taken");
+        go_tx.send(()).expect("let the permit holder go on");
+        assert!(permit_holder.join().expect("the permit holder"));
+        assert!(runtime_holder.join().expect("the runtime holder"));
     }
 }
