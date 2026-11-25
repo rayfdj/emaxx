@@ -24241,6 +24241,22 @@ ert-tests as a whole 26,307 ms against 27,211.
   gate (run 45437271933) passed: 3,637 library tests, the seven
   integration targets (230) and the binaries' tests (61), none failed.
 
+**On `1964bbc`** (round 388): the Rust gate (run 45465582529) passed:
+  3,646 library tests, the seven integration targets (230) and the
+  binaries' tests (61), none failed.  The frozen run (run 45465589794)
+  did not complete on either of its attempts, and each time for GNU's
+  own failure: GNU's run of test/src/process-tests.el ended in an abort
+  with none of the file's 37 outcomes written, so the comparison
+  stopped at the missing oracle outcomes.  The backtrace it printed,
+  resolved against the run's own oracle binary, is a Lisp thread's
+  `accept-process-output' reaching wait_reading_process_output's
+  `else if (xerrno == EBADF) emacs_abort ()' (process.c:5833): a
+  descriptor another thread closed under select, a race of GNU's in
+  the file's threads test, which the runs of the rounds before and
+  after pass.  Up to that file both attempts had passed every file
+  compared (506 of the 519).  Not run a third time; round 389's runs,
+  whose source includes this round's, stand for it.
+
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 389 and its review), within the
   plan's later stages.**  One line each: the canonical empty strings
