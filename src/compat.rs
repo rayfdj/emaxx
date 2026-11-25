@@ -247,6 +247,11 @@ pub struct ComparisonReport {
     pub matching_outcomes: usize,
     #[serde(default)]
     pub mismatching_outcomes: usize,
+    /// Outcomes counted as matching by the one recorded rule
+    /// ([`GNU_RACE_TEST`]), each named with both runners' results, so
+    /// that no acceptance is silent.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub accepted_gnu_races: Vec<String>,
 }
 
 #[derive(Clone, Debug, Serialize, Deserialize, PartialEq, Eq)]
@@ -1161,9 +1166,79 @@ pub fn report_integrity_issues(report: &BatchReport) -> Vec<ComparisonIssue> {
     issues
 }
 
+/// The one frozen test whose outcome GNU itself does not fix.
+///
+/// `eglot-test-rust-completion-exit-function' connects twice
+/// (eglot-tests.el, and again inside `eglot--wait-for-rust-analyzer'), so
+/// two rust-analyzer processes serve one project under one connection
+/// name; jsonrpc.el takes the process buffer by that name, both write
+/// into one buffer with one point, and one connection's parser can lose
+/// a header and never parse again.  The completion request then fails
+/// with jsonrpc's "Timed out".  GNU fails its own run so in about a
+/// quarter of them, and Emaxx as often (HANDOVER.md, 25 November 2026),
+/// so a pass against that failure says nothing of either editor.
+///
+/// The owner's decision of that day: "Accept either result on this one
+/// test when the failing side's error is the jsonrpc timeout.  The test
+/// still runs and is still reported."  So when one runner passed this
+/// test of this file and the other failed it with that timeout, the pair
+/// counts as matching, the timeout is not that runner's unsuccessful
+/// execution, and the pair is named in
+/// `ComparisonReport::accepted_gnu_races`.  Everything else is compared
+/// as every outcome is: any other result of this test, both runners
+/// timing out, and this failure in any other test or file.
+pub const GNU_RACE_TEST: &str = "eglot-test-rust-completion-exit-function";
+pub const GNU_RACE_FILE: &str = "test/lisp/progmodes/eglot-tests.el";
+const GNU_RACE_CONDITION: &str = "jsonrpc-error";
+const GNU_RACE_MESSAGE: &str = r#"(jsonrpc-error-message . "Timed out")"#;
+
+/// Whether OUTCOME, in FILE, is [`GNU_RACE_TEST`]'s failure by the race.
+fn is_gnu_race_timeout(file: &str, outcome: &TestOutcome) -> bool {
+    file == GNU_RACE_FILE
+        && outcome.name == GNU_RACE_TEST
+        && outcome.status == TestStatus::Failed
+        && outcome.condition_type.as_deref() == Some(GNU_RACE_CONDITION)
+        && outcome
+            .message
+            .as_deref()
+            .is_some_and(|message| message.contains(GNU_RACE_MESSAGE))
+}
+
+/// Whether one of the two runners passed [`GNU_RACE_TEST`] and the other
+/// failed it by the race: the pair the owner's rule accepts.
+fn is_accepted_gnu_race_pair(
+    left_file: &str,
+    left: &TestOutcome,
+    right_file: &str,
+    right: &TestOutcome,
+) -> bool {
+    let passed = |file: &str, outcome: &TestOutcome| {
+        file == GNU_RACE_FILE
+            && outcome.name == GNU_RACE_TEST
+            && outcome.status == TestStatus::Passed
+            && outcome.expected != Some(false)
+    };
+    (is_gnu_race_timeout(left_file, left) && passed(right_file, right))
+        || (passed(left_file, left) && is_gnu_race_timeout(right_file, right))
+}
+
 /// Matching outcomes are useful parity evidence even when neither editor
 /// succeeded. Keep execution failures separate from the parity comparison.
 pub fn report_execution_issues(report: &BatchReport) -> Vec<ComparisonIssue> {
+    execution_issues(report, false)
+}
+
+/// [`report_execution_issues`] for one of the two reports COMPARISON was
+/// made from.  Where the comparison accepted [`GNU_RACE_TEST`]'s pair,
+/// the timed-out record is not an unexpected outcome of its runner.
+pub fn report_execution_issues_after(
+    report: &BatchReport,
+    comparison: &ComparisonReport,
+) -> Vec<ComparisonIssue> {
+    execution_issues(report, !comparison.accepted_gnu_races.is_empty())
+}
+
+fn execution_issues(report: &BatchReport, gnu_race_accepted: bool) -> Vec<ComparisonIssue> {
     let mut issues = report_integrity_issues(report);
     if report.file_status == FileStatus::LoadError {
         issues.push(ComparisonIssue {
@@ -1175,7 +1250,9 @@ pub fn report_execution_issues(report: &BatchReport) -> Vec<ComparisonIssue> {
         });
     }
     for result in &report.results {
-        if result.expected == Some(false) {
+        if result.expected == Some(false)
+            && !(gnu_race_accepted && is_gnu_race_timeout(&report.file, result))
+        {
             issues.push(ComparisonIssue {
                 kind: "unexpected_outcome".into(),
                 detail: format!(
@@ -1285,8 +1362,20 @@ pub fn compare_reports_normalized(
         .collect::<BTreeSet<_>>();
     let mut matching_outcomes = 0usize;
     let mut mismatching_outcomes = 0usize;
+    let mut accepted_gnu_races = Vec::new();
     for name in names {
         match (expected_results.get(&name), actual_results.get(&name)) {
+            (Some(left), Some(right))
+                if is_accepted_gnu_race_pair(&expected.file, left, &actual.file, right)
+                    && expected_metadata.get(&name) == actual_metadata.get(&name) =>
+            {
+                matching_outcomes += 1;
+                accepted_gnu_races.push(format!(
+                    "test `{name}` was {:?} for {} and {:?} for {}: GNU's own race, \
+                     the timed-out request accepted beside the pass",
+                    left.status, expected.runner, right.status, actual.runner
+                ));
+            }
             (Some(left), Some(right)) => {
                 let same_status = left.status == right.status;
                 let same_expectation = left.expected == right.expected
@@ -1376,6 +1465,7 @@ pub fn compare_reports_normalized(
         issues,
         matching_outcomes,
         mismatching_outcomes,
+        accepted_gnu_races,
     }
 }
 
@@ -1854,6 +1944,214 @@ mod tests {
                 .iter()
                 .any(|issue| issue.kind == "expected_result")
         );
+    }
+
+    /// One runner's report of the eglot file: GNU_RACE_TEST, failed with
+    /// RACE_FAILURE's condition and message or passed, and a second,
+    /// ordinary test that passed.
+    fn eglot_report(runner: &str, race_failure: Option<(&str, &str)>) -> BatchReport {
+        let race = TestOutcome {
+            duration_ns: None,
+            infos: Vec::new(),
+            name: GNU_RACE_TEST.into(),
+            status: if race_failure.is_some() {
+                TestStatus::Failed
+            } else {
+                TestStatus::Passed
+            },
+            condition_type: race_failure.map(|(condition, _)| condition.into()),
+            message: race_failure.map(|(_, message)| message.into()),
+            expected: Some(race_failure.is_none()),
+        };
+        let other = TestOutcome {
+            duration_ns: None,
+            infos: Vec::new(),
+            name: "eglot-test-basic-completions".into(),
+            status: TestStatus::Passed,
+            condition_type: None,
+            message: None,
+            expected: Some(true),
+        };
+        let outcomes = vec![race, other];
+        BatchReport {
+            runner: runner.into(),
+            file: GNU_RACE_FILE.into(),
+            selector: "t".into(),
+            file_status: FileStatus::Loaded,
+            file_error: None,
+            discovered_tests: outcomes
+                .iter()
+                .map(|outcome| DiscoveredTest {
+                    name: outcome.name.clone(),
+                    tags: Vec::new(),
+                    expected_result: ":passed".into(),
+                })
+                .collect(),
+            selected_tests: outcomes.iter().map(|test| test.name.clone()).collect(),
+            summary: summarize_outcomes(&outcomes),
+            results: outcomes,
+        }
+    }
+
+    /// The failure GNU's own run of the test records (taken from one).
+    const RACE_TIMEOUT: (&str, &str) = (
+        "jsonrpc-error",
+        r#"(jsonrpc-error "request id=2 failed:" (jsonrpc-error-message . "Timed out"))"#,
+    );
+
+    #[test]
+    fn gnu_s_eglot_race_beside_a_pass_is_accepted_and_reported() {
+        let passed = |runner| eglot_report(runner, None);
+        let timed_out = |runner| eglot_report(runner, Some(RACE_TIMEOUT));
+        for (oracle, emaxx) in [
+            (timed_out("oracle"), passed("emaxx")),
+            (passed("oracle"), timed_out("emaxx")),
+        ] {
+            let comparison = compare_reports(&oracle, &emaxx);
+            assert!(comparison.matches, "{:?}", comparison.issues);
+            assert_eq!(comparison.matching_outcomes, 2);
+            assert_eq!(comparison.mismatching_outcomes, 0);
+            assert_eq!(comparison.accepted_gnu_races.len(), 1);
+            let accepted = &comparison.accepted_gnu_races[0];
+            assert!(accepted.contains(GNU_RACE_TEST));
+            // Both runners and their results are named, in their order.
+            let failed_first = oracle.results[0].status == TestStatus::Failed;
+            let (first, second) = if failed_first {
+                ("Failed for oracle", "Passed for emaxx")
+            } else {
+                ("Passed for oracle", "Failed for emaxx")
+            };
+            assert!(
+                accepted.contains(first) && accepted.contains(second),
+                "{accepted}"
+            );
+            // The timeout is not its runner's unsuccessful execution once
+            // the pair is accepted, and still is by the report alone.
+            assert!(report_execution_issues_after(&oracle, &comparison).is_empty());
+            assert!(report_execution_issues_after(&emaxx, &comparison).is_empty());
+            let alone =
+                report_execution_issues(&oracle).len() + report_execution_issues(&emaxx).len();
+            assert_eq!(alone, 1);
+        }
+        // Two passes are an ordinary match: nothing is accepted.
+        let comparison = compare_reports(&passed("oracle"), &passed("emaxx"));
+        assert!(comparison.matches);
+        assert!(comparison.accepted_gnu_races.is_empty());
+        // The acceptance is written to the per-file record and read back.
+        let comparison = compare_reports(&timed_out("oracle"), &passed("emaxx"));
+        let text = serde_json::to_string(&comparison).expect("serialize comparison");
+        assert!(text.contains("accepted_gnu_races"));
+        let read: ComparisonReport = serde_json::from_str(&text).expect("read comparison");
+        assert_eq!(read, comparison);
+        // A record written before the rule has no such field.
+        let old: ComparisonReport = serde_json::from_str(
+            r#"{"file":"a.el","matches":true,"issues":[],"matching_outcomes":1,"mismatching_outcomes":0}"#,
+        )
+        .expect("read an older comparison");
+        assert!(old.accepted_gnu_races.is_empty());
+    }
+
+    #[test]
+    fn nothing_but_gnu_s_eglot_race_beside_a_pass_is_accepted() {
+        let passed = |runner| eglot_report(runner, None);
+        let timed_out = |runner| eglot_report(runner, Some(RACE_TIMEOUT));
+        let rejected = |oracle: &BatchReport, emaxx: &BatchReport, why: &str| {
+            let comparison = compare_reports(oracle, emaxx);
+            assert!(!comparison.matches, "{why}");
+            assert_eq!(comparison.mismatching_outcomes, 1, "{why}");
+            assert!(comparison.accepted_gnu_races.is_empty(), "{why}");
+            comparison
+        };
+        // Another failure of the same test, on either side.
+        for failure in [
+            ("error", r#"(error "Tired of waiting")"#),
+            (
+                "jsonrpc-error",
+                r#"(jsonrpc-error "request id=2 failed:" (jsonrpc-error-message . "Server died"))"#,
+            ),
+            ("ert-test-failed", RACE_TIMEOUT.1),
+        ] {
+            let failed = eglot_report("emaxx", Some(failure));
+            let comparison = rejected(&passed("oracle"), &failed, failure.1);
+            assert_eq!(
+                report_execution_issues_after(&failed, &comparison).len(),
+                1,
+                "{}",
+                failure.1
+            );
+            let failed = eglot_report("oracle", Some(failure));
+            rejected(&failed, &passed("emaxx"), failure.1);
+        }
+        // The race on one side against another failure on the other.
+        let other_failure = eglot_report("emaxx", Some(("error", r#"(error "Tired of waiting")"#)));
+        let comparison = rejected(
+            &timed_out("oracle"),
+            &other_failure,
+            "a different failure beside the race",
+        );
+        assert_eq!(
+            report_execution_issues_after(&timed_out("oracle"), &comparison).len(),
+            1
+        );
+        // The race on both sides: the two outcomes match as any two equal
+        // failures do, nothing is accepted, and neither run succeeded.
+        let comparison = compare_reports(&timed_out("oracle"), &timed_out("emaxx"));
+        assert!(comparison.matches);
+        assert!(comparison.accepted_gnu_races.is_empty());
+        for runner in ["oracle", "emaxx"] {
+            let issues = report_execution_issues_after(&timed_out(runner), &comparison);
+            assert_eq!(issues.len(), 1, "{runner}");
+            assert_eq!(issues[0].kind, "unexpected_outcome");
+        }
+        // The race against a skip, and against a pass that was not expected.
+        let mut skipped = passed("emaxx");
+        skipped.results[0].status = TestStatus::Skipped;
+        skipped.summary = summarize_outcomes(&skipped.results);
+        rejected(&timed_out("oracle"), &skipped, "a skip beside the race");
+        let mut unexpected_pass = passed("emaxx");
+        unexpected_pass.results[0].expected = Some(false);
+        unexpected_pass.summary = summarize_outcomes(&unexpected_pass.results);
+        let comparison = compare_reports(&timed_out("oracle"), &unexpected_pass);
+        assert!(comparison.accepted_gnu_races.is_empty());
+        assert_eq!(comparison.mismatching_outcomes, 1);
+        // The same timeout in any other test.
+        let mut other = passed("emaxx");
+        other.results[1].status = TestStatus::Failed;
+        other.results[1].condition_type = Some(RACE_TIMEOUT.0.into());
+        other.results[1].message = Some(RACE_TIMEOUT.1.into());
+        other.results[1].expected = Some(false);
+        other.summary = summarize_outcomes(&other.results);
+        let comparison = rejected(&passed("oracle"), &other, "the timeout in another test");
+        assert_eq!(report_execution_issues_after(&other, &comparison).len(), 1);
+        // A test of this name in any other file.
+        let elsewhere = |runner| {
+            let mut report = eglot_report(runner, None);
+            report.file = "test/lisp/jsonrpc-tests.el".into();
+            report
+        };
+        let mut failed_elsewhere = elsewhere("oracle");
+        failed_elsewhere.results[0] = timed_out("oracle").results[0].clone();
+        failed_elsewhere.summary = summarize_outcomes(&failed_elsewhere.results);
+        rejected(
+            &failed_elsewhere,
+            &elsewhere("emaxx"),
+            "the test's name in another file",
+        );
+        // The race where the test is expected to fail on one side only.
+        let mut expecting = passed("emaxx");
+        expecting.discovered_tests[0].expected_result = ":failed".into();
+        let comparison = compare_reports(&timed_out("oracle"), &expecting);
+        assert!(!comparison.matches);
+        assert!(comparison.accepted_gnu_races.is_empty());
+        // One runner without the test at all.
+        let mut missing = passed("emaxx");
+        missing.results.remove(0);
+        missing.selected_tests.remove(0);
+        missing.discovered_tests.remove(0);
+        missing.summary = summarize_outcomes(&missing.results);
+        let comparison = compare_reports(&timed_out("oracle"), &missing);
+        assert!(!comparison.matches);
+        assert!(comparison.accepted_gnu_races.is_empty());
     }
 
     #[test]

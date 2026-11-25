@@ -332,6 +332,22 @@ For each file, the harness compares:
 
 It fails the run on mismatches.
 
+One test is compared by a rule of its own, by the owner's decision of 25
+November 2026: `eglot-test-rust-completion-exit-function` in
+`test/lisp/progmodes/eglot-tests.el`. GNU's own test starts two
+rust-analyzer processes that share one jsonrpc process buffer, and in about a
+quarter of GNU's own runs the completion request fails with jsonrpc's
+`"Timed out"` (HANDOVER.md has the mechanism and the measurements). When one
+runner passed this test and the other failed it with that timeout, the pair
+counts as matching and the timeout is not that runner's unsuccessful
+execution. The test still runs on both sides, and every acceptance is
+reported: `[accepted_gnu_race]` under the file, an `ACCEPTED` line after the
+totals, and `accepted_gnu_races` in `comparison.json` and `summary.json`,
+each naming both runners' results. Everything else is compared as before:
+any other result of this test, both runners timing out (the outcomes match
+and neither run succeeded), and the same failure in any other test or file
+(`compat::GNU_RACE_TEST` in `src/compat.rs`).
+
 ### Coverage Scope
 
 The harness discovers upstream tests recursively from:
