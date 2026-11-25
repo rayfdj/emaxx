@@ -24549,6 +24549,23 @@ ert-tests as a whole 26,307 ms against 27,211.
   (run 45674093962) passed: 3,662 library tests, the seven integration
   targets (231) and the binaries' tests (61), none failed.
 
+**On `68a21f9`** (round 392): the frozen run (run 45697927557) matched
+  7,927 of the 7,928 outcomes on both its attempts, the one mismatch
+  `eglot-test-rust-completion-exit-function' both times: GNU's own
+  failure on the first attempt and Emaxx's on the second, each the
+  completion request's "Timed out" with the other side passing.
+  Emaxx's log of the second shows what GNU's showed on round 389: the
+  request's reply unread in the connection's output buffer, behind a
+  message body that has lost its header.  The first attempt: setup
+  65.5 s against 58.3 s (1.125), test bodies 263.4 s against 257.0 s
+  (1.025), in all 1.043 (GNU's suite took 315 s); the second 1.119.
+  The widest body gaps of the first are tramp-tests (20.5 s against
+  18.3 s), comp-tests (16.7 against 15.0), process-tests (2.86 against
+  1.80), semantic-utest-ia (2.87 against 2.15) and mule-tests (2.29
+  against 1.60).  The Rust gate (run 45697920141) passed: 3,670 library
+  tests, the seven integration targets (231) and the binaries' tests
+  (61), none failed.
+
 **The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
   25 Nov by running the one test alone.
   `eglot-test-rust-completion-exit-function' connects twice
