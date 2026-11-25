@@ -205,7 +205,11 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   tests' gates take one order.  Round 389: stages 3 and 4; the
   allocation frontier and the host obarray are the runtime's, so no OS
   thread allocates without it; two test threads run without D43's
-  crash when the fixture image exists.
+  crash when the fixture image exists.  Round 390: stage 5; editor
+  state kept in thread-locals is dropped at every release of the
+  runtime, so no OS thread keeps Lisp objects another's collection
+  does not see; parallel library runs neither crash nor hang at two
+  and four test threads.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -20779,6 +20783,67 @@ setup_process_coding_systems's check now refuses). A 13-form
   changed lines with 7 tests and 23 assertions added; its notes of new
   state are the frontier's cells, which replace the allocator's
   statics one for one.
+- **Round 390: editor state in thread-locals goes with the runtime
+  (M2, stage 5 of A2.5 and C5.3, with two repairs for D43; none
+  closed).**  **The hole**: Lisp objects the runtime keeps in
+  thread-locals of the OS thread that put them there (the profiler's
+  logs, the atimers, the echo area, the terminal route, the search
+  registers, the syntax cache, the reader's and the printer's stacks,
+  the string position cache, the selected obarray) are roots only of
+  that thread's collections; a second OS thread taking the runtime
+  after it collected without them, and the first then read swept
+  objects, through the public API.  **Now** every release of the
+  runtime (a scoped entry's end, a thread's exit) runs one release
+  function a module, which drops or resets that state, so no OS thread
+  keeps Lisp objects while another holds the runtime; a test that lends
+  the runtime to a thread it joins keeps its state, and its stacks and
+  thread-local roots are roots of the borrower's collections while it
+  waits, as mark_threads scans every thread.  An anti-cheat gate lists
+  every `thread_local!' of the runtime's files and requires each to be
+  written by a release the runtime's release reaches, or handed over
+  with the allocation frontier, or listed as an OS thread's own with
+  its reason; a type that can hold a Lisp object may be listed only as
+  released.  Two thread-locals went instead of being released: the
+  minibuffer's input method is a local of read_minibuf again, as
+  GNU's, and a cache nothing filled is deleted.  **The empty strings
+  and the zero vector** (alloc.c's empty_unibyte_string,
+  empty_multibyte_string and zero_vector) are the runtime's, handed
+  over with the frontier, where three process cells with a borrow count
+  that was not atomic could be reached by a thread without the
+  runtime.  **The process-test permit** is taken before the runtime: a
+  runtime holder that finds it taken lends the runtime while it waits,
+  so two library tests no longer wait for each other.  **Lisp sees
+  nothing change** in the editor; a library user's consecutive entries
+  on one thread no longer carry that state from one to the next.
+  **Parallel library runs** neither crash nor hang at two and four
+  test threads; what still fails there are tests that read the
+  allocation counters without the runtime (wrong counts) and a fixture
+  image booted while a lender's is alive (a process holds one dump);
+  the gate and CI stay on one test thread.  **Counts**: the allocation,
+  call and interpreter guards unchanged.  The
+  independent review (the one question: does the round cheat or break
+  something) found the hole closed at a scoped entry's end, at a
+  thread's exit and across a lend, and the editor's answers unchanged;
+  it found three ways past the round's own gate, all fixed in the
+  round: a thread-local whose type spans lines was never inventoried
+  (two were not: the terminal's line layouts, keyed by windows, now
+  released, and a table of facts about primitives' names, now listed
+  with its reason), a commented-out call to a release passed, and a
+  release that cleared one field of a struct passed.  The gate now
+  reads the sources with comments and literals removed, parses each
+  `thread_local!' block into its items, matches the calls it requires
+  as tokens, and counts as a reset only a write of the whole value.  A
+  second reading, of that commit alone, found it clean.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,651 passed, 0 failed, 2 ignored (five
+  library tests more); cli 30, cli_parity 187, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 4 (one more); clippy
+  `-D warnings' and rustfmt clean.  The round audit reports no hard
+  finding, 1,701 changed lines with 6 tests and 19 assertions added;
+  its notes of new state are the cells of the empty strings and the
+  zero vector, which replace three process cells one for one, and a
+  release function's parameter.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24275,7 +24340,48 @@ ert-tests as a whole 26,307 ms against 27,211.
   passed: 3,653 library tests, the seven integration targets (230) and
   the binaries' tests (61), none failed.
 
+**The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
+  25 Nov by running the one test alone.
+  `eglot-test-rust-completion-exit-function' connects twice
+  (eglot-tests.el line 711, and again inside
+  `eglot--wait-for-rust-analyzer'), so two rust-analyzer processes
+  serve one project under one connection name; jsonrpc.el line 541
+  takes the process buffer by that name, so both write into one buffer
+  with one point, and each filter deletes from the buffer's start to
+  point after a message.  When one server's header and body come in
+  separate reads and the other's output lands between them, the first's
+  header goes with the other's message, that connection never finds a
+  header again, the completion's reply (54,143 bytes in the trace)
+  stays unread, and the request times out after its 10 s.  With the
+  rust-analyzer the frozen run pins (1.75.0), 12 alternating runs a
+  side on the development machine: GNU failed 3 and Emaxx 3; with the
+  first connect removed from a copy of the test, GNU passed 12 of 12
+  and Emaxx 12 of 12.  A rust-analyzer newer than the pin cannot run
+  this test at all (its progress token is renamed).  The frozen
+  comparison is unchanged and still compares the test: a mismatch on it
+  alone, with a `jsonrpc-error' "Timed out" on the failing side, is
+  this race, and how the comparison should treat it is the owner's to
+  decide.
+
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 390 and its review), within the
+  plan's later stages.**  One line each: most of the thread-locals now
+  released are C globals or terminal fields in GNU and are still
+  thread-locals here because their accessors take no editor (the
+  status of the thread work lists each with GNU's place for it); a
+  pool of frame detail records has no GNU counterpart and is kept,
+  cleared at a release; tests that read the allocation counters
+  without the runtime, and a fixture image booted during a lend, fail
+  in parallel library runs; the gate that lists the thread-locals
+  reads text, so a `thread_local!' written with parentheses, a field
+  reset through an alias and a type with an associated-type binding
+  would get past it (none exists today), and anti_cheat.rs itself is
+  outside its inventory; a release that allocated a block would wait
+  for itself, which a gate build turns into a failed assertion and a
+  release build does not; an atimer's alarm stays armed after its list
+  is cleared.  Outside the round and in no milestone: four of the nine
+  preloaded variables that hold "" are not `eq' to "" (in GNU all eight
+  are).
 - **Found after the scope lock (round 389 and its review), within the
   plan's later stages.**  One line each: the canonical empty strings
   and vector stay outside the frontier, with a borrow count that is not
