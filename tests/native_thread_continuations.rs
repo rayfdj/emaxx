@@ -6,17 +6,6 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 /// Each editor receives identical Lisp and its own HOME and temporary files.
 #[test]
 fn thread_suspension_and_signals_match_gnu_with_real_native_code() {
-    let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
-    let oracle = project.join("../emacs/src/emacs");
-    let subject = PathBuf::from(env!("CARGO_BIN_EXE_emaxx"));
-    let nonce = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .expect("timestamp")
-        .as_nanos();
-    let work = std::env::temp_dir().join(format!(
-        "native-thread-contract-{}-{nonce}",
-        std::process::id()
-    ));
     let cases = [
         (
             "early-signal",
@@ -59,7 +48,64 @@ fn thread_suspension_and_signals_match_gnu_with_real_native_code() {
             "caught\n",
         ),
     ];
-    for (name, program, observer, expected) in cases {
+    run_cases("native-thread-contract", &cases, false);
+}
+
+/// A native helper that calls Lisp makes its references to the
+/// interpreter, the runtime and the environment again after the call:
+/// the callee parks its thread, another thread runs, and the helper then
+/// goes on with its own frame.  One case for each such helper: Ffuncall
+/// (each kind of callee, and one that signals), helper_unbind_n (a
+/// cleanup, a watcher), Fget under `overriding-plist-environment' (the
+/// debugger entered for a quit in Fassq) and helper_sanitizer_assert.
+/// The collector's verifier is on in each editor's environment; GNU
+/// reads no such variable.
+#[test]
+fn native_helpers_go_on_after_their_callee_parks_the_thread() {
+    let cases = [
+        (
+            "funcall-yield",
+            include_str!("fixtures/thread-native-funcall-yield.el"),
+            None,
+            "(t t ((40 (0 40)) (80 (1 40))) ((40 (0 40)) (80 (1 40))) \
+             ((40 (0 40)) (80 (1 40))) ((40 (0 40)) (80 (1 40))) \
+             ((40 (0 40)) (80 (1 40))))\n",
+        ),
+        (
+            "unbind-yield",
+            include_str!("fixtures/thread-native-unbind-yield.el"),
+            None,
+            "(t t ((40 unbound) (80 unbound)) ((40 unbound unbound) 40) 40 unbound unbound)\n",
+        ),
+        (
+            "get-yield",
+            include_str!("fixtures/thread-native-get-yield.el"),
+            None,
+            "(t ((280 nil) (280 nil)) 80)\n",
+        ),
+        (
+            "sanitizer-yield",
+            include_str!("fixtures/thread-native-sanitizer-yield.el"),
+            None,
+            "(t (120 120) 80)\n",
+        ),
+    ];
+    run_cases("native-helper-yield", &cases, true);
+}
+
+/// Each case's Lisp run by GNU Emacs and by Emaxx, each in a directory of
+/// its own under one named PREFIX, with the standard output compared
+/// with the case's expectation.  VERIFY sets `EMAXX_GC_VERIFY'.
+fn run_cases(prefix: &str, cases: &[(&str, &str, Option<&str>, &str)], verify: bool) {
+    let project = PathBuf::from(env!("CARGO_MANIFEST_DIR"));
+    let oracle = project.join("../emacs/src/emacs");
+    let subject = PathBuf::from(env!("CARGO_BIN_EXE_emaxx"));
+    let nonce = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .expect("timestamp")
+        .as_nanos();
+    let work = std::env::temp_dir().join(format!("{prefix}-{}-{nonce}", std::process::id()));
+    for &(name, program, observer, expected) in cases {
         let case = work.join(name);
         std::fs::create_dir_all(&case).expect("create contract directory");
         let source = case.join("contract.el");
@@ -79,8 +125,11 @@ fn thread_suspension_and_signals_match_gnu_with_real_native_code() {
                 // Both editors observe GC after their loader frames unwind.
                 command.args(["--eval", observer]);
             }
+            command.env_clear();
+            if verify {
+                command.env("EMAXX_GC_VERIFY", "1");
+            }
             let mut child = command
-                .env_clear()
                 .env(
                     "PATH",
                     std::env::var_os("PATH").expect("compiler toolchain PATH"),

@@ -4463,9 +4463,17 @@ fn native_funcall_exit_debugger(
 #[inline(never)]
 fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Option<NativeWord> {
     let (&function_word, call_arguments) = arguments.split_first()?;
-    let runtime = unsafe { &mut *active.runtime };
-    let interpreter = unsafe { &mut *active.interpreter };
-    let environment = unsafe { &mut *active.environment.get() };
+    // The active call's pointers, which a call below leaves as they are (a
+    // nested call puts the environment back).  A reference made from one
+    // ends at each call that can run Lisp: native code under it makes its
+    // own from the same pointers, and a thread switch there writes the
+    // interpreter's shell.  After such a call it is made again from the
+    // pointer, as `emaxx_native_gc_collect' makes its own.
+    let (interpreter_pointer, environment_pointer, runtime_pointer) =
+        (active.interpreter, active.environment.get(), active.runtime);
+    let runtime = unsafe { &mut *runtime_pointer };
+    let interpreter = unsafe { &mut *interpreter_pointer };
+    let environment = unsafe { &mut *environment_pointer };
     let original_function = unsafe { runtime.heap.decode_live(function_word) }.ok()?;
 
     // do_debug_on_call needs the full debugger/specpdl path.  Keep that cold
@@ -4480,6 +4488,10 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
         remember_helper_error(active, error);
         return Some(0);
     }
+    // begin_funcall's maybe_quit can run the debugger for a quit.
+    let runtime = unsafe { &mut *runtime_pointer };
+    let interpreter = unsafe { &mut *interpreter_pointer };
+    let environment = unsafe { &mut *environment_pointer };
     // The frame is written and popped in place, as eval_sub's is.
     let depth = interpreter.backtrace_frames_len();
     interpreter.push_native_backtrace_frame(original_function, call_arguments);
@@ -4492,6 +4504,8 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
         if !runtime.heap.collection_cannot_be_due() {
             unsafe { emaxx_native_gc_trampoline() };
         }
+        let interpreter = unsafe { &mut *interpreter_pointer };
+        let environment = unsafe { &mut *environment_pointer };
         // The collection's hooks/finalizers may replace the function cell.
         // Resolve it only after collection, including changes of callable
         // kind. The fallback reuses this same Ffuncall frame and depth.
@@ -4518,7 +4532,7 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
                     interpreter
                         .funcall_body(original_function, values, environment)
                         .and_then(|value| {
-                            runtime
+                            unsafe { &mut *runtime_pointer }
                                 .heap
                                 .encode(&value)
                                 .map_err(|error| super::lisp::native_ice(&error))
@@ -4526,16 +4540,20 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
                 }
             },
         };
+        let interpreter = unsafe { &mut *interpreter_pointer };
+        let environment = unsafe { &mut *environment_pointer };
         // The error keeps its box: signal_or_quit marks a signal it has
         // settled there.
         match result {
             Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
+                let runtime = unsafe { &mut *runtime_pointer };
                 native_funcall_exit_debugger(interpreter, runtime, environment, word)
             }
             Ok(word) => Ok(word),
             Err(error) => Err(interpreter.signal_or_quit(error, environment)),
         }
     };
+    let interpreter = unsafe { &mut *interpreter_pointer };
     interpreter.truncate_backtrace_frames(depth);
     interpreter.end_funcall();
 
@@ -5561,6 +5579,10 @@ fn invoke_native_get(active: &ActiveCall, symbol: NativeWord, property: NativeWo
             return value;
         }
     }
+    // Fassq's maybe_quit can run the debugger for a quit, and Lisp run
+    // there may switch threads, which writes the interpreter's shell: the
+    // reference made above ends at that call, and this is another.
+    let interpreter = unsafe { &*active.interpreter };
     native_plist_get(
         active,
         interpreter.symbol_plist_symbol(&symbol_name).word(),
@@ -5911,13 +5933,19 @@ extern "C" fn runtime_unbind_n(count: NativeWord) -> NativeWord {
 #[inline(never)]
 fn unbind_n_running(active: &ActiveCall, count: usize) -> Result<(), LispError> {
     let interpreter = unsafe { &mut *active.interpreter };
-    let environment = unsafe { &mut *active.environment.get() };
     let runtime = unsafe { &mut *active.runtime };
     // helper_unbind_n can call an interpreted cleanup without crossing
     // invoke_subr or NativeRuntime::invoke. Retire handlers already popped
     // by generated code before that cleanup runs.
     runtime.sync_handlers(interpreter)?;
     for _ in 0..count {
+        // An entry's undo can run Lisp (a cleanup, a watcher), whose
+        // native code makes its own references from these pointers and
+        // which may switch threads: each entry is undone through
+        // references of its own.
+        let interpreter = unsafe { &mut *active.interpreter };
+        let environment = unsafe { &mut *active.environment.get() };
+        let runtime = unsafe { &mut *active.runtime };
         if !interpreter.unbind_plain_innermost() {
             runtime.unwind_one(interpreter, environment)?;
         }
@@ -5975,6 +6003,11 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
             if valid.is_truthy() {
                 return Ok(0);
             }
+            // Each call below runs Lisp, whose native code makes its own
+            // references from the active call's pointers and which may
+            // switch threads: the references end at it and are made again.
+            let interpreter = unsafe { &mut *active.interpreter };
+            let environment = unsafe { &mut *active.environment.get() };
             let _ = super::lisp::call_c_primitive(
                 interpreter,
                 environment,
@@ -5985,6 +6018,8 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
                     kind,
                 ],
             )?;
+            let interpreter = unsafe { &mut *active.interpreter };
+            let environment = unsafe { &mut *active.environment.get() };
             let _ = super::lisp::call(interpreter, environment, "backtrace", &[])?;
             Err(LispError::SignalValue(Value::list([
                 Value::symbol("comp-sanitizer-error"),
