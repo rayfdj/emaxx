@@ -1574,4 +1574,61 @@ mod tests {
             "the dead symbol at the frontier's block end is freed"
         );
     }
+
+    /// The word of the function slot of the symbol cell whose word's
+    /// complement is COMPLEMENT, read as a word whatever the cell holds.
+    #[inline(never)]
+    fn function_word(complement: usize) -> usize {
+        let cell = !complement as *const super::SymbolCell;
+        // SAFETY: a cell of a registered symbol block, allocated or free;
+        // the slot is a word in either state.
+        unsafe { std::ptr::addr_of!((*cell).function).cast::<usize>().read() }
+    }
+
+    /// Whether the conservative scan takes that cell's address for a
+    /// symbol (alloc.c's live_symbol_holding).
+    #[inline(never)]
+    fn scan_finds(complement: usize) -> bool {
+        crate::lisp::alloc::conservative_value(!complement).is_some()
+    }
+
+    #[test]
+    fn a_freed_symbol_s_function_is_the_dead_object() {
+        // alloc.c:sweep_symbols puts an unmarked symbol on the free list
+        // with `symbol_free_list->u.s.function = dead_object ()', and
+        // live_symbol_holding takes a cell for a symbol unless its function
+        // is that (deadp): lisp.h's dead_object is make_lisp_ptr (NULL,
+        // Lisp_String), the string tag, 4, on a null pointer, which no
+        // object's word is.
+        const DEAD_OBJECT: usize = 4;
+        let _runtime = crate::Runtime::lock();
+        let mut interpreter = Interpreter::new();
+        let table = json::make_hash_table(&mut interpreter, "eq", Vec::new());
+        let Kind::HashTable(id) = table.kind() else {
+            panic!("a hash table");
+        };
+        id.set_weakness(1);
+        interpreter.set_global_binding("dead-object-witnesses", table);
+        let symbol = witnessed_symbol(&mut interpreter, &table);
+        assert_eq!(
+            function_word(symbol),
+            Value::Nil.word(),
+            "Fmake_symbol's function is nil"
+        );
+        assert!(scan_finds(symbol), "the live cell is found");
+        assert_eq!(
+            witnesses_after_collection(&mut interpreter, &table),
+            0,
+            "the symbol nothing holds is freed"
+        );
+        assert_eq!(
+            function_word(symbol),
+            DEAD_OBJECT,
+            "the freed cell's function is dead_object ()"
+        );
+        assert!(
+            !scan_finds(symbol),
+            "live_symbol_holding refuses the freed cell"
+        );
+    }
 }
