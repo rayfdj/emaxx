@@ -1515,6 +1515,11 @@ pub(crate) struct TreeSitterParserState {
     pub(crate) list_buffer_id: u64,
     pub(crate) tag: Value,
     pub(crate) deleted: bool,
+    /// Whether the parser is on its list buffer's ts_parser_list, the
+    /// per-buffer slot treesit-parser-create conses it onto, which
+    /// treesit-parser-delete, kill-buffer and kill-all-local-variables
+    /// take it off (reset_buffer_local_variables resets the slot).
+    pub(crate) listed: bool,
     pub(crate) included_ranges: Value,
     pub(crate) notifiers: Vec<Value>,
     pub(crate) parsed_tick: Option<crate::buffer::ModCount>,

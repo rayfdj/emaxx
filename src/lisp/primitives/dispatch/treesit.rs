@@ -1626,6 +1626,70 @@ mod ownership_tests {
     }
 
     #[test]
+    fn a_killed_buffer_lists_and_keeps_no_parser() {
+        // buffer.c's Fkill_buffer: reset_buffer_local_variables (b, 1)
+        // puts every slot with a per-buffer index back to its default,
+        // ts_parser_list's among them, so a killed buffer's object keeps
+        // none of its parsers.
+        let mut interp = json_interpreter("[]");
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (setq owned-weak (make-hash-table :test 'eq :weakness 'key)
+                       owned-buffer (generate-new-buffer "owned"))
+                 (with-current-buffer owned-buffer
+                   (insert "[]")
+                   (dotimes (_ 5)
+                     (puthash (treesit-parser-create 'json nil t) t owned-weak)))
+                 (kill-buffer owned-buffer)
+                 nil)"#,
+        );
+        lisp(&mut interp, &mut env, CHURN);
+        let kept = lisp(
+            &mut interp,
+            &mut env,
+            "(list (hash-table-count owned-weak) (buffer-live-p owned-buffer))",
+        );
+        assert_eq!(kept.to_string(), "(0 nil)");
+    }
+
+    #[test]
+    fn a_major_mode_change_unlists_the_parsers_and_deletes_none() {
+        // reset_buffer_local_variables (b, 0): ts_parser_list is not
+        // permanent-local, so kill-all-local-variables, each major mode's
+        // first step, empties it.  The parsers are not deleted: a node of
+        // one answers, a new parser does not reuse one, and the collector
+        // takes those nothing holds (GNU 30.2: (0 t nil "document" t)).
+        let mut interp = json_interpreter("[1, 2]");
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            "(progn
+               (setq owned-weak (make-hash-table :test 'eq :weakness 'key))
+               (dotimes (_ 3) (puthash (treesit-parser-create 'json nil t) t owned-weak))
+               (setq owned-parser (treesit-parser-create 'json nil nil 'owned)
+                     owned-node (treesit-parser-root-node owned-parser))
+               (kill-all-local-variables)
+               nil)",
+        );
+        lisp(&mut interp, &mut env, CHURN);
+        let after = lisp(
+            &mut interp,
+            &mut env,
+            "(let ((fresh (treesit-parser-create 'json nil nil 'owned)))
+               (list (hash-table-count owned-weak)
+                     (equal (treesit-parser-list nil nil t) (list fresh))
+                     (eq fresh owned-parser)
+                     (treesit-node-type owned-node)
+                     (treesit-node-check owned-node 'live)))",
+        );
+        assert_eq!(after.to_string(), r#"(0 t nil "document" t)"#);
+    }
+
+    #[test]
     fn a_parser_holds_its_tag_ranges_and_notifiers() {
         // treesit.h's Lisp_TS_Parser: tag, last_set_ranges and
         // after_change_functions are its Lisp words, marked with it.

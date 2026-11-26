@@ -296,7 +296,7 @@ impl Interpreter {
             .iter()
             .rev()
             .find(|parser| {
-                !parser.deleted
+                parser.listed
                     && parser.list_buffer_id == list_buffer_id
                     && parser.language == *language
                     && parser.tag == *tag
@@ -338,6 +338,7 @@ impl Interpreter {
             list_buffer_id,
             tag,
             deleted: false,
+            listed: true,
             included_ranges: Value::Nil,
             notifiers: Vec::new(),
             parsed_tick: None,
@@ -350,7 +351,19 @@ impl Interpreter {
     pub(crate) fn delete_treesit_parser(&mut self, value: &Value) -> Result<(), LispError> {
         let index = self.treesit_parser_index(value)?;
         self.treesit_parsers[index].deleted = true;
+        self.treesit_parsers[index].listed = false;
         Ok(())
+    }
+
+    /// reset_buffer_local_variables's reset of ts_parser_list, a slot
+    /// with a per-buffer index and not permanent-local: the parsers made
+    /// for the buffer ID leave its list, and stay parsers.
+    pub(crate) fn reset_treesit_parser_list(&mut self, id: u64) {
+        for parser in &mut self.treesit_parsers {
+            if parser.list_buffer_id == id {
+                parser.listed = false;
+            }
+        }
     }
 
     pub(crate) fn treesit_parser_details(
@@ -402,7 +415,7 @@ impl Interpreter {
             .iter()
             .rev()
             .filter(|parser| {
-                !parser.deleted
+                parser.listed
                     && parser.list_buffer_id == list_buffer_id
                     && language.is_none_or(|language| parser.language == *language)
                     && (*tag == Value::T || parser.tag == *tag)
@@ -512,10 +525,11 @@ impl Interpreter {
     }
 
     /// buffer.h's ts_parser_list of the buffer ID, which mark_buffer
-    /// traces with it: the parsers made for it and not deleted.
+    /// traces with it: the parsers on it, as treesit-parser-list reads
+    /// them.
     pub(crate) fn visit_treesit_buffer_parsers(&self, id: u64, visit: &mut impl FnMut(&Value)) {
         for parser in &self.treesit_parsers {
-            if !parser.deleted && parser.list_buffer_id == id {
+            if parser.listed && parser.list_buffer_id == id {
                 visit(&self.record_value(parser.record_id));
             }
         }
