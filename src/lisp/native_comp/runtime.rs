@@ -4632,21 +4632,33 @@ impl NativeWords {
         }
     }
 
-    /// SAFE_FREE's unbind_to (sa_count): the stack cut back to below the
-    /// entry that records the vector at ADDRESS, which is the innermost
-    /// whenever the calls it was taken for left the stack balanced.
+    /// SAFE_FREE's safe_free (sa_count): the vector's entry, which is the
+    /// innermost, popped and freed.  GNU's safe_free pops to sa_count and
+    /// asserts (eassert: a checking build alone) that each entry it frees
+    /// is SAFE_ALLOCA's own; a plain build frees whatever lies there.  A
+    /// vector no entry records, or entries an unbalanced callee left above
+    /// its own, is that impossible state; here it stops the process in
+    /// every build, as emacs_abort does, since the path is the cold one and
+    /// freeing or running what is not the vector's would hide it.
     #[cold]
     #[inline(never)]
     fn release_specpdl(active: &ActiveCall, address: *mut NativeWord) {
         let interpreter = unsafe { &mut *active.interpreter };
-        let Some(depth) = interpreter.array_entry_depth(address.cast::<Value>().cast_const())
-        else {
-            debug_assert!(false, "SAFE_FREE of a vector no entry records");
-            return;
-        };
-        // The vector's entry runs nothing but its free.
-        let undone = interpreter.unbind_to(depth, unsafe { &mut *active.environment.get() });
-        debug_assert!(undone.is_ok());
+        let innermost = interpreter.specpdl_index().checked_sub(1);
+        if innermost.is_none()
+            || interpreter.array_entry_depth(address.cast::<Value>().cast_const()) != innermost
+        {
+            crate::lisp::primitives::batch_stdout::stderr_write(
+                b"emaxx: SAFE_FREE of a vector that is not the innermost specpdl entry\n",
+            );
+            std::process::abort();
+        }
+        if let Some(entry) = interpreter.pop_specpdl_entry() {
+            // The vector's entry runs nothing but its free.
+            let undone =
+                interpreter.undo_specpdl_entry(entry, unsafe { &mut *active.environment.get() });
+            debug_assert!(undone.is_ok());
+        }
     }
 }
 
