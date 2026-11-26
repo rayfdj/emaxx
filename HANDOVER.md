@@ -21089,12 +21089,13 @@ setup_process_coding_systems's check now refuses). A 13-form
   private obarray whose 200 symbols the function uninterns, the build
   before printed corrupt names or died asking for 140 terabytes, and
   this one prints the names.  It found the record of one test wrong:
-  the log that showed the gl_state test failing before its fix was of
-  an earlier version of the test.  The test did fail without the fix,
-  and it is rewritten in the round so that the table is held by the
-  state in use alone, its setup in a frame of its own that is cleared
-  before the collection: it fails twice without the rooting and passes
-  twice with it.  **Two parity cases were races of GNU's own**, and
+  the log kept for the gl_state test showed it passing before its fix,
+  and was of an earlier version of the test, whose buffer's undo list
+  held the table.  The test as committed did fail without the fix, and
+  it is rewritten in the round so that the table is held by the state
+  in use alone, its setup in a frame of its own that is cleared before
+  the collection: it fails twice without the rooting and passes twice
+  with it.  **Two parity cases were races of GNU's own**, and
   one failed once in this round's validation: a pty child that answers
   and exits had its output read when a loop of `process-live-p' and
   `accept-process-output' ended, which can be before the child's last
@@ -21116,6 +21117,53 @@ setup_process_coding_systems's check now refuses). A 13-form
   hard finding, 594 changed lines with 5 tests and 12 assertions
   added; its one note of a dropped result is the scanner's call of
   `internal--syntax-propertize', which was there and is only moved.
+- **Round 394: the frozen comparison accepts GNU's own eglot race, and
+  says so (the owner's decision of 25 November 2026; no milestone
+  item).**  **The race**, found that day (its paragraph follows the CI
+  notes): `eglot-test-rust-completion-exit-function' starts two
+  rust-analyzer processes that share one jsonrpc process buffer, and
+  the completion request fails with "Timed out" in about a quarter of
+  GNU's own runs and of Emaxx's.  The frozen comparison reported that
+  mismatch in nine of the fifteen complete attempts from round 383 to
+  round 392, GNU's side six times and Emaxx's three; on round 392 it
+  was GNU's on the first attempt and Emaxx's on the second.  **The
+  decision**, in the owner's words: "Accept either result on this one
+  test when the failing side's error is the jsonrpc timeout.  The test
+  still runs and is still reported."  **The rule** as written in
+  src/compat.rs: when one runner passed this test of
+  test/lisp/progmodes/eglot-tests.el and the other failed it with the
+  condition `jsonrpc-error' and a message holding
+  `(jsonrpc-error-message . "Timed out")', the pair counts as a
+  matching outcome, the timeout is not that runner's unsuccessful
+  execution, and the acceptance is reported with both runners'
+  results: `[accepted_gnu_race]' under the file, an `ACCEPTED' line
+  after the totals, and `accepted_gnu_races' in comparison.json and
+  summary.json.  Everything else is compared as before: any other
+  result of this test; both runners timing out, whose outcomes match
+  while neither run succeeded, so that run still fails (the first
+  version accepted it, the independent review pointed out that the
+  owner's sentence names one failing side, and the owner confirmed the
+  narrower reading); a file whose runner timed out; the same failure
+  in any other test or file.  **What the rule can hide**: Emaxx timing
+  out on this request in every run would no longer fail a run by
+  itself.  The `ACCEPTED' line names the side that failed, each
+  round's CI note records it, and the file's other 51 tests use the
+  same jsonrpc machinery.  The review (is the code exactly the rule
+  approved, is every acceptance visible, does it hide anything else)
+  found it as approved and clean, and that no tool or workflow reads
+  the fields it adds; the runners' totals can now show one unexpected
+  result in a run that succeeds.
+  Validation of the round's commit (gate profile, one test thread a
+  process): the grouped gate 3,670 passed, 0 failed, 2 ignored (the
+  rule's two library tests more); cli 30, cli_parity 187, ert_runner
+  3, native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 4; the harness's own tests
+  59, the rule's two among them; clippy `-D warnings' and rustfmt
+  clean.  The round audit reports no hard finding, 436 changed lines
+  with 4 tests and 48 assertions added; it notes, as it must, that the
+  comparison's own code changed (src/compat.rs and the harness), which
+  is the round's subject and the owner's decision, and one assertion
+  changed, a harness test's call that gained an argument.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24668,11 +24716,12 @@ ert-tests as a whole 26,307 ms against 27,211.
   side on the development machine: GNU failed 3 and Emaxx 3; with the
   first connect removed from a copy of the test, GNU passed 12 of 12
   and Emaxx 12 of 12.  A rust-analyzer newer than the pin cannot run
-  this test at all (its progress token is renamed).  The frozen
-  comparison is unchanged and still compares the test: a mismatch on it
-  alone, with a `jsonrpc-error' "Timed out" on the failing side, is
-  this race, and how the comparison should treat it is the owner's to
-  decide.
+  this test at all (its progress token is renamed).  Since round 394
+  the frozen comparison accepts the pair this race makes, a pass on
+  one side and the `jsonrpc-error' "Timed out" on the other, by the
+  owner's decision of the same day, and reports each acceptance with
+  the side that failed; the test still runs on both sides, and
+  anything else about it is compared as before (round 394's entry).
 
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 393 and its review), the first
