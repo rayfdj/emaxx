@@ -25368,6 +25368,33 @@ ert-tests as a whole 26,307 ms against 27,211.
   stage, three doctests passing and three that must fail to compile,
   none failed.
 
+**On `7b9f75b`** (round 400): the frozen run (run 45829281469) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 61.7 s against 53.9 s (1.145), test bodies 256.3 s
+  against 241.2 s (1.063), in all 1.078 (GNU's suite took 295 s).  The
+  widest body gaps are tramp-tests (18.5 s against 15.7 s), comp-tests
+  (14.1 against 12.4), process-tests (2.63 against 1.63),
+  semantic-utest-ia (3.06 against 2.35) and mule-tests (2.17 against
+  1.53).  Both editors passed the eglot test, and GNU's threads test
+  did not abort.  **The bodies' ratio across the last runs** (1.021,
+  1.032, 1.044, 1.063 on rounds 396, 398, 399 and 400) is not a
+  slowing of four points.  File by file against round 396's run, with
+  GNU's times scaled to the runner, Emaxx's excess grew by 10.1 s, of
+  which 5.6 s is eglot-tests alone: in round 396's run GNU's side sat
+  out the race's 10 s timeout there (35.3 s against Emaxx's 29.0),
+  which flattered that run's ratio by about four points; without that
+  file the two runs read 1.058 and 1.078.  Another 2.1 s is three
+  files whose GNU times were outliers in one run or the other
+  (ert-tests, info-xref-tests, epg-tests).  What is left, about 2.4 s
+  in 210, is spread over tramp, comp, process and many small files
+  (27 files' excess up by more than 20 ms, 16 down), and is the size
+  expected of round 399's dearer collection.  A single run does not
+  resolve less than that: the same commit has read 1.025 and 1.080 on
+  two attempts.  The Rust gate (run 45829276776) passed: 3,701 library
+  tests, the eight integration targets (239; the two new parity
+  cases), the binaries' tests (63) and the doc stage, three doctests
+  passing and three that must fail to compile, none failed.
+
 **The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
   25 Nov by running the one test alone.
   `eglot-test-rust-completion-exit-function' connects twice
