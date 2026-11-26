@@ -6121,6 +6121,8 @@ impl Interpreter {
         // Preserve the allocation's original writable pointer provenance.
         // Deriving this from an &InterpreterState would only grant shared
         // access, while the sweep must later clean up freed-record indexes.
+        // The cast exposes that provenance, and `registered_gc_view's cast
+        // back takes it up: the collector's pointer is the owner's.
         let state = self.state.as_ref().expect("active interpreter state");
         crate::lisp::alloc::register_state(state.0.as_ptr() as usize);
     }
@@ -6757,6 +6759,18 @@ pub struct Interpreter {
 /// continuations retain raw pointers into it. Moving this owner makes no
 /// uniqueness assertion about the pointed-to state. Only its final Drop
 /// restores the Box, after execution and borrowed GC views have ended.
+///
+/// The pointer is the one `Box::into_raw' gave, and every reference into
+/// the state is made from it: the shell's `Deref' and `DerefMut' for the
+/// interpreter that owns it, `registered_gc_view' for a collection in
+/// another (the registry keeps this pointer's address, its provenance
+/// exposed).  They are siblings, so each must be dead before the next is
+/// made and used: the owner's end with the statement that borrows the
+/// shell, and the collector's are made only while the owner is not
+/// executing (see `registered_gc_view').  A Box here instead would be
+/// retagged as unique at every move of the owner, and a collector's
+/// access through the registry's older pointer would then conflict with
+/// the Box's next use.
 struct InterpreterStateOwner(std::ptr::NonNull<InterpreterState>);
 
 impl InterpreterStateOwner {
@@ -6805,16 +6819,38 @@ impl Interpreter {
     /// STATE must remain registered and allocated for the entire view. The
     /// caller may only read roots or perform serialized sweep cleanup, must
     /// respect outstanding field borrows, and must not take or drop the state.
+    ///
+    /// The view's references are made from the owner's own pointer
+    /// (`register_state_as_root'), beside the owner's.  That is sound
+    /// while no reference the owner made is used again after the view's:
+    /// while the interpreter that owns STATE is not executing.  It is
+    /// another interpreter's than the collecting one (the Lisp threads of
+    /// one interpreter share its state), so it is either idle on this OS
+    /// thread (the tests' image template, a test's second interpreter) or
+    /// belongs to an OS thread that waits for the runtime, which this one
+    /// holds for the whole collection, as alloc.c:mark_threads reads the
+    /// thread_state of threads that wait for global_lock.  Checked builds
+    /// assert both: the runtime held, and the state outside every eval and
+    /// funcall (thread.h's lisp_eval_depth, 0 at top level).
     unsafe fn registered_gc_view(state: usize) -> std::mem::ManuallyDrop<Self> {
         let pointer = std::ptr::NonNull::new(state as *mut InterpreterState)
             .expect("registered state is non-null");
         // Construct all potentially fallible fields before the non-owning
         // owner-shaped reference, so unwinding cannot drop the live state.
         let continuations = continuations::ThreadContinuations::default();
-        std::mem::ManuallyDrop::new(Self {
+        let view = std::mem::ManuallyDrop::new(Self {
             state: Some(InterpreterStateOwner(pointer)),
             continuations,
-        })
+        });
+        debug_assert!(
+            crate::lisp::runtime::held(),
+            "a collection views another state only while its OS thread holds the runtime"
+        );
+        debug_assert_eq!(
+            view.lisp_eval_depth, 0,
+            "a collection views another interpreter's state only while it runs no Lisp"
+        );
+        view
     }
 }
 
