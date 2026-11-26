@@ -228,7 +228,11 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   the CI control (the owner's), a macOS run and C5.3's gate.  Round
   396: the two reaper threads are gone, GNU's deleted list in the
   SIGCHLD handler in their place; C5.3's gate was written, passed by
-  the review in eight ways, and held back.
+  the review in eight ways, and held back.  Round 397, outside the
+  plan's stages: `mapatoms' and the completion functions walk the
+  obarray in place as GNU's iterator does, with no snapshot to go
+  stale or unmarked, and tree-sitter's nodes, parsers and queries
+  hold the Lisp words GNU's mark, a buffer its listed parsers.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -21332,6 +21336,116 @@ setup_process_coding_systems's check now refuses). A 13-form
   of a dropped result are outside Unix (the thread a child keeps
   there, and a kill before it), and its note of a changed assertion is
   SAFE_FREE's, the same assertion on the unbind to the entry's depth.
+- **Round 397: the obarray walks are GNU's, in place, and tree-sitter's
+  objects hold what GNU's mark (M2, the lifetimes of A2.5; none
+  closed).**  **The walks**: `mapatoms' and the completion functions
+  walked a copy of the obarray's symbols taken as they began, the
+  standard obarray's shared snapshot or another obarray's vector.  GNU
+  has no copy: map_obarray and minibuf.c walk the buckets with
+  obarray_iter_t.  So a symbol uninterned before its turn was still
+  visited here, one interned during the walk was not, and the
+  snapshot, unmarked across the predicate's calls, handed completion's
+  predicate a symbol a collection had freed (reproduced from Lisp on
+  the build before).  Now the walk is GNU's iterator: it reads the
+  buckets as they are and steps from the current symbol's next as it
+  is.  `try-completion' and `all-completions' take the symbol and step
+  past it before the predicate, as minibuf.c; `test-completion' looks
+  the string up and walks only to ignore case; `mapatoms' calls the
+  function, then steps.  The snapshot, its key and the obarray's epoch
+  are gone, and the dump's and ERT's listings read the obarray afresh.
+  A table of mutations (the function uninterning the current, a later
+  or an earlier symbol, interning twenty, signaling, re-entering,
+  collecting; for each of the three walks) prints what GNU prints.
+  **Cost**: the first in-place walk was dearer than the snapshot (a
+  byte-compiled `mapatoms' 341.1 instructions a symbol to 420.5), and
+  three commits took that back: the buckets read in line, the
+  iterator two words kept in registers, completion's walk inlined
+  with a symbol offering its name and becoming a Lisp word only when
+  the predicate is called, and `compare-strings' holding its two
+  strings once a scan where it borrowed each twice a character (a
+  candidate's comparison 201 instructions to 158; GNU's 191 to 203).
+  **Counts** (before = round 395's build): `try-completion' over the
+  obarray 3,074,223 instructions to 2,347,035 (GNU 2,790,974),
+  `all-completions' 5,604,947 to 4,337,902 (GNU 5,282,880), and a
+  byte-compiled `mapatoms' 341.1 a symbol to 352.4 (GNU 298.9).  That
+  last one is dearer than before: the walk's own loop is 35.3
+  instructions against GNU's 38.8, the bucket scan GNU makes too is
+  what the snapshot made once, and the rest of the distance to GNU is
+  the call into the function, D17's.  **Tree-sitter**: treesit.h's
+  node keeps its parser as a Lisp field, the parser marks its
+  language, buffer, tag, last set ranges and after-change functions,
+  a query its language and source, and the buffer's ts_parser_list
+  holds the parsers made for it.  Here a node knew its parser by id
+  and the collector traced none of those words: from Lisp, a node
+  outlived its parser and panicked at its next use, a parser's ranges
+  were read back from freed conses, a lazily compiled query read a
+  freed source, and an undeleted parser left its buffer's list at the
+  next collection.  Now the node's record has its parser as a slot
+  (not printed, as print.c prints none of it), the record's trace
+  marks a parser's and a query's words, and a buffer's trace marks
+  its listed parsers.  The list is reset as GNU's per-buffer slot is,
+  at `kill-buffer' and at `kill-all-local-variables': the parsers are
+  not deleted, they leave the list, are not reused by
+  `treesit-parser-create', and their nodes go on answering.  Before,
+  a mode change listed and reused the old parsers, which Lisp could
+  see ((3 nil t "document" t) for GNU's (0 t nil "document" t)).  An
+  explicit collection costs 21,243 instructions more (0.08%), the
+  buffer's trace looking for its parsers; that grows with buffers and
+  parsers until these are GNU's pseudovectors with the fields inline
+  (the plan's R9).  **Two vectors**: of the eleven places listed in
+  round 393 where a vector of Lisp words outlives a call into Lisp,
+  two were real and now hold their words as GNU's lists on the stack
+  do: `get-load-suffixes' (a quit in its walk runs the debugger, and
+  a collection there freed the suffixes made so far) and
+  `treesit-induce-sparse-tree' (a collection in PROCESS-FN freed the
+  subtrees made before it); each has a test that failed first.  The
+  other nine were read and hold no hazard: no Lisp runs between the
+  making and the use (`replace-match''s pieces,
+  `define-charset-internal''s members, two font lists, a notification
+  event, the plist of a printed hash table), or the words are held
+  elsewhere (the specpdl's old values, a call's own arguments), or
+  they are no Lisp words (socket addresses).  A second terminal's
+  waiting events, listed there too, are no hazard either: the
+  deletion of a hung-up terminal runs no Lisp, as GNU's with FORCE
+  `noelisp', and a test over two ptys fails if it ever comes to.
+  **A test converted**: the test of a symbol uninterned before
+  `mapatoms' comes to it counted a weak table's entries after a
+  collection inside the function.  GNU answers that program (1 nil),
+  and (0 nil) only once a deep recursion has cleared stale stack
+  words: the count is the conservative scan's in GNU too.  The test
+  now collects after the walk with the stack cleared, and says so;
+  what it is for is that the walk neither visits the symbol nor holds
+  it.  **The independent review** (the one question: does the round
+  cheat or break something) ran the build against GNU on thirty walk
+  cases and a dump and load round trip, the same; found the first
+  five commits and three of the next four clean; and found one break
+  in the tree-sitter commit: a killed buffer kept its undeleted
+  parsers alive (a weak table showed 5 for GNU's 0).  The list's
+  reset above is its fix, made in this round, and the review of it
+  was clean: a parser made after a mode change, an unlisted parser's
+  node and the parser itself, its deletion, an edit, the
+  permanent-local cases, and an indirect buffer and its base all
+  answer as GNU.  The test of that reset ended in the node's `live'
+  check, whose primitive has the name of a GNU ERT test, which the
+  round audit does not let a runtime file name; a rewording made to
+  clear that (the node's start) no longer failed when the reset
+  deleted the parsers, the review caught it, and the element now asks
+  the node's parser its language, which signals for a deleted parser
+  in GNU and here and fails the test under that mutation.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,688 passed, 0 failed, 2 ignored (eleven
+  library tests more); cli 30, cli_parity 189, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementer's run of the whole
+  library at four test threads: 3,689 passed, 0 failed, on its branch,
+  which also carried the held-back gate.  The round audit reports no
+  hard finding, 1,149 changed lines with 11 tests and 15 assertions
+  added; its one note of a changed assertion is the old walk's test,
+  which expected the uninterned symbol kept and visited, (1 t), where
+  the two tests in its place expect GNU's answers.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24964,6 +25078,20 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 397 and its reviews), within the
+  plan's later stages or outside the round.**  One line each, all
+  tree-sitter and all the same before the round: GNU's
+  `treesit-parser-delete' takes a parser off its own buffer's list
+  (treesit.c:1636), so a parser made in an indirect buffer, which is
+  on the base's list, stays listed after its deletion, and here it
+  leaves ((2 2 2 3 3 3 0) in GNU, (2 2 2 3 2 2 0) here);
+  `treesit-parser-create' on a killed buffer makes and lists the
+  parser in GNU and signals here; a parser's notifiers are stored and
+  marked but never called here, where GNU calls them at a reparse; a
+  parser prints as `#s(treesit-parser)' for GNU's
+  `#<treesit-parser for json>', as recorded; and the buffer's trace
+  of its parsers costs more with every buffer and parser until the
+  plan's R9.
 - **Found after the scope lock (round 396 and its review), within the
   plan's later stages or outside the round.**  One line each: the
   release of a helper's array would run, not only pop, entries an
