@@ -1545,7 +1545,9 @@ pub(crate) fn get_load_suffixes_value(
             .forwarded_c_value("load-suffixes")
             .unwrap_or(Value::Nil),
     );
-    let mut values = Vec::new();
+    // Fget_load_suffixes's list is a local the stack holds: the suffixes
+    // made are rooted across the walk's quit checks.
+    let mut values = crate::lisp::alloc::RootedVec::new();
     while let Some((suffix, _)) = suffixes.current.cons_values() {
         let mut reps = search::SearchTail::new(
             interp
@@ -1558,7 +1560,7 @@ pub(crate) fn get_load_suffixes_value(
         }
         suffixes.advance(interp, env, false)?;
     }
-    Ok(Value::list(values))
+    Ok(Value::list(values.iter().copied()))
 }
 
 pub(crate) fn locate_file_internal(
