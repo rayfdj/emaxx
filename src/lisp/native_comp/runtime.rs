@@ -18883,6 +18883,91 @@ mod tests {
         assert_eq!(values.first(), Some(&Value::Integer(249_999)));
         assert_eq!(values.last(), Some(&Value::Integer(0)));
     }
+
+    /// SAFE_FREE of a helper's vector whose specpdl entry is not the
+    /// innermost stops the process (`NativeWords::release_specpdl'), where
+    /// GNU's safe_free asserts in a checking build: once with another entry
+    /// above the vector's own, as an unbalanced callee would leave one, and
+    /// once with no entry recording the vector.  Each runs in a child
+    /// process, this test again with the variable naming the part, and the
+    /// balanced take and release is the control: its child returns.
+    #[test]
+    fn safe_free_of_a_vector_not_innermost_stops_the_process() {
+        use std::os::unix::process::ExitStatusExt;
+
+        const CHILD: &str = "EMAXX_TEST_SAFE_FREE_PART";
+        const STOP: &str = "emaxx: SAFE_FREE of a vector that is not the innermost specpdl entry";
+        if let Ok(part) = std::env::var(CHILD) {
+            let mut interpreter = Interpreter::new();
+            let mut environment = Env::new();
+            let mut runtime = NativeRuntime::default();
+            let frame = runtime.new_call_frame(std::ptr::null_mut(), &interpreter);
+            runtime.begin_call(&frame);
+            with_active_call(&mut interpreter, &mut environment, &mut runtime, || {
+                with_active(|active| {
+                    // One word more than the helper's own array holds: the
+                    // vector is the specpdl's (SAFE_ALLOCA_LISP's xmalloc).
+                    let mut inline = [0; 2];
+                    let words = NativeWords::take(active, &mut inline, 3);
+                    assert!(words.in_specpdl);
+                    // SAFETY: the active call's interpreter, used for one
+                    // statement, as the helpers use it.
+                    let interpreter = unsafe { &mut *active.interpreter };
+                    let innermost = interpreter.specpdl_index() - 1;
+                    assert_eq!(
+                        interpreter.array_entry_depth(words.address.cast::<Value>().cast_const()),
+                        Some(innermost)
+                    );
+                    match part.as_str() {
+                        "above" => interpreter.record_unwind_current_buffer(),
+                        "popped" => assert!(interpreter.pop_specpdl_entry().is_some()),
+                        "balanced" => {}
+                        other => panic!("no part {other}"),
+                    }
+                    words.release(active);
+                    assert_eq!(part, "balanced", "SAFE_FREE returned");
+                    // SAFETY: as above.
+                    assert_eq!(unsafe { &*active.interpreter }.specpdl_index(), innermost);
+                });
+            });
+            runtime
+                .finish_call(&mut interpreter, &frame)
+                .expect("finish the native activation");
+            return;
+        }
+        let run = |part: &str| {
+            std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    concat!(
+                        module_path!(),
+                        "::safe_free_of_a_vector_not_innermost_stops_the_process"
+                    )
+                    .strip_prefix("emaxx::")
+                    .expect("the crate's module path"),
+                    "--exact",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(CHILD, part)
+                .output()
+                .expect("run the part in a child process")
+        };
+        for part in ["above", "popped"] {
+            let child = run(part);
+            let stderr = String::from_utf8_lossy(&child.stderr);
+            assert_eq!(
+                child.status.signal(),
+                Some(libc::SIGABRT),
+                "{part}: {:?}\n{stderr}",
+                child.status
+            );
+            assert!(stderr.contains(STOP), "{part}: {stderr}");
+        }
+        let control = run("balanced");
+        let stderr = String::from_utf8_lossy(&control.stderr);
+        assert!(control.status.success(), "{:?}\n{stderr}", control.status);
+        assert!(!stderr.contains(STOP), "{stderr}");
+    }
 }
 
 #[cfg(test)]
