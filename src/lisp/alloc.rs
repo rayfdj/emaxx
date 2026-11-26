@@ -48,6 +48,8 @@ pub(crate) const SYMBOL_CELL_BYTES: usize = symbols::SYMBOL_CELL_SIZE;
 pub(crate) const STRING_CELL_BYTES: usize = strings::STRING_CELL_SIZE;
 #[cfg(test)]
 pub(crate) use symbols::allocated_uninterned_symbols;
+#[cfg(test)]
+pub(crate) use symbols::mapped_symbol_cells;
 pub(crate) use symbols::{
     LispFwd, SymbolInterned, SymbolText, adopt_image_symbol_blocks, allocate_symbol, free_symbols,
     image_cell_words, image_symbol_bytes, image_symbol_offset, live_symbols, sweep_symbols,
@@ -107,9 +109,8 @@ fn block_alignment(kind: BlockKind) -> usize {
     }
 }
 
-/// The mark word of a cell on the free list (alloc.c sets the mark bit
-/// of free cells so the sweep skips them; a live cell carries its
-/// collection's epoch, which `begin_mark_epoch' never makes this).
+/// The mark word of a string cell on the free list (a live one carries
+/// its collection's epoch, which `begin_mark_epoch' never makes this).
 pub(crate) const FREE_MARK: u32 = u32::MAX;
 
 /// alloc.c's `mem_type' of a block: what its cells are.
@@ -243,8 +244,8 @@ fn unregister_block(start: usize) {
 /// live is still released.
 static IMAGE_REGION_OPEN: AtomicBool = AtomicBool::new(false);
 
-/// The image's rebuilt cells of one kind (strings and symbols allocated
-/// while an image loads, vectors in the blocks registered then), for a
+/// The image's rebuilt cells of one kind (strings allocated while an
+/// image loads, vectors in the blocks registered then), for a
 /// sweep that need not read them: how many the current mark epoch has
 /// marked, raised as a mark first reaches one, and how many the last sweep
 /// that read them left (`UNKNOWN' until one has since an image load).  The
@@ -305,7 +306,7 @@ fn clear_bits(words: &[Cell<usize>]) {
 
 /// A mark epoch begins: no image cell is marked in it yet.
 pub(crate) fn begin_image_mark_epoch() {
-    for cells in [&DUMP.strings, &DUMP.symbols, &DUMP.vectors] {
+    for cells in [&DUMP.strings, &DUMP.vectors] {
         cells.marked.store(0, Ordering::Relaxed);
     }
 }
@@ -341,7 +342,7 @@ impl Drop for ImageRegion {
 
 /// The image's cells change: the next sweep reads them all.
 fn forget_image_live() {
-    for cells in [&DUMP.strings, &DUMP.symbols, &DUMP.vectors] {
+    for cells in [&DUMP.strings, &DUMP.vectors] {
         cells.live.store(ImageCells::UNKNOWN, Ordering::Relaxed);
     }
 }
@@ -2143,9 +2144,25 @@ pub(crate) fn cons_is_mapped(address: usize) -> bool {
         == Some(&BlockOrigin::Mapped)
 }
 
+/// For tests: whether ADDRESS is in a symbol block an image's load
+/// allocated, one of its rebuilt blocks: neither mapped nor the heap's own.
+#[cfg(test)]
+pub(crate) fn symbol_is_rebuilt(address: usize) -> bool {
+    crate::lisp::runtime::ensure_held();
+    BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .by_kind[BlockKind::Symbol as usize]
+        .range(..=address)
+        .next_back()
+        .is_some_and(|(&start, &origin)| {
+            address < start + block_bytes(BlockKind::Symbol) && origin == BlockOrigin::Image
+        })
+}
+
 /// For tests: whether every mark bit of the cons, float and vector blocks
-/// is clear and no large vector's header carries ARRAY_MARK_FLAG, as a
-/// collection's sweeps leave them.
+/// is clear, no large vector's header carries ARRAY_MARK_FLAG and no
+/// symbol's gcmarkbit is set, as a collection's sweeps leave them.
 #[cfg(test)]
 pub(crate) fn every_mark_bit_clear() -> bool {
     // The blocks are the runtime's (`live_conses').
@@ -2158,6 +2175,7 @@ pub(crate) fn every_mark_bit_clear() -> bool {
         // SAFETY: a registered float block's marks.
         clear(&unsafe { &*std::ptr::addr_of!((*(start as *const FloatBlock)).marks) }.marked)
     }) && vectors::every_mark_bit_clear()
+        && symbols::every_mark_bit_clear()
 }
 
 /// For tests: a cons alone in a new block, with no other cons in its block

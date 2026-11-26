@@ -100,12 +100,12 @@ pub(crate) fn begin_mark_epoch() -> u32 {
     epoch
 }
 
-/// alloc.c's mark bit, on the object: a string or a symbol is marked when
-/// it carries the current collection's epoch, so the mark phase writes a
-/// word into the object instead of inserting its address into a table, and
-/// no pass clears the bits afterwards.  (A cons, a float and a vector in a
-/// block are marked in their block's bitmap and a large vector by its
-/// header's ARRAY_MARK_FLAG, which the sweeps clear.)
+/// alloc.c's mark bit, on the object: a string is marked when it carries
+/// the current collection's epoch, so the mark phase writes a word into
+/// the object instead of inserting its address into a table, and no pass
+/// clears the bits afterwards.  (A cons, a float and a vector in a block
+/// are marked in their block's bitmap, a large vector by its header's
+/// ARRAY_MARK_FLAG and a symbol by its gcmarkbit, which the sweeps clear.)
 #[derive(Debug, Default)]
 pub(crate) struct MarkBit(Cell<u32>);
 
@@ -249,8 +249,8 @@ static INTERNED_SYMBOL_NAMES: symbols::InternedNames = symbols::InternedNames;
 
 /// alloc.c's `sweep_symbols': an unmarked symbol is freed.  No table
 /// maps an uninterned symbol's text back to it, so nothing else lets it go.
-pub(crate) fn sweep_symbol_cells(epoch: u32) {
-    crate::lisp::alloc::sweep_symbols(epoch, |_| {});
+pub(crate) fn sweep_symbol_cells() {
+    crate::lisp::alloc::sweep_symbols(|_| {});
 }
 
 impl SymbolName {
@@ -418,24 +418,23 @@ impl SymbolName {
                 payload: Cell::new(Default::default()),
                 next: Cell::new(None),
                 flags: Cell::new(0),
-                // init_symbol's SYMBOL_UNINTERNED, the image flag unset.
+                // init_symbol's SYMBOL_UNINTERNED and its gcmarkbit of 0.
                 bits: Cell::new(0),
                 state: Cell::new(0),
-                mark: MarkBit::default(),
             },
         ))
     }
 
-    /// Mark the symbol for EPOCH; true when it was not yet marked in it.
+    /// Mark the symbol; true when it was not yet marked.
     #[inline]
-    pub(crate) fn mark(&self, epoch: u32) -> bool {
-        self.0.mark(epoch)
+    pub(crate) fn mark(&self) -> bool {
+        self.0.mark()
     }
 
-    /// Whether the symbol is marked for EPOCH.
+    /// alloc.c's `symbol_marked_p'.
     #[inline]
-    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
-        self.0.is_marked(epoch)
+    pub(crate) fn is_marked(&self) -> bool {
+        self.0.is_marked()
     }
 
     /// The interned symbol host TEXT names: oblookup in the initial
@@ -2229,6 +2228,19 @@ impl Value {
         } else {
             None
         }
+    }
+
+    /// lisp.h's `dead_object': `make_lisp_ptr (NULL, Lisp_String)', the
+    /// word of no object, which alloc.c stores in a free symbol's function.
+    #[inline(always)]
+    pub(crate) const fn dead_object() -> Value {
+        Value::from_bits(TAG_STRING)
+    }
+
+    /// alloc.c's `deadp'.
+    #[inline(always)]
+    pub(crate) fn deadp(self) -> bool {
+        self.0 == TAG_STRING
     }
 
     /// `EQ': the same word.

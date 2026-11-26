@@ -6564,18 +6564,23 @@ impl NativeHeap {
             }
         }
 
-        // A cons, float or vector is made unmarked (the sweeps clear the
-        // marks they read, and allocation sets none), so one made after the
-        // mark phase starts and before its kind's sweep would be freed
-        // there: this collector, as alloc.c's, makes none in between, which
-        // alloc.c's counters of them show (a checked build's guard, as
-        // alloc.c's eassert of !gc_in_progress).
+        // A cons, float, vector or symbol is made unmarked (the sweeps
+        // clear the marks they read, and allocation sets none), so one made
+        // after the mark phase starts and before its kind's sweep would be
+        // freed there: this collector, as alloc.c's, makes none in between,
+        // which alloc.c's counters of them show (a checked build's guard,
+        // as alloc.c's eassert of !gc_in_progress).
         let consed = || {
             use crate::lisp::alloc::counters::{
-                CONS_CELLS_CONSED, FLOATS_CONSED, VECTOR_CELLS_CONSED,
+                CONS_CELLS_CONSED, FLOATS_CONSED, SYMBOLS_CONSED, VECTOR_CELLS_CONSED,
             };
-            [&CONS_CELLS_CONSED, &FLOATS_CONSED, &VECTOR_CELLS_CONSED]
-                .map(|counter| counter.load(std::sync::atomic::Ordering::Relaxed))
+            [
+                &CONS_CELLS_CONSED,
+                &FLOATS_CONSED,
+                &VECTOR_CELLS_CONSED,
+                &SYMBOLS_CONSED,
+            ]
+            .map(|counter| counter.load(std::sync::atomic::Ordering::Relaxed))
         };
         let before_marks = consed();
         let mut lisp_roots = crate::lisp::alloc::conservative_values(pending);
@@ -6609,7 +6614,12 @@ impl NativeHeap {
         );
         let free_vector_slots = crate::lisp::alloc::sweep_vectors();
         crate::lisp::eval::purge_freed_records_in_live_states(interpreter);
-        crate::lisp::types::sweep_symbol_cells(epoch);
+        debug_assert_eq!(
+            consed()[3],
+            before_marks[3],
+            "a symbol made in a collection"
+        );
+        crate::lisp::types::sweep_symbol_cells();
         let free_strings = crate::lisp::alloc::sweep_strings(epoch);
         crate::lisp::alloc::clear_dump_marks();
         interpreter.note_sweeps_free_counts(free_strings, free_vector_slots);

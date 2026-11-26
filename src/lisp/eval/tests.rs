@@ -173,12 +173,12 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
 #[test]
 fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
     // alloc.c's sweeps unmark what they keep (XUNMARK_CONS, the float
-    // blocks' bits, the vectors' ARRAY_MARK_FLAG), and Fcons and
-    // make_float give a new object no mark: after a collection no bit of a
-    // cons, float or vector block is set and no large vector's header
-    // carries the flag, an object made between collections is unmarked
-    // until the next one marks it, and that one leaves it unmarked again,
-    // kept.
+    // blocks' bits, the vectors' ARRAY_MARK_FLAG, the symbols'
+    // gcmarkbit), and Fcons and make_float give a new object no mark:
+    // after a collection no bit of a cons, float or vector block is set,
+    // no large vector's header carries the flag and no symbol's gcmarkbit
+    // is set, an object made between collections is unmarked until the
+    // next one marks it, and that one leaves it unmarked again, kept.
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     crate::test_support::eval_lisp(&mut interp, &mut env, "(garbage-collect)")
@@ -203,6 +203,21 @@ fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
         unreachable!("constructed vector");
     };
     assert!(!large_vector.mark_bit().is_marked());
+    // A symbol, whose mark is its gcmarkbit: Fmake_symbol makes it
+    // unmarked (init_symbol's `gcmarkbit = 0'), and sweep_symbols clears
+    // the bit of the one it keeps.
+    let symbol = crate::lisp::primitives::call(
+        &mut interp,
+        "make-symbol",
+        &[Value::String("zz-symbol-made-between".into())],
+        &mut env,
+    )
+    .expect("a symbol");
+    let Kind::Symbol(name) = symbol.kind() else {
+        unreachable!("constructed symbol");
+    };
+    assert!(!name.is_marked());
+    large_vector.set(0, symbol);
     interp.set_symbol_value_cell("zz-made-between", vector);
     interp.set_symbol_value_cell("zz-large-made-between", large);
     crate::test_support::eval_lisp(&mut interp, &mut env, "(garbage-collect)")
@@ -210,16 +225,19 @@ fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
     assert!(crate::lisp::alloc::every_mark_bit_clear());
     assert!(!cell.mark_bit().is_marked() && !cell_float.mark_bit().is_marked());
     assert!(!large_vector.mark_bit().is_marked());
+    assert!(!name.is_marked());
     assert_eq!(large_vector.len(), 600);
     assert_eq!(
         crate::test_support::eval_lisp(
             &mut interp,
             &mut env,
-            "(list (length zz-large-made-between) (aref zz-large-made-between 599))"
+            "(list (length zz-large-made-between)
+                   (symbol-name (aref zz-large-made-between 0))
+                   (aref zz-large-made-between 599))"
         )
         .expect("the large vector")
         .to_string(),
-        "(600 (5))"
+        "(600 \"zz-symbol-made-between\" (5))"
     );
     assert_eq!(
         crate::test_support::eval_lisp(&mut interp, &mut env, "zz-made-between")

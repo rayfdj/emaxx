@@ -4856,10 +4856,10 @@ pub(crate) struct LispReachability {
     /// Whether an object was marked since `trace_pending' last answered.
     reached: bool,
     weak_tables: Vec<crate::lisp::types::HashTableRef>,
-    /// This collection's number: a string or symbol is marked by carrying
-    /// it (alloc.c's mark bit, on the object); a cons, float or vector in
-    /// a block by its block's mark bit and a large vector by its header's
-    /// ARRAY_MARK_FLAG, which the sweeps clear.
+    /// This collection's number: a string is marked by carrying it; a
+    /// cons, float or vector in a block by its block's mark bit, a large
+    /// vector by its header's ARRAY_MARK_FLAG and a symbol by its
+    /// gcmarkbit, which the sweeps clear.
     epoch: u32,
     /// The retention pass after the live sets are taken: every slot of
     /// every record is traced, a weak table's actual entries included, so
@@ -4869,9 +4869,9 @@ pub(crate) struct LispReachability {
 
 impl LispReachability {
     /// A marker for another interpreter state in the same collection:
-    /// the same epoch on the objects (conses, vectors, strings, symbols
-    /// are the process's), its own sets for the kinds marked by id (a
-    /// record id names a different object in each state).
+    /// the objects and their marks are the process's (the strings' is
+    /// this collection's epoch), the work list and the weak tables it
+    /// finds its own.
     pub(crate) fn with_epoch(epoch: u32) -> Self {
         let mut marker = Self::default_without_epoch();
         marker.epoch = epoch;
@@ -4920,7 +4920,7 @@ impl LispReachability {
             Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
             // alloc.c:survives_gc_p tests the symbol's mark. A live owner's
             // obarray marks its symbols; a retired owner's names are not roots.
-            Kind::Symbol(symbol) => symbol.is_marked(self.epoch),
+            Kind::Symbol(symbol) => symbol.is_marked(),
             Kind::Cons(value) => value.mark_bit().is_marked(),
             Kind::Vector(value) => value.mark_bit().is_marked(),
             Kind::Closure(value) => value.mark_bit().is_marked(),
@@ -5001,7 +5001,7 @@ impl LispReachability {
             Kind::BigInteger(value) => value.mark_bit().mark(),
             Kind::Float(value) => value.mark_bit().mark(),
             Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
-            Kind::Symbol(symbol) => symbol.mark(self.epoch),
+            Kind::Symbol(symbol) => symbol.mark(),
             Kind::Cons(value) => value.mark_bit().mark(),
             Kind::Vector(value) => value.mark_bit().mark(),
             Kind::Closure(value) => value.mark_bit().mark(),

@@ -10,13 +10,14 @@
 //!
 //! Not C: the cell keeps the host-side key text
 //! beside the name (the uninterned symbols' identity by text is the
-//! pre-representation deviation the ledger records), the mark is the
-//! epoch word. Name, value/alias, function, plist and flags are authoritative
-//! object fields. Remaining host name and localized/forwarded adapters
-//! must be removed before this migration is complete.
+//! pre-representation deviation the ledger records). Name, value/alias,
+//! function, plist and flags are authoritative object fields, and the mark
+//! is lisp.h's gcmarkbit, which the sweep clears. Remaining host name and
+//! localized/forwarded adapters must be removed before this migration is
+//! complete.
 
-use super::super::types::{MarkBit, SymbolName, Value};
-use super::{BlockKind, FREE_MARK, SYMBOLS_PER_BLOCK, new_block, release_block, sweep_blocks_of};
+use super::super::types::{SymbolName, Value};
+use super::{BlockKind, SYMBOLS_PER_BLOCK, new_block, release_block, sweep_blocks_of};
 use std::cell::Cell;
 use std::ptr::NonNull;
 use std::sync::atomic::{AtomicBool, AtomicI64, AtomicUsize, Ordering};
@@ -183,15 +184,14 @@ pub struct SymbolCell {
     /// `Lisp_Symbol.u.s.next': the next symbol of its obarray bucket.
     pub(crate) next: Cell<Option<SymbolName>>,
     pub(crate) flags: Cell<u8>,
-    /// Bit 0 (`IMAGE_CELL'): allocated while an image loaded, in one of
-    /// its rebuilt blocks (see `ImageCells'), set by `allocate_symbol'.
+    /// Bit 0 (`GCMARKBIT'): lisp.h's `gcmarkbit', which the mark phase sets
+    /// in a cell of the heap and `sweep_symbols' clears.
     /// Bit 7 (`DUMPED_CELL'): a mapped cell, as the image writes it.
     /// Bits 1 and 2: lisp.h's `interned' (`SymbolInterned'), in GNU's
     /// encoding.  Bits 3 to 5: a forward's kind (`FWD_KIND_BITS'), or 3 to
     /// 6 a kboard field's offset (`KBOARD_OFFSET_BITS').
     pub(crate) bits: Cell<u8>,
     pub(crate) state: Cell<u16>,
-    pub(crate) mark: MarkBit,
 }
 
 // VALUE_PRESENT retains the existing distinction between an absent binding
@@ -272,9 +272,12 @@ pub(crate) const STORE_EFFECT_VARIABLES: [&str; 7] = [
     "parse-sexp-lookup-properties",
 ];
 
-const IMAGE_CELL: u8 = 1;
+/// Bit 0: lisp.h's `gcmarkbit', the first bit of Lisp_Symbol's flags, set
+/// from the mark phase to the sweep and clear in every cell otherwise, a
+/// free one's included.
+const GCMARKBIT: u8 = 1;
 /// Bit 7: a cell of the image's mapped blocks, marked in the dump's
-/// mark_bits (`DUMP'), never by its mark word.
+/// mark_bits (`DUMP'), never by its gcmarkbit.
 const DUMPED_CELL: u8 = 1 << 7;
 const INTERNED_SHIFT: u32 = 1;
 const INTERNED_BITS: u8 = 3 << INTERNED_SHIFT;
@@ -418,12 +421,6 @@ impl SymbolCell {
     /// Funintern's SYMBOL_UNINTERNED.
     pub(crate) fn mark_uninterned(&self) {
         self.set_interned(SymbolInterned::Uninterned);
-    }
-
-    /// Whether the cell was allocated while an image loaded.
-    #[inline(always)]
-    pub(crate) fn is_image(&self) -> bool {
-        self.bits.get() & IMAGE_CELL != 0
     }
 
     #[inline]
@@ -1070,16 +1067,18 @@ const _: () = {
     assert!(offset_of!(SymbolCell, flags) == 56);
     assert!(offset_of!(SymbolCell, bits) == 57);
     assert!(offset_of!(SymbolCell, state) == 58);
-    assert!(offset_of!(SymbolCell, mark) == 60);
+    // The flags, bits and state are the cell's last fields, one 32-bit
+    // word (`SymbolCell::header'); the four bytes after them are padding.
+    assert!(offset_of!(SymbolCell, state) + 2 == std::mem::size_of::<SymbolCell>() - 4);
 };
 
 /// The words of a symbol cell an image maps: the key text's offset in the
 /// image and its length, the name, function, plist and value words, no
 /// next symbol (the loader files the symbol, which sets its `interned'),
-/// and the flags, the bits with the mapped flag alone (a mapped cell is
-/// not one of `ImageCells', as no sweep reads it, and is marked in the
-/// dump's mark_bits) and STATE, the mark the loader's.  The offsets and
-/// the Lisp words are the image's, made the process's by relocations.
+/// and the flags, the bits with the mapped flag alone (no sweep reads a
+/// mapped cell, and its mark is the dump's, never its gcmarkbit) and
+/// STATE.  The offsets and the Lisp words are the image's, made the
+/// process's by relocations.
 pub(crate) fn image_cell_words(
     key: (u64, usize),
     lisp: [u64; 4],
@@ -1113,9 +1112,10 @@ pub(crate) const fn image_symbol_bytes(count: usize) -> usize {
 const _: () = assert!((SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE).is_multiple_of(64));
 
 /// pdumper's mapped symbols: the image's symbol blocks made the heap's
-/// image blocks where they lie, their COUNT cells marked in the current
-/// epoch, the last block's other cells free (on no free list: the image's
-/// blocks are never allocated from or given back).
+/// image blocks where they lie, their COUNT cells as the image holds them
+/// (nothing is written for one), the last block's other cells free, their
+/// function dead_object () (on no free list: the image's blocks are never
+/// allocated from or given back).
 ///
 /// # Safety
 /// START, aligned to a cache line, begins blocks of COUNT cells laid out
@@ -1124,20 +1124,15 @@ const _: () = assert!((SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE).is_multiple_of(64))
 pub(crate) unsafe fn adopt_image_symbol_blocks(start: *mut u8, count: usize) {
     let start = start as usize;
     assert!(start.is_multiple_of(64), "unaligned image symbols");
-    let epoch = super::super::types::current_mark_epoch();
     let block_bytes = SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE;
     let mut blocks = Vec::with_capacity(count.div_ceil(SYMBOLS_PER_BLOCK));
     for block in 0..count.div_ceil(SYMBOLS_PER_BLOCK) {
         let base = start + block * block_bytes;
         let cells = (count - block * SYMBOLS_PER_BLOCK).min(SYMBOLS_PER_BLOCK);
-        for index in 0..SYMBOLS_PER_BLOCK {
+        for index in cells..SYMBOLS_PER_BLOCK {
             let cell = (base + index * SYMBOL_CELL_SIZE) as *mut SymbolCell;
-            // SAFETY: inside the block; the mark word is written as a word.
-            unsafe {
-                std::ptr::addr_of_mut!((*cell).mark)
-                    .cast::<u32>()
-                    .write(if index < cells { epoch } else { FREE_MARK })
-            };
+            // SAFETY: an unused cell of the last block.
+            unsafe { set_free(cell) };
         }
         blocks.push((base, block_bytes));
     }
@@ -1222,27 +1217,31 @@ impl SymbolRef {
         self.0 == other.0
     }
 
-    /// Whether the symbol is marked for EPOCH.
+    /// alloc.c's `symbol_marked_p': the dump's mark of a mapped symbol,
+    /// else the cell's gcmarkbit.
     #[inline]
-    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
-        if self.cell().bits.get() & DUMPED_CELL != 0 {
+    pub(crate) fn is_marked(&self) -> bool {
+        let bits = self.cell().bits.get();
+        if bits & DUMPED_CELL != 0 {
             return super::DUMP.is_marked(self.0.as_ptr() as usize);
         }
-        self.cell().mark.is_marked(epoch)
+        bits & GCMARKBIT != 0
     }
 
-    /// Mark the symbol for EPOCH; true when it was not yet marked in it.
+    /// alloc.c's `set_symbol_marked' after its test of `symbol_marked_p':
+    /// true when the symbol was not yet marked.
     #[inline]
-    pub(crate) fn mark(&self, epoch: u32) -> bool {
+    pub(crate) fn mark(&self) -> bool {
         let cell = self.cell();
-        if cell.bits.get() & DUMPED_CELL != 0 {
+        let bits = cell.bits.get();
+        if bits & DUMPED_CELL != 0 {
             return super::DUMP.mark(self.0.as_ptr() as usize);
         }
-        let marked = cell.mark.mark(epoch);
-        if marked && cell.is_image() {
-            super::DUMP.symbols.note_marked();
+        if bits & GCMARKBIT != 0 {
+            return false;
         }
-        marked
+        cell.bits.set(bits | GCMARKBIT);
+        true
     }
 }
 
@@ -1269,16 +1268,16 @@ pub(crate) fn allocate_symbol(cell: SymbolCell) -> SymbolRef {
     };
     LIVE_SYMBOLS.store(LIVE_SYMBOLS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
     super::counters::tally(&super::counters::SYMBOLS_CONSED, 1);
+    // init_symbol's `p->u.s.gcmarkbit = 0': a symbol is made unmarked, and
+    // its function, nil, is what makes the cell an allocated one.
+    debug_assert!(
+        cell.bits.get() & (GCMARKBIT | DUMPED_CELL) == 0 && !cell.function.get().deadp(),
+        "a symbol is made unmarked, in the heap"
+    );
     // SAFETY: SLOT is a free cell of a symbol block; every field is
     // written before a handle is made.
     unsafe {
         std::ptr::write(slot, cell);
-        if super::image_region_open() {
-            (*slot).bits.set((*slot).bits.get() | IMAGE_CELL);
-        }
-        (*slot)
-            .mark
-            .set_raw(super::super::types::current_mark_epoch());
         SymbolRef(NonNull::new_unchecked(slot))
     }
 }
@@ -1302,19 +1301,28 @@ fn bump_symbol() -> *mut SymbolCell {
     block as *mut SymbolCell
 }
 
-/// Write the free mark into every cell of a fresh block.
+/// Make CELL a free cell: its function dead_object (), as alloc.c's
+/// sweep_symbols leaves a symbol it frees (`symbol_free_list->u.s.function
+/// = dead_object ()'), and its gcmarkbit clear, as a freed symbol's is.
+///
+/// # Safety
+/// CELL is a cell of a symbol block that holds no symbol.
+unsafe fn set_free(cell: *mut SymbolCell) {
+    // SAFETY: the caller's contract; each field is written as itself.
+    unsafe {
+        std::ptr::addr_of_mut!((*cell).function).write(Cell::new(Value::dead_object()));
+        std::ptr::addr_of_mut!((*cell).bits).write(Cell::new(0));
+    }
+}
+
+/// Make every cell of a fresh block a free one.
 ///
 /// # Safety
 /// START is a block `new_block' just allocated.
 pub(super) unsafe fn init_block(start: usize) {
     for index in 0..SYMBOLS_PER_BLOCK {
-        let cell = (start + index * SYMBOL_CELL_SIZE) as *mut SymbolCell;
-        // SAFETY: inside the block; the mark word is written as a word.
-        unsafe {
-            std::ptr::addr_of_mut!((*cell).mark)
-                .cast::<u32>()
-                .write(FREE_MARK)
-        };
+        // SAFETY: inside the block, which holds no symbol yet.
+        unsafe { set_free((start + index * SYMBOL_CELL_SIZE) as *mut SymbolCell) };
     }
 }
 
@@ -1329,44 +1337,29 @@ pub(super) unsafe fn live_symbol_holding(start: usize, address: usize) -> Option
         return None;
     }
     let cell = (start + index * SYMBOL_CELL_SIZE) as *mut SymbolCell;
-    // SAFETY: inside a registered symbol block; the mark word is readable
-    // in every state.
-    let mark = unsafe { (*cell).mark.raw() };
-    (mark != FREE_MARK).then_some(cell)
+    // SAFETY: inside a registered symbol block; the function slot is a
+    // word in every state (`!deadp (s->u.s.function)').
+    let function = unsafe { (*cell).function.get() };
+    (!function.deadp()).then_some(cell)
 }
 
-/// alloc.c's `sweep_symbols': an unmarked cell is released (CLEANUP sees
-/// it first: the registries an uninterned symbol's key names let it go)
-/// and goes back on the free list, rebuilt from every free cell; a block
-/// holding nothing but free cells is given back once more than a block's
-/// worth of free cells is at hand.  Returns gcstat's `total_symbols'.
-pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) -> usize {
+/// alloc.c's `sweep_symbols': a marked cell is kept and unmarked
+/// (`sym->u.s.gcmarkbit = 0'); an unmarked one that holds a symbol is
+/// released (CLEANUP sees it first: the registries an uninterned symbol's
+/// key names let it go) and made a free cell; the free list is rebuilt
+/// from every free cell; a block holding nothing but free cells is given
+/// back once more than a block's worth of free cells is at hand.  Every
+/// block outside the image's mapped ones is read at every collection, the
+/// ones an image's load allocated among them, as alloc.c sweeps all that
+/// is not its dump.  Returns gcstat's `total_symbols'.
+pub(crate) fn sweep_symbols(mut cleanup: impl FnMut(&SymbolCell)) -> usize {
     let bump_next = SYMBOL_BUMP_NEXT.get();
     let bump_end = SYMBOL_BUMP_END.get();
     let mut free_list: *mut SymbolCell = std::ptr::null_mut();
     let mut num_free = 0usize;
     let mut num_used = 0usize;
     let mut released = Vec::new();
-    // When no image symbol died, the image's blocks are left unread
-    // (checked builds read them and assert so).
-    let image_unchanged = super::DUMP.symbols.unchanged();
-    let mut image_live = 0;
     for (start, image_block) in sweep_blocks_of(BlockKind::Symbol) {
-        if image_block && image_unchanged {
-            if cfg!(debug_assertions) {
-                for index in 0..SYMBOLS_PER_BLOCK {
-                    let cell = (start + index * SYMBOL_CELL_SIZE) as *mut SymbolCell;
-                    // SAFETY: inside a registered symbol block.
-                    let mark = unsafe { (*cell).mark.raw() };
-                    assert!(
-                        mark == epoch || mark == FREE_MARK,
-                        "an unread image block holds a dead symbol at {:#x}",
-                        cell as usize
-                    );
-                }
-            }
-            continue;
-        }
         let lim = if bump_end == start + SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE {
             (bump_next - start) / SYMBOL_CELL_SIZE
         } else {
@@ -1376,15 +1369,27 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
         let mut this_free = 0usize;
         for index in 0..lim {
             let cell = (start + index * SYMBOL_CELL_SIZE) as *mut SymbolCell;
-            // SAFETY: inside a registered symbol block.
-            let mark = unsafe { (*cell).mark.raw() };
-            if mark == epoch {
+            // SAFETY: inside a registered symbol block, below its bump
+            // limit: a cell that is allocated or free, whose bits and
+            // function slot are readable in either state.
+            let bits = unsafe { (*cell).bits.get() };
+            if bits & GCMARKBIT != 0 {
+                // An image object stays out of gcstat's object totals, as
+                // a dumped one does.
                 num_used += usize::from(!image_block);
-                // SAFETY: an allocated cell.
-                image_live += usize::from(unsafe { (*cell).is_image() });
+                // SAFETY: a marked cell holds a symbol.
+                unsafe {
+                    debug_assert!(
+                        !(*cell).function.get().deadp(),
+                        "a free symbol cell at {:#x} is marked",
+                        cell as usize
+                    );
+                    (*cell).bits.set(bits & !GCMARKBIT);
+                }
                 continue;
             }
-            if mark != FREE_MARK {
+            // SAFETY: as above.
+            if !unsafe { (*cell).function.get() }.deadp() {
                 // SAFETY: an allocated, unmarked cell: nothing reaches it,
                 // so its registries let it go and the slot becomes free.
                 unsafe {
@@ -1397,7 +1402,7 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
                             SYMBOL_CELL_SIZE - std::mem::size_of::<FreeSymbol>(),
                         );
                     }
-                    (*cell).mark.set_raw(FREE_MARK);
+                    set_free(cell);
                 }
             }
             this_free += 1;
@@ -1420,9 +1425,6 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
         }
     }
     SYMBOL_FREE_LIST.set(free_list);
-    if !image_unchanged {
-        super::DUMP.symbols.set_live(image_live);
-    }
     for start in released {
         release_block(start, BlockKind::Symbol);
     }
@@ -1450,13 +1452,54 @@ pub(crate) fn allocated_uninterned_symbols() -> usize {
             // SAFETY: inside a registered symbol block, below its bump
             // limit: a cell that is free or allocated.
             unsafe {
-                if (*cell).mark.raw() != FREE_MARK && (*cell).is_uninterned() {
+                if !(*cell).function.get().deadp() && (*cell).is_uninterned() {
                     count += 1;
                 }
             }
         }
     }
     count
+}
+
+/// `super::every_mark_bit_clear' for the symbol blocks: no cell's
+/// gcmarkbit is set, of a symbol or of a free cell.
+#[cfg(test)]
+pub(super) fn every_mark_bit_clear() -> bool {
+    let bump_next = SYMBOL_BUMP_NEXT.get();
+    let bump_end = SYMBOL_BUMP_END.get();
+    super::blocks_of(BlockKind::Symbol)
+        .into_iter()
+        .all(|start| {
+            let lim = if bump_end == start + SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE {
+                (bump_next - start) / SYMBOL_CELL_SIZE
+            } else {
+                SYMBOLS_PER_BLOCK
+            };
+            (0..lim).all(|index| {
+                let cell = (start + index * SYMBOL_CELL_SIZE) as *const SymbolCell;
+                // SAFETY: a cell of a registered symbol block below its bump
+                // limit, allocated or free.
+                unsafe { (*cell).bits.get() & GCMARKBIT == 0 }
+            })
+        })
+}
+
+/// For tests: the cells of the image's mapped symbol blocks that hold a
+/// symbol, and the ones that are free.
+#[cfg(test)]
+pub(crate) fn mapped_symbol_cells() -> [usize; 2] {
+    // The blocks are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
+    let mut cells = [0; 2];
+    for start in super::mapped_blocks_of(BlockKind::Symbol) {
+        for index in 0..SYMBOLS_PER_BLOCK {
+            let address = start + index * SYMBOL_CELL_SIZE;
+            // SAFETY: a registered symbol block.
+            let found = unsafe { live_symbol_holding(start, address) };
+            cells[usize::from(found.is_none())] += 1;
+        }
+    }
+    cells
 }
 
 pub(crate) fn live_symbols() -> usize {
@@ -1575,6 +1618,63 @@ mod tests {
         );
     }
 
+    #[inline(never)]
+    fn kept_symbol(interpreter: &mut Interpreter, table: &Value, holder: &str) {
+        let symbol = primitives::call(
+            interpreter,
+            "make-symbol",
+            &[Value::String("kept".into())],
+            &mut Env::new(),
+        )
+        .expect("make a symbol");
+        let Kind::Symbol(name) = symbol.kind() else {
+            panic!("a symbol");
+        };
+        assert!(!name.is_marked(), "Fmake_symbol makes a symbol unmarked");
+        primitives::call(
+            interpreter,
+            "puthash",
+            &[symbol, Value::T, *table],
+            &mut Env::new(),
+        )
+        .expect("witness the symbol");
+        interpreter.set_global_binding(holder, symbol);
+    }
+
+    #[test]
+    fn the_sweep_that_keeps_a_symbol_clears_its_mark() {
+        // alloc.c:sweep_symbols, of a symbol whose gcmarkbit is set:
+        // `++num_used; sym->u.s.gcmarkbit = 0;' -- the symbol it keeps is
+        // unmarked again, so the next collection frees it once nothing
+        // holds it.
+        let _runtime = crate::Runtime::lock();
+        let mut interpreter = Interpreter::new();
+        let table = json::make_hash_table(&mut interpreter, "eq", Vec::new());
+        let Kind::HashTable(id) = table.kind() else {
+            panic!("a hash table");
+        };
+        id.set_weakness(1);
+        interpreter.set_global_binding("kept-symbol-witnesses", table);
+        kept_symbol(&mut interpreter, &table, "kept-symbol-holder");
+        for _ in 0..2 {
+            assert_eq!(
+                witnesses_after_collection(&mut interpreter, &table),
+                1,
+                "the symbol a variable holds is kept"
+            );
+            assert!(
+                crate::lisp::alloc::every_mark_bit_clear(),
+                "the sweep left no symbol marked"
+            );
+        }
+        interpreter.set_global_binding("kept-symbol-holder", Value::Nil);
+        assert_eq!(
+            witnesses_after_collection(&mut interpreter, &table),
+            0,
+            "the symbol nothing holds is freed by the next collection"
+        );
+    }
+
     /// The word of the function slot of the symbol cell whose word's
     /// complement is COMPLEMENT, read as a word whatever the cell holds.
     #[inline(never)]
@@ -1601,6 +1701,8 @@ mod tests {
         // Lisp_String), the string tag, 4, on a null pointer, which no
         // object's word is.
         const DEAD_OBJECT: usize = 4;
+        assert_eq!(Value::dead_object().word(), DEAD_OBJECT);
+        assert!(Value::dead_object().deadp() && !Value::Nil.deadp());
         let _runtime = crate::Runtime::lock();
         let mut interpreter = Interpreter::new();
         let table = json::make_hash_table(&mut interpreter, "eq", Vec::new());

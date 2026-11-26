@@ -81,9 +81,8 @@ pub(crate) struct DumpPrivate {
     only_start: AtomicUsize,
     only_len: AtomicUsize,
     only_marks: AtomicPtr<Cell<usize>>,
-    /// The rebuilt strings, symbols and vectors of the images.
+    /// The rebuilt strings and vectors of the images.
     pub(crate) strings: ImageCells,
-    pub(crate) symbols: ImageCells,
     pub(crate) vectors: ImageCells,
 }
 
@@ -96,7 +95,6 @@ pub(crate) static DUMP: DumpPrivate = DumpPrivate {
     only_len: AtomicUsize::new(0),
     only_marks: AtomicPtr::new(std::ptr::null_mut()),
     strings: ImageCells::new(),
-    symbols: ImageCells::new(),
     vectors: ImageCells::new(),
 };
 
