@@ -24716,6 +24716,28 @@ ert-tests as a whole 26,307 ms against 27,211.
   gate (run 45721662503) passed: 3,675 library tests, the seven
   integration targets (231) and the binaries' tests (61), none failed.
 
+**On `aeed924`** (round 394): the Rust gate (run 45730994898) passed:
+  3,677 library tests, the seven integration targets (231) and the
+  binaries' tests (63), none failed.  The frozen run (run 45730998400)
+  did not complete on either of its attempts, each time for GNU's own
+  failure, as on round 388: GNU's run of test/src/process-tests.el
+  ended in an abort with none of the file's 37 outcomes written.  The
+  backtrace, resolved against this run's oracle binary, is again a
+  Lisp thread's `accept-process-output' reaching
+  wait_reading_process_output's `else if (xerrno == EBADF)
+  emacs_abort ()' (process.c:5833).  The test is
+  `process-tests/multiple-threads-waiting', whose ten threads each
+  loop on `accept-process-output' for a process of their own; GNU's
+  own source tags it `:unstable' when EMACS_EMBA_CI is set, so GNU's
+  CI does not run it, and the frozen run, which does not set that
+  variable, does.  Up to that file both attempts passed every file
+  compared (506 of 519), eglot-tests.el among them with both sides
+  passing, so the round's rule was not exercised.  The abort has ended
+  four of the frozen attempts since round 388, two on round 388 and
+  two on this one and none on the rounds between: when it comes it
+  has come on both attempts within the hour.  Not run a third time;
+  round 395's runs, whose source includes this round's, stand for it.
+
 **The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
   25 Nov by running the one test alone.
   `eglot-test-rust-completion-exit-function' connects twice
