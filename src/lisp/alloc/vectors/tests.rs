@@ -129,6 +129,33 @@ fn vector_word_offsets_survive_mark_bitmap_boundaries() {
 }
 
 #[test]
+fn the_image_s_large_vectors_follow_one_another() {
+    // alloc.c's large vector is its header and its contents, and its mark
+    // the header's ARRAY_MARK_FLAG, so nothing of the collector's follows
+    // it: where the image holds its large vectors, each begins where the
+    // one before it ends.
+    let slots = VBLOCK_BYTES_MAX / WORD_SIZE + 1;
+    let mut words = vec![0u64; 1 + slots];
+    words[0] = slots as u64;
+    let nbytes = words.len() * WORD_SIZE;
+    assert!(nbytes > VBLOCK_BYTES_MAX);
+    let mut writer = ImageVectorWriter::default();
+    assert_eq!(writer.push(&words), ImageVectorPlace::Large(0));
+    assert_eq!(writer.next_place(nbytes), ImageVectorPlace::Large(nbytes));
+    assert_eq!(writer.push(&words), ImageVectorPlace::Large(nbytes));
+    let (blocks, block_count, large, large_count) = writer.finish();
+    assert!(blocks.is_empty());
+    assert_eq!(block_count, 0);
+    assert_eq!(large_count, 2);
+    assert_eq!(large.len() * WORD_SIZE, 2 * nbytes);
+    assert_eq!(
+        large[words.len()],
+        slots as u64,
+        "the second vector's header"
+    );
+}
+
+#[test]
 fn native_subr_allocation_has_gnu_fields_and_direct_tagged_identity() {
     use native_functions::NativeFunctionSpec;
     use std::ffi::CString;
