@@ -16,6 +16,7 @@ core::arch::global_asm!(
     r#"
     .section __TEXT,__text,regular,pure_instructions
     .p2align 2
+    .globl _emaxx_native_suspend_trampoline
     .private_extern _emaxx_native_suspend_trampoline
 _emaxx_native_suspend_trampoline:
     sub sp, sp, #96
@@ -45,6 +46,7 @@ core::arch::global_asm!(
     r#"
     .text
     .p2align 4
+    .globl emaxx_native_suspend_trampoline
     .hidden emaxx_native_suspend_trampoline
     .type emaxx_native_suspend_trampoline, @function
 emaxx_native_suspend_trampoline:
