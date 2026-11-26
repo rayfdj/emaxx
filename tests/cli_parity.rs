@@ -6592,19 +6592,25 @@ fn a_childs_end_waits_for_status_notify_as_gnu_s() {
   (princ (format "kill-buffer %S\n" (condition-case err (kill-buffer b) (error err))))
   (princ (format "log %S live=%S\n" (reverse log) (buffer-live-p b)))))"##,
         r##"(progn
-(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
 (let* ((log nil) p
        (m (make-mutex)) (cv (make-condition-variable m)) (go nil)
        (th (make-thread
             (lambda ()
-              (setq p (make-process :name "tp" :command '("sh" "-c" "echo x") :noquery t :connection-type 'pipe
+              (setq p (make-process :name "tp" :command '("sh" "-c" "read l; echo x") :noquery t :connection-type 'pipe
                                     :filter (lambda (_ s) (push (list 'out s (thread-name (current-thread))) log))
                                     :sentinel (lambda (_ e) (push (list 'sen e (thread-name (current-thread))) log))))
               (with-mutex m (while (not go) (condition-wait cv)))
               (push 'thread-done log))
             "T")))
   (while (not p) (sleep-for 0.05))
-  (busy 0.4)
+  ;; The child ends at its input's end, so after make-process has
+  ;; returned in T (a SIGCHLD during it is GNU's to lose: handled on
+  ;; this thread, where T's block_child_signal does not reach, before
+  ;; p->alive).  Then wait until the SIGCHLD handler has reaped it (its
+  ;; /proc entry goes with the reap); the bound is only against a hang.
+  (process-send-eof p)
+  (let ((proc (format "/proc/%d" (process-id p))) (end (+ (float-time) 30)))
+    (while (and (file-exists-p proc) (< (float-time) end))))
   (accept-process-output nil 0.3)
   (princ (format "main-wait %S %S\n" (reverse log) (memq p (process-list))))
   (with-mutex m (setq go t) (condition-notify cv t))
