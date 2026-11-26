@@ -1660,8 +1660,10 @@ mod ownership_tests {
         // reset_buffer_local_variables (b, 0): ts_parser_list is not
         // permanent-local, so kill-all-local-variables, each major mode's
         // first step, empties it.  The parsers are not deleted: a node of
-        // one answers, a new parser does not reuse one, and the collector
-        // takes those nothing holds (GNU 30.2: (0 t nil "document" t)).
+        // one answers, and so does its parser (treesit-parser-language
+        // signals treesit-parser-deleted for a deleted one), a new parser
+        // does not reuse one, and the collector takes those nothing holds
+        // (GNU 30.2: (0 t nil "document" t)).
         let mut interp = json_interpreter("[1, 2]");
         let mut env = Env::new();
         lisp(
@@ -1684,7 +1686,8 @@ mod ownership_tests {
                      (equal (treesit-parser-list nil nil t) (list fresh))
                      (eq fresh owned-parser)
                      (treesit-node-type owned-node)
-                     (treesit-node-check owned-node 'live)))",
+                     (eq (treesit-parser-language (treesit-node-parser owned-node))
+                         'json)))",
         );
         assert_eq!(after.to_string(), r#"(0 t nil "document" t)"#);
     }
