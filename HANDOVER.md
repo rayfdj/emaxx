@@ -258,6 +258,11 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   before), a byte-compiled `mapc' callback 352.7 against 288.9 (415.7),
   of `maphash' 355.0 against 291.1, of `mapatoms' 342.1 against 298.9.
   The parked D130 is fixed with it.
+  Round 400: the call paths measured again and planned in ten stages;
+  native code's `funcall' of byte code enters it in place (548.1 to
+  458.2 instructions against GNU's 316.0) and `apply' has its own
+  entry (915.1 to 717.1 against 545.0); a `mapc' callback is 351.7
+  against 288.9 until the next stage.
 
 ## Where things stand — 15 October 2026
 
@@ -21631,6 +21636,87 @@ setup_process_coding_systems's check now refuses). A 13-form
   added; its one note of new state is the static DUMP, which stands
   for pdumper.c's dump_private and dump_public and replaces three
   statics.
+- **Round 400: native code's `funcall' of byte code enters it in place,
+  and `apply' has its own entry (M2, D17 and A5.3, stages 1 and 3 of the
+  plan of the call paths; none closed).**  **The plan**: the call paths
+  were measured again on round 397's build
+  (/home/user/emaxx-work/m2/callpaths-plan.md is the working copy; its
+  ten stages and corrected closing numbers are summed up below).  The
+  largest excess was native code calling byte code: the plain native
+  `funcall' had no byte-code arm, so a byte-code callee paid the general
+  native funcall and then an out-of-line entry, and `apply' reached its
+  body through five dispatch steps and a general function lookup.
+  **Stage 1**: after its native and subr arms, in funcall_general's
+  order, the plain native funcall reads the function's cell and, for a
+  byte-code closure, takes Ffuncall's gates (the quit and depth tests,
+  the collection that cannot be due, the debugger's next call), records
+  the frame, enters the closure in place over the caller's arguments,
+  runs the exit debugger and pops.  It takes the interpreter and the
+  environment from the activation at each step and keeps no reference to
+  either across the call.  **Stage 3**: the generator gives `apply' an
+  entry of its own, as `nth' has, whose body is the old dispatch's steps
+  without the dispatch; the padding of a call is decided by Fapply's
+  FUN, the cell read and SUBRP alone, where a full classification ran;
+  and the proper-list length runs maybe_quit's body only when its first
+  test (the quit flag and pending signals) fails, as rarely_quit does,
+  at the same steps.  Both generated tables are regenerated, the Linux
+  one from GNU's source and the Darwin one by the generator's re-emit
+  mode.  **Counts** (before = round 397's build, instructions a call):
+  native `funcall' of byte code 548.1 to 458.2 (GNU 316.0), native
+  `apply' 915.1 to 717.1 (545.0), an element of native `mapcar' 669.9 to
+  576.1 (550.5).  Stage 1 gave 90 where the plan expected 170: the
+  in-place entry costs 260, as the entry from Rust does, which the plan
+  had undercounted.  The guards did not move: the general native entry
+  124.1 (58.0), a native subr call 78.1, byte code to a subr 344.6, byte
+  code to native 328.6, byte-code calls 443.1, the dynamic recursion
+  634.1 (636.2), a byte-compiled `mapc' callback 351.7 (288.9).  **Lisp
+  sees one change**, toward GNU: native code's `(apply LIST)' with one
+  argument no longer pads the call by the list's car.  Fapply's FUN is
+  then the list itself, no SUBRP, so the frame reads `(t mapconcat F
+  (a))' where it read `(t mapconcat F (a) nil)'; the same holds for
+  `(apply (list f 1 2))' of a native-compiled F.  **The plan's corrected
+  closing numbers**, if its remaining stages deliver: a byte-compiled
+  `mapc' callback about 280 (GNU 288.9), an element of native `mapcar'
+  about 498 (550.5); native `funcall' about 380 against 316.0, of whose
+  64 fifteen are forced by named requirements of Rust (the active call's
+  record 3, the verified loop's entry test 5, the handler list's exit
+  compare 3, the tests of a `Result' 4) and 49 are not forced and not
+  yet staged (the arm's own prologue and epilogue 16, a second cell read
+  8, the native and subr tests that fail first 17, the count and null
+  tests 7); native `apply' about 639 against 545.0.  The stage that
+  would keep the byte code's verification with the closure is dropped:
+  on the code string, where it would leave the closure GNU's, it is
+  counted at about 20 instructions against today's 16.  **The
+  independent review** (the one question: does the round cheat or break
+  something) found every commit clean.  It compared GNU, round 397's
+  build and the builds after each stage on native-compiled probes: the
+  frame popped and its depth restored after a quit in the callee and
+  after an exit debugger that signals, quits or throws; the exit
+  debugger entered once a call; an argument held only by the call
+  through a collection, with the collector's verifier; nine arguments to
+  a `&rest' callee; a callee that redefines its native caller;
+  debug-on-entry, advice, `backtrace-eval', debug-on-signal and both
+  profilers; and for `apply' subr objects, one spread argument, a count
+  below the minimum, alias chains, a void alias, a macro, a special
+  form, dotted, non-list and circular lists, and a quit pending over
+  300,000 elements.  It rebuilt the generator and found the Linux table
+  byte for byte its output and the Darwin table its re-emit, with the
+  same arity and entry for all 1,345 subrs the two share; and its own
+  measurement gives the three figures above.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,694 passed, 0 failed, 2 ignored (one
+  library test more); cli 30, cli_parity 191 (two new cases),
+  ert_runner 3, native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementer's run of the
+  library at one test thread and at four: every group passed.  The
+  round audit reports no hard finding, 534 changed lines with 3 tests
+  and 8 assertions added, and no other note.  One commit of the branch
+  is folded into another here: the inventory of the native entries,
+  which a library test checks, is updated in the commit that gives
+  `apply' its entry, so that no landed commit fails that test.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -25308,6 +25394,28 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 400 and its review), within the
+  plan's later stages or outside the round.**  One line each: Fapply
+  pads a native-compiled function of more than eight parameters, a SUBRP
+  whose maximum exceeds the count, and Emaxx does not, before this round
+  as after (the loader gives such a function no maximum; GNU's frame
+  reads `(... 7 8 nil nil)'); dynamic-binding byte code takes the new
+  arm too, to the same entry the general path reaches, where the plan
+  said it would not; the native and subr arms of the plain native
+  funcall, and the general native funcall's locals, hold references to
+  the interpreter, the runtime and the environment across callees that
+  run Lisp (the pattern the aliasing census found; the soundness
+  round's); the collector's stress mode forces no collection at a native
+  Ffuncall, since the gate that says a collection cannot be due ignores
+  it while a native call is active; after `thread-yield' the order in
+  which threads run differs from GNU's in every build (the scheduler's
+  choice); a copied binary with its image starts only from a directory
+  four levels under the home directory, since the image names its
+  preloaded native files by a path relative to the binary; a closure
+  called by `mapatoms' costs 468.3 instructions, where D25 closed at
+  458.0 against GNU's 458.6; the calls from interpreted code to native
+  code are far over GNU and not yet taken apart (535 and 167
+  instructions on two probes).
 - **Found after the scope lock (round 399 and its review), within the
   plan's later stages or outside the round.**  One line each:
   `process_tls_state_survives_collection_before_and_after_async_handshake'
