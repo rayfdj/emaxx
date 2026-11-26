@@ -33957,6 +33957,64 @@ fn terminal_frames_follow_gnu_device_window_and_deletion_lifecycle() {
 
 #[cfg(unix)]
 #[test]
+fn secondary_terminal_input_waits_through_a_hung_up_terminal_s_deletion() {
+    // keyboard.c stores each event a terminal reads into kbd_buffer,
+    // which mark_kboards marks.  Here the events of one read wait in the
+    // reader while a terminal that hung up is deleted with FORCE
+    // `noelisp', which runs no Lisp: Fdelete_terminal leaves
+    // `delete-terminal-functions' to the pending funcalls, and the
+    // frames go with their hooks left there too.  So nothing collects
+    // before the events are stored: the hook has not run yet, and the
+    // first tty's events (its switch-frame list, then its characters)
+    // are read as they were.
+    use std::io::Write;
+    let input = FrameTestPty::new();
+    let hung_up = FrameTestPty::new();
+    let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+    let mut env = crate::lisp::types::Env::new();
+    let setup = format!(
+        r#"(progn
+             (setq input-frame (make-terminal-frame '((tty . {:?}) (tty-type . "xterm")))
+                   hung-up-frame (make-terminal-frame '((tty . {:?}) (tty-type . "xterm")))
+                   unread-command-events nil
+                   deleted nil)
+             (add-hook 'delete-terminal-functions
+                       (lambda (terminal) (garbage-collect) (push terminal deleted)))
+             nil)"#,
+        input.path, hung_up.path
+    );
+    crate::test_support::eval_lisp(&mut interp, &mut env, &setup).expect("make the two terminals");
+    (&input._master)
+        .write_all(b"ab")
+        .expect("type into the first tty");
+    let FrameTestPty {
+        _master, _slave, ..
+    } = hung_up;
+    drop(_master);
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::Nil);
+    crate::lisp::alloc::clobber_stack();
+    assert!(
+        interp
+            .service_terminal_input(&mut env)
+            .expect("read the terminals"),
+        "input was read"
+    );
+    interp.set_symbol_value_key(cached_symbol!("noninteractive"), Value::T);
+    let result = crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(list (length deleted)
+                 (frame-live-p hung-up-frame)
+                 (equal unread-command-events
+                        (list (list 'switch-frame input-frame) ?a ?b)))"#,
+    )
+    .expect("read the events");
+    assert_eq!(result.to_string(), "(0 nil t)");
+    drop(_slave);
+}
+
+#[cfg(unix)]
+#[test]
 fn terminal_frames_preserve_other_frames_when_windows_change() {
     let pty = FrameTestPty::new();
     let program = format!(
