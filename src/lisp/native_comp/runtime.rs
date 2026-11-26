@@ -4549,10 +4549,11 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
 }
 
 /// eval.c:Fapply.  GNU counts the final proper list, copies the fixed
-/// arguments and its elements into one Ffuncall vector, and pads finite C
-/// subrs with nil only in the multi-element spread case.  Keep that vector in
-/// native words so Lisp_Object arguments do not cross through the typed
-/// evaluator merely to be handed back to generated code.
+/// arguments and its elements into one Ffuncall vector, and, for a spread
+/// list of two elements or more, pads with nil the call of a SUBRP
+/// (`apply_padded_count').  Keep that vector in native words so
+/// Lisp_Object arguments do not cross through the typed evaluator merely
+/// to be handed back to generated code.
 fn invoke_native_apply(active: &ActiveCall, arguments: &[NativeWord]) -> Option<NativeWord> {
     let (&spread, fixed) = arguments.split_last()?;
     let spread_length = match native_proper_list_length(active, spread) {
@@ -4563,20 +4564,19 @@ fn invoke_native_apply(active: &ActiveCall, arguments: &[NativeWord]) -> Option<
     let given = fixed.len().saturating_add(spread_length);
     // Fapply's single nil argument becomes Ffuncall's nil function.
     let mut total = given.max(1);
-    if spread_length > 1 {
-        // SAFETY: the caller's function word, live in its activation.
-        let function = unsafe {
-            Value::from_word(match fixed.first() {
-                Some(function) => *function,
-                None => native_car(spread),
-            })
-        };
-        let target = direct_funcall_target(
+    // Fapply's FUN is its first argument: with a single one, the spread
+    // list itself, which no SUBRP is, so that its call is not padded.
+    if spread_length > 1
+        && let Some(&function) = fixed.first()
+    {
+        let padded = apply_padded_count(
             unsafe { &*active.interpreter },
             unsafe { &*active.environment.get() },
-            &function,
+            // SAFETY: the caller's function word, live in its activation.
+            unsafe { Value::from_word(function) },
+            given - 1,
         )?;
-        total = total.max(target.apply_padded_argument_count(given - 1) + 1);
+        total = total.max(padded + 1);
     }
     // SAFE_ALLOCA_LISP (funcall_args, ...): a call of the function below
     // may signal, jumping past this frame.
@@ -4593,6 +4593,42 @@ fn invoke_native_apply(active: &ActiveCall, arguments: &[NativeWord]) -> Option<
         .or_else(|| invoke_native_funcall(active, funcall_arguments));
     words.release(active);
     result
+}
+
+/// eval.c:Fapply's count of the arguments of its Ffuncall of FUNCTION,
+/// given COUNT of them: FUNCTION's function cell, followed as
+/// indirect_function follows it when the cell is a symbol (FUNCTION
+/// itself again when the chain is void), and a SUBRP whose maximum
+/// exceeds COUNT and whose minimum COUNT meets called with its maximum,
+/// the rest nil, as `DirectFuncallTarget::apply_padded_argument_count'
+/// counts it; COUNT for any other function.  None for a native function
+/// with dynamic binding, whose apply the subr's own entry makes.
+#[inline(always)]
+fn apply_padded_count(
+    interpreter: &Interpreter,
+    environment: &Env,
+    function: Value,
+    count: usize,
+) -> Option<usize> {
+    let function = match function.symbol_cell() {
+        Some(name) => interpreter
+            .lookup_function_symbol(&name, environment)
+            .unwrap_or(function),
+        None => function,
+    };
+    if let Some(subr) = function.builtin_ref() {
+        return Some(DirectFuncallTarget::Builtin(subr).apply_padded_argument_count(count));
+    }
+    let Some(native) = function.native_function_ref() else {
+        return Some(count);
+    };
+    super::loader::direct_function(native).map(|target| {
+        DirectFuncallTarget::Native {
+            native,
+            function: target,
+        }
+        .apply_padded_argument_count(count)
+    })
 }
 
 /// fns.c:Fmapcar/mapcar1 for a proper list.  The length is established before
