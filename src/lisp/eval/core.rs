@@ -1883,7 +1883,11 @@ impl Interpreter {
     /// eval.c:probably_quit: a fatal signal's terminate_due_to_signal (whose
     /// handler here left it to this check), then process_quit_flag for a
     /// quit not inhibited, else process_pending_signals for what the
-    /// handlers left (`pending_signals', which a quit leaves set).
+    /// handlers left (`pending_signals', which a quit leaves set).  Both
+    /// run between inhibit_garbage_collection and its unbinding: a caller
+    /// of maybe_quit may hold a string's data or a buffer's text in place
+    /// (the regexp matcher does), and the debugger a quit enters is Lisp,
+    /// whose collection would move them.
     #[cold]
     fn probably_quit(&mut self, env: &mut Env) -> Result<(), LispError> {
         let pending = primitives::atimer::take_pending_signals();
@@ -1894,7 +1898,10 @@ impl Interpreter {
             if pending {
                 primitives::atimer::note_pending_signal();
             }
-            return self.process_quit_flag(env);
+            self.inhibit_garbage_collection();
+            let result = self.process_quit_flag(env);
+            self.allow_garbage_collection();
+            return result;
         }
         if pending {
             // probably_quit's inhibit_garbage_collection around it.

@@ -93,6 +93,24 @@ fn native_helpers_go_on_after_their_callee_parks_the_thread() {
     run_cases("native-helper-yield", &cases, true);
 }
 
+/// eval.c:probably_quit inhibits the collection while a quit is
+/// processed.  Native code sets `quit-flag' and calls `string-match' with
+/// no call entry between, so the matcher's own maybe_quit finds the quit
+/// and the debugger is entered for it; the debugger frees the strings
+/// allocated just before the subject, calls `garbage-collect' and
+/// allocates again.  A collection there would move the subject's data
+/// under the matcher, which goes on reading when the debugger returns.
+#[test]
+fn a_quit_processed_inside_a_string_match_collects_nothing() {
+    let cases = [(
+        "string-match-quit",
+        include_str!("fixtures/thread-native-string-match-quit.el"),
+        None,
+        "(((0 61) (0 61) (0 61) (0 61) (0 61) (0 61) (0 61) (0 61)) 8)\n",
+    )];
+    run_cases("native-string-match-quit", &cases, true);
+}
+
 /// Each case's Lisp run by GNU Emacs and by Emaxx, each in a directory of
 /// its own under one named PREFIX, with the standard output compared
 /// with the case's expectation.  VERIFY sets `EMAXX_GC_VERIFY'.
