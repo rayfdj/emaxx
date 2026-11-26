@@ -12199,6 +12199,71 @@ mod tests {
     }
 
     #[test]
+    fn native_funcall_of_byte_code_pops_its_frame_on_every_exit() {
+        // eval.c:Ffuncall of a byte-code closure from native code:
+        // funcall_lambda's arity test signals with the frame recorded,
+        // and the frame and the depth leave with the call however it
+        // ends.  GNU byte code for one mandatory argument: dup, add1,
+        // return.
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let function = Value::allocated_closure(&[
+            Value::Integer(257),
+            Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(vec![
+                0o211, 0o124, 0o207,
+            ])),
+            Value::vector([]),
+            Value::Integer(3),
+        ]);
+        let arity = Value::cons(Value::Integer(1), Value::Integer(1));
+        for (callee, arguments, count) in [
+            (call_funcall_zero as *const c_void, vec![function], 0),
+            (
+                call_funcall_two as *const c_void,
+                vec![function, Value::Integer(1), Value::Integer(2)],
+                2,
+            ),
+        ] {
+            let error = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    callee,
+                    NativeCallingConvention::Fixed,
+                    &arguments,
+                )
+                .expect_err("funcall_lambda counts a byte-code function's arguments");
+            assert_eq!(
+                crate::lisp::eval::error_condition_value(&error),
+                Value::list([
+                    Value::symbol("wrong-number-of-arguments"),
+                    arity,
+                    Value::Integer(count),
+                ])
+            );
+            assert_eq!(interpreter.backtrace_frames_len(), 0);
+            assert_eq!(interpreter.lisp_eval_depth, 0);
+        }
+        for _ in 0..2 {
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        call_funcall_one as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[function, Value::Integer(9)],
+                    )
+                    .expect("funcall of a byte-code closure"),
+                Value::Integer(10)
+            );
+            assert_eq!(interpreter.backtrace_frames_len(), 0);
+            assert_eq!(interpreter.lisp_eval_depth, 0);
+        }
+    }
+
+    #[test]
     fn native_funcall_falls_back_for_alias_lambda_and_invalid_function() {
         let mut interpreter = Interpreter::new();
         let mut environment = Env::new();

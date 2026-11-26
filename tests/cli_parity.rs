@@ -13800,6 +13800,121 @@ fn a_native_function_that_takes_a_vector_is_called_as_funcall_subr_calls_it() {
 }
 
 #[test]
+fn native_code_calls_byte_code_through_funcall_as_ffuncall_does() {
+    // Native code's `funcall' is Ffuncall itself (its relocation entry):
+    // maybe_quit, the depth, record_in_backtrace, debug_on_next_call and
+    // maybe_gc, then funcall_general, funcall_lambda and exec_byte_code
+    // for a byte-code callee, then the debugger at the exit of a marked
+    // frame and the frame's pop (eval.c:Ffuncall, funcall_lambda).  The
+    // same calls of byte-code functions from native code, compared with
+    // GNU's answers: each arity and its errors, throws and signals
+    // through the call, the frames the callee and a handler-bind handler
+    // see, the debugger at the call and at its exit, collections inside
+    // the callee, a callee that redefines itself, the depth limit met
+    // with native code and byte code calling each other, and a
+    // dynamic-binding callee.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "native-funcall-byte-code.el",
+        r##";;; -*- lexical-binding: t -*-
+;; Native code's funcall of byte-code functions.
+(defvar zz-n 0)
+(defvar zz-log nil)
+(defmacro zz-probe (&rest body)
+  `(progn (setq zz-n (1+ zz-n))
+          (princ (format "%d: %S\n" zz-n
+                         (condition-case e (progn ,@body) (t (list 'signal e)))))))
+(define-error 'zz-error "zz error")
+;; Native callers.
+(defun zz-nat-0 (f) (funcall f))
+(defun zz-nat-1 (f x) (funcall f x))
+(defun zz-nat-2 (f x y) (funcall f x y))
+(defun zz-nat-3 (f x y z) (funcall f x y z))
+(defun zz-nat-catch (f tag v) (catch tag (funcall f tag v)))
+(defun zz-nat-cc (f x) (condition-case e (funcall f x) (zz-error (list 'caught e))))
+(defun zz-nat-dnc (f x) (setq debug-on-next-call t) (funcall f x))
+(defun zz-nat-twice (f x) (list (funcall f x) (funcall f x)))
+(dolist (f '(zz-nat-0 zz-nat-1 zz-nat-2 zz-nat-3 zz-nat-catch zz-nat-cc zz-nat-dnc zz-nat-twice))
+  (native-compile f))
+;; Byte-code callees.
+(defun zz-bc-id (x) x)
+(defun zz-bc-opt (a &optional b) (list a b))
+(defun zz-bc-rest (a &rest r) (list a r))
+(defun zz-bc-throw (tag v) (throw tag (list 'thrown v)))
+(defun zz-bc-signal (x) (signal 'zz-error (list x)))
+(defun zz-bc-frames (x)
+  (list x (backtrace-frame 0 'zz-bc-frames) (backtrace-frame 1 'zz-bc-frames)))
+(defun zz-bc-mark (x) (backtrace-debug 1 t) (list 'marked x))
+(defun zz-bc-gc (x)
+  (let ((l (make-list 1000 x)))
+    (garbage-collect)
+    (let ((v (make-vector 100 x))) (garbage-collect) (list (length l) (aref v 99) x))))
+(defun zz-bc-redefine (x)
+  (fset 'zz-bc-redefine (lambda (y) (list 'new y)))
+  (list 'old x))
+(defun zz-bc-depth (f n)
+  (setq zz-n-depth (1+ zz-n-depth))
+  (zz-nat-2 f f n))
+(defvar zz-n-depth 0)
+(defun zz-bc-hb (x) (signal 'zz-error (list x)))
+(dolist (f '(zz-bc-id zz-bc-opt zz-bc-rest zz-bc-throw zz-bc-signal zz-bc-frames zz-bc-mark
+             zz-bc-gc zz-bc-redefine zz-bc-depth zz-bc-hb))
+  (byte-compile f))
+(zz-probe (list (native-comp-function-p (symbol-function 'zz-nat-1))
+                (byte-code-function-p (symbol-function 'zz-bc-id))))
+;; The call, by symbol and by the function itself.
+(zz-probe (zz-nat-1 'zz-bc-id 'foo))
+(zz-probe (zz-nat-1 (symbol-function 'zz-bc-id) 'foo))
+(zz-probe (zz-nat-1 #'zz-bc-opt 1))
+(zz-probe (zz-nat-2 #'zz-bc-opt 1 2))
+(zz-probe (zz-nat-3 #'zz-bc-rest 1 2 3))
+(zz-probe (zz-nat-1 #'zz-bc-rest 1))
+;; Wrong numbers of arguments.
+(zz-probe (zz-nat-0 #'zz-bc-id))
+(zz-probe (zz-nat-2 #'zz-bc-id 1 2))
+(zz-probe (zz-nat-3 #'zz-bc-opt 1 2 3))
+(zz-probe (zz-nat-0 (symbol-function 'zz-bc-opt)))
+;; A throw to native code's catch, a signal to its condition-case.
+(zz-probe (zz-nat-catch #'zz-bc-throw 'zz-tag 7))
+(zz-probe (zz-nat-cc #'zz-bc-signal 5))
+(zz-probe (zz-nat-1 #'zz-bc-signal 6))
+;; The frames the callee sees.
+(zz-probe (zz-nat-1 #'zz-bc-frames 42))
+(zz-probe (zz-nat-1 (symbol-function 'zz-bc-frames) 43))
+;; The debugger at the call's exit, and at the next call.
+(zz-probe (let ((debugger (lambda (&rest args) (push args zz-log) (list 'debugger args)))
+                (zz-log nil))
+            (list (zz-nat-1 #'zz-bc-mark 1) zz-log)))
+(zz-probe (let ((debugger (lambda (&rest args) (push (car args) zz-log) (if (eq (car args) 'exit) (list 'exit-value (cadr args)) nil)))
+                (zz-log nil))
+            (list (zz-nat-dnc #'zz-bc-id 2) debug-on-next-call (reverse zz-log))))
+;; Collections inside the callee.
+(zz-probe (zz-nat-1 #'zz-bc-gc 'g))
+(zz-probe (let ((gc-cons-threshold 10000)) (zz-nat-1 #'zz-bc-gc (list 'h))))
+;; A callee that replaces its own definition.
+(zz-probe (zz-nat-twice 'zz-bc-redefine 3))
+;; The depth limit, native code and byte code calling each other.
+(zz-probe (let ((max-lisp-eval-depth 200))
+            (setq zz-n-depth 0)
+            (list (condition-case e (zz-nat-2 #'zz-bc-depth #'zz-bc-depth 0) (error (car e)))
+                  zz-n-depth)))
+;; A dynamic-binding byte-code callee.
+(defvar zz-dyn-reader (byte-compile (eval '(lambda (zzdyn) (list zzdyn (symbol-value 'zzdyn))) nil)))
+(zz-probe (list (byte-code-function-p zz-dyn-reader) (aref zz-dyn-reader 0)))
+(zz-probe (zz-nat-1 zz-dyn-reader 'dyn))
+;; A handler-bind handler sees the callee's frame.
+(zz-probe (let ((zz-log nil))
+            (list (condition-case e
+                      (handler-bind ((zz-error (lambda (err) (push (list err (backtrace-frame 0 'zz-bc-hb)) zz-log))))
+                        (zz-nat-1 #'zz-bc-hb 9))
+                    (zz-error (list 'caught e)))
+                  zz-log)))
+"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
 fn a_dumped_window_is_a_dead_window_of_the_process_that_loads_the_dump() {
     // pdumper.c:dump_vectorlike writes PVEC_WINDOW with
     // dump_nilled_pseudovec: every Lisp field nil and the rest zero.  A
