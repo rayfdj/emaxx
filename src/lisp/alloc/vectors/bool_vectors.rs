@@ -152,12 +152,6 @@ impl BoolVectorRef {
     pub(crate) fn identity(&self) -> usize {
         self.0.as_ptr() as usize
     }
-
-    #[inline]
-    pub(crate) fn mark_bit(&self) -> VectorMark<'_> {
-        // SAFETY: the object is live for the handle's use.
-        unsafe { self.0.as_ref() }.mark_bit()
-    }
 }
 
 impl std::fmt::Debug for BoolVectorRef {

@@ -3016,6 +3016,20 @@ impl Value {
         self.0 & TAG_MASK == TAG_VECTORLIKE
     }
 
+    /// The mark of the vectorlike object this word names, whatever its
+    /// pseudovector type.
+    ///
+    /// # Safety
+    /// The word names an allocated vectorlike object that is no static
+    /// subr (`builtin_ref'), kept while the mark is used.
+    #[inline(always)]
+    pub(crate) unsafe fn vectorlike_mark<'a>(self) -> crate::lisp::alloc::vectors::VectorMark<'a> {
+        debug_assert!(self.is_vectorlike());
+        let header = self.0.wrapping_sub(TAG_VECTORLIKE) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: the caller's contract.
+        unsafe { crate::lisp::alloc::vectors::header_mark(header) }
+    }
+
     /// FLOATP, by the tag alone.
     #[inline(always)]
     pub(crate) fn is_float(self) -> bool {

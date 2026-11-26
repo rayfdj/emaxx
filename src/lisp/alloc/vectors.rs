@@ -2012,6 +2012,18 @@ pub(super) fn live_large_vector_holding(start: usize, address: usize) -> Option<
     unsafe { live_vector_pointer(start as *mut VectorHeader, address) }
 }
 
+/// The mark of the vectorlike at HEADER, whatever its kind: alloc.c's
+/// `vector_marked_p' and `set_vector_marked' read the header alone.
+///
+/// # Safety
+/// HEADER is an allocated vector of the heap or the image (no static
+/// subr), kept while the mark is used.
+#[inline(always)]
+pub(crate) unsafe fn header_mark<'a>(header: *mut VectorHeader) -> VectorMark<'a> {
+    // SAFETY: the caller's contract.
+    unsafe { (*header).mark_bit() }
+}
+
 /// The kind of an allocated vector, from its header (`PSEUDOVECTOR_TYPE').
 ///
 /// # Safety

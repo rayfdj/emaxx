@@ -4915,31 +4915,36 @@ impl LispReachability {
     fn contains(&self, value: &Value) -> bool {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
-            Kind::BigInteger(value) => value.mark_bit().is_marked(),
+            Kind::BigInteger(_)
+            | Kind::Vector(_)
+            | Kind::Closure(_)
+            | Kind::NativeFunction(_)
+            | Kind::NativeCompUnit(_)
+            | Kind::Buffer(_)
+            | Kind::Marker(_)
+            | Kind::Overlay(_)
+            | Kind::HashTable(_)
+            | Kind::CharTable(_)
+            | Kind::SubCharTable(_)
+            | Kind::Frame(_)
+            | Kind::Terminal(_)
+            | Kind::Window(_)
+            | Kind::SymbolWithPos(_)
+            | Kind::Record(_)
+            | Kind::LispRecord(_)
+            | Kind::BoolVector(_)
+            | Kind::Finalizer(_) => {
+                // alloc.c:survives_gc_p's vector_marked_p, by the header
+                // alone whatever the pseudovector's type.
+                // SAFETY: a vectorlike of the heap or the image.
+                unsafe { value.vectorlike_mark() }.is_marked()
+            }
             Kind::Float(value) => value.mark_bit().is_marked(),
             Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
             // alloc.c:survives_gc_p tests the symbol's mark. A live owner's
             // obarray marks its symbols; a retired owner's names are not roots.
             Kind::Symbol(symbol) => symbol.is_marked(),
             Kind::Cons(value) => value.mark_bit().is_marked(),
-            Kind::Vector(value) => value.mark_bit().is_marked(),
-            Kind::Closure(value) => value.mark_bit().is_marked(),
-            Kind::NativeFunction(value) => value.mark_bit().is_marked(),
-            Kind::NativeCompUnit(value) => value.mark_bit().is_marked(),
-            Kind::Buffer(value) => value.mark_bit().is_marked(),
-            Kind::Marker(marker) => marker.mark_bit().is_marked(),
-            Kind::Overlay(overlay) => overlay.mark_bit().is_marked(),
-            Kind::HashTable(table) => table.mark_bit().is_marked(),
-            Kind::CharTable(table) => table.mark_bit().is_marked(),
-            Kind::SubCharTable(table) => table.mark_bit().is_marked(),
-            Kind::Frame(frame) => frame.mark_bit().is_marked(),
-            Kind::Terminal(value) => value.mark_bit().is_marked(),
-            Kind::Window(window) => window.mark_bit().is_marked(),
-            Kind::SymbolWithPos(value) => value.mark_bit().is_marked(),
-            Kind::Record(record) => record.mark_bit().is_marked(),
-            Kind::LispRecord(record) => record.mark_bit().is_marked(),
-            Kind::BoolVector(vector) => vector.mark_bit().is_marked(),
-            Kind::Finalizer(object) => object.mark_bit().is_marked(),
         }
     }
 
@@ -4998,29 +5003,35 @@ impl LispReachability {
     fn mark_object(&mut self, value: &Value) -> bool {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => false,
-            Kind::BigInteger(value) => value.mark_bit().mark(),
+            Kind::BigInteger(_)
+            | Kind::Vector(_)
+            | Kind::Closure(_)
+            | Kind::NativeFunction(_)
+            | Kind::NativeCompUnit(_)
+            | Kind::Buffer(_)
+            | Kind::Marker(_)
+            | Kind::Overlay(_)
+            | Kind::HashTable(_)
+            | Kind::CharTable(_)
+            | Kind::SubCharTable(_)
+            | Kind::Frame(_)
+            | Kind::Terminal(_)
+            | Kind::Window(_)
+            | Kind::SymbolWithPos(_)
+            | Kind::Record(_)
+            | Kind::LispRecord(_)
+            | Kind::BoolVector(_)
+            | Kind::Finalizer(_) => {
+                // alloc.c:mark_object tests vector_marked_p and sets the
+                // mark by the header alone, before it looks at the
+                // pseudovector's type.
+                // SAFETY: a vectorlike of the heap or the image.
+                unsafe { value.vectorlike_mark() }.mark()
+            }
             Kind::Float(value) => value.mark_bit().mark(),
             Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
             Kind::Symbol(symbol) => symbol.mark(),
             Kind::Cons(value) => value.mark_bit().mark(),
-            Kind::Vector(value) => value.mark_bit().mark(),
-            Kind::Closure(value) => value.mark_bit().mark(),
-            Kind::NativeFunction(value) => value.mark_bit().mark(),
-            Kind::NativeCompUnit(value) => value.mark_bit().mark(),
-            Kind::Buffer(value) => value.mark_bit().mark(),
-            Kind::Marker(marker) => marker.mark_bit().mark(),
-            Kind::Overlay(overlay) => overlay.mark_bit().mark(),
-            Kind::HashTable(table) => table.mark_bit().mark(),
-            Kind::CharTable(table) => table.mark_bit().mark(),
-            Kind::SubCharTable(table) => table.mark_bit().mark(),
-            Kind::Frame(frame) => frame.mark_bit().mark(),
-            Kind::Terminal(value) => value.mark_bit().mark(),
-            Kind::Window(window) => window.mark_bit().mark(),
-            Kind::SymbolWithPos(value) => value.mark_bit().mark(),
-            Kind::Record(record) => record.mark_bit().mark(),
-            Kind::LispRecord(record) => record.mark_bit().mark(),
-            Kind::BoolVector(vector) => vector.mark_bit().mark(),
-            Kind::Finalizer(object) => object.mark_bit().mark(),
         }
     }
 
