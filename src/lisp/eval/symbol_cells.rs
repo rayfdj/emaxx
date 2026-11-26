@@ -397,47 +397,125 @@ mod tests {
 
     #[test]
     fn alias_payload_replaces_the_value_and_traces_only_its_current_target() {
-        let interp = crate::lisp::eval::Interpreter::new();
+        // A collection traces the symbol's current alias target, its
+        // function and its plist, and not its replaced value nor its
+        // replaced alias target: each is a weak table's key (the targets
+        // uninterned, so that no obarray keeps them), made in frames of
+        // their own that are cleared before each collection; the symbol is
+        // the environment's binding.
+        type Witnesses = crate::lisp::types::HashTableRef;
+        fn witness(table: Witnesses, tag: &str) -> Value {
+            table
+                .entries()
+                .find(|(_, _, found)| *found == Value::symbol(tag))
+                .map(|(_, key, _)| key)
+                .unwrap_or_else(|| panic!("the {tag} witness"))
+        }
+        fn target(table: Witnesses, tag: &str) -> SymbolName {
+            match witness(table, tag).kind() {
+                crate::lisp::types::Kind::Symbol(name) => name,
+                _ => panic!("the {tag} symbol"),
+            }
+        }
+        #[inline(never)]
+        fn install(
+            interp: &mut crate::lisp::eval::Interpreter,
+            cells: &mut SymbolCells,
+            symbol: SymbolName,
+        ) -> (crate::lisp::types::Env, Witnesses) {
+            let first = SymbolName::make_uninterned(
+                Value::string("redirect-union-first"),
+                "redirect-union-first",
+                1,
+            );
+            let second = SymbolName::make_uninterned(
+                Value::string("redirect-union-second"),
+                "redirect-union-second",
+                2,
+            );
+            let old_value = Value::vector([Value::Integer(19)]);
+            let function = Value::vector([Value::Integer(23)]);
+            let plist = Value::list([Value::symbol("payload"), Value::Integer(29)]);
+            cells.insert(&symbol, old_value);
+            cells.set_function(&symbol, Some(function));
+            assert_eq!(cells.function(&symbol), Some(function));
+            symbol.cell().set_c_slot(false);
+            cells.set_plist(&symbol, plist);
+            cells.set_plain_store(&symbol, true);
+            cells.set_alias(&symbol, first);
+            assert!(!cells.plain_store(&symbol));
+            assert_eq!(cells.function(&symbol), Some(function));
+            assert!(!symbol.cell().has_c_slot());
+            assert!(cells.snapshot(&symbol).value.is_none());
+            assert_eq!(cells.snapshot(&symbol).alias, Some(first));
+            assert_eq!(cells.bound_len(), 0);
+            assert_eq!(cells.aliases_len(), 1);
+            // The second target is held by the environment until it
+            // becomes the alias.
+            let env =
+                crate::lisp::types::Env::from_vec(vec![crate::lisp::types::EnvFrame::bindings(
+                    [(symbol, Value::Symbol(second))],
+                    &Value::Nil,
+                )]);
+            let table = crate::test_support::weak_witness_table(
+                interp,
+                "redirect-union-witnesses",
+                &[
+                    (old_value, Value::symbol("old-value")),
+                    (Value::Symbol(first), Value::symbol("first")),
+                    (Value::Symbol(second), Value::symbol("second")),
+                    (function, Value::symbol("function")),
+                    (plist, Value::symbol("plist")),
+                ],
+            );
+            (env, table)
+        }
+        #[inline(never)]
+        fn realias(
+            cells: &mut SymbolCells,
+            symbol: SymbolName,
+            table: Witnesses,
+        ) -> crate::lisp::types::Env {
+            let second = target(table, "second");
+            cells.set_alias(&symbol, second);
+            assert_eq!(cells.aliases_len(), 1);
+            assert_eq!(cells.aliases().next(), Some((symbol, second)));
+            crate::lisp::types::Env::from_vec(vec![crate::lisp::types::EnvFrame::bindings(
+                [(symbol, Value::Nil)],
+                &Value::Nil,
+            )])
+        }
+        let mut interp = crate::lisp::eval::Interpreter::new();
         let mut cells = fresh_cells();
         let symbol = SymbolName::intern_str("redirect-union-owner");
-        let first = SymbolName::intern_str("redirect-union-first");
-        let second = SymbolName::intern_str("redirect-union-second");
-        let old_value = Value::vector([Value::Integer(19)]);
-        let function = Value::vector([Value::Integer(23)]);
-        let plist = Value::list([Value::symbol("payload"), Value::Integer(29)]);
-        cells.insert(&symbol, old_value);
-        cells.set_function(&symbol, Some(function));
-        assert_eq!(cells.function(&symbol), Some(function));
-        symbol.cell().set_c_slot(false);
-        cells.set_plist(&symbol, plist);
-        cells.set_plain_store(&symbol, true);
-        cells.set_alias(&symbol, first);
-        assert!(!cells.plain_store(&symbol));
-        assert_eq!(cells.function(&symbol), Some(function));
-        assert!(!symbol.cell().has_c_slot());
-        assert!(cells.snapshot(&symbol).value.is_none());
-        assert_eq!(cells.snapshot(&symbol).alias, Some(first));
-        assert_eq!(cells.bound_len(), 0);
-        assert_eq!(cells.aliases_len(), 1);
-        // Inspect the real traversal so neither an obsolete alias target
-        // nor its old value remains an edge of this symbol.
-        let (_, reached) = crate::lisp::eval::LispReachability::trace_order_for_test(
-            &interp,
-            Value::Symbol(symbol),
+        let (env, table) = install(&mut interp, &mut cells, symbol);
+        crate::lisp::alloc::clobber_stack();
+        let reached = crate::test_support::weak_tags_after_collection(&mut interp, &env, table);
+        assert!(!reached.contains(&Value::symbol("old-value")));
+        assert!(reached.contains(&Value::symbol("first")));
+        assert!(
+            reached.contains(&Value::symbol("function"))
+                && reached.contains(&Value::symbol("plist"))
         );
-        assert!(!reached.contains(&old_value));
-        assert!(reached.contains(&Value::Symbol(first)));
-        assert!(reached.contains(&function) && reached.contains(&plist));
-        cells.set_alias(&symbol, second);
-        assert_eq!(cells.aliases_len(), 1);
-        assert_eq!(cells.aliases().next(), Some((symbol, second)));
-        let (_, reached) = crate::lisp::eval::LispReachability::trace_order_for_test(
-            &interp,
-            Value::Symbol(symbol),
+        drop(env);
+        let env = realias(&mut cells, symbol, table);
+        crate::lisp::alloc::clobber_stack();
+        let reached = crate::test_support::weak_tags_after_collection(&mut interp, &env, table);
+        assert!(
+            !reached.contains(&Value::symbol("old-value"))
+                && !reached.contains(&Value::symbol("first"))
         );
-        assert!(!reached.contains(&old_value) && !reached.contains(&Value::Symbol(first)));
-        assert!(reached.contains(&Value::Symbol(second)));
-        assert!(reached.contains(&function) && reached.contains(&plist));
+        assert!(reached.contains(&Value::symbol("second")));
+        assert!(
+            reached.contains(&Value::symbol("function"))
+                && reached.contains(&Value::symbol("plist"))
+        );
+        let function = witness(table, "function");
+        let plist = witness(table, "plist");
+        // The witness table's global and the variables the collections set
+        // are bound in these cells too; installing the cell binds the
+        // symbol besides.
+        let bound = cells.bound_len();
         cells.install_cell(
             &symbol,
             SymbolCellSnapshot {
@@ -448,7 +526,7 @@ mod tests {
         );
         assert_eq!(cells.value(&symbol), Some(Value::Integer(31)));
         assert!(cells.alias(&symbol).is_none());
-        assert_eq!(cells.bound_len(), 1);
+        assert_eq!(cells.bound_len(), bound + 1);
         assert_eq!(cells.aliases_len(), 0);
         assert_eq!(cells.function(&symbol), Some(function));
         assert!(!symbol.cell().has_c_slot());

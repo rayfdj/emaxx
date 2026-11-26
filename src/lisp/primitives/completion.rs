@@ -1306,35 +1306,19 @@ pub(crate) fn completing_read(
     })
 }
 
-thread_local! {
-    /// read_minibuf's INPUT_METHOD: `current-input-method' of the buffer a
-    /// read inheriting the input method began in, for the next minibuffer
-    /// run to turn on.
-    static MINIBUFFER_INPUT_METHOD: std::cell::Cell<Option<Value>> =
-        const { std::cell::Cell::new(None) };
-}
-
-/// read_minibuf with INHERIT-INPUT-METHOD: `current-input-method' as the
-/// current buffer has it (it is buffer-local), remembered before the
-/// minibuffer is entered; nothing without INHERIT.
-pub(crate) fn inherit_minibuffer_input_method(interp: &Interpreter, inherit: bool) {
-    MINIBUFFER_INPUT_METHOD.set(inherit.then(|| {
-        interp
-            .symbol_value_key(cached_symbol!("current-input-method"))
-            .unwrap_or(Value::Nil)
-    }));
-}
-
+/// read_minibuf's run of MINIBUFFER: INPUT_METHOD is read_minibuf's
+/// local, `current-input-method' of the buffer the read began in when the
+/// reader inherits it.
 pub(crate) fn run_active_minibuffer<T>(
     interp: &mut Interpreter,
     env: &mut Env,
     minibuffer: ActiveMinibuffer,
+    input_method: Option<Value>,
     body: impl FnOnce(&mut Interpreter, &mut Env) -> Result<T, LispError>,
 ) -> Result<T, LispError> {
     // The recursive command loop leaves `this-command' and its companions
     // as its last command set them; call-interactively, not read_minibuf,
     // restores the outer command's once its arguments are read.
-    let input_method = MINIBUFFER_INPUT_METHOD.take();
     let result = (|| {
         // GNU minibuf.c:read_minibuf runs `minibuffer-setup-hook' with the
         // minibuffer already current (the next statement there is

@@ -665,6 +665,10 @@ struct AggregateReport {
     mismatches: Vec<String>,
     #[serde(default)]
     unsuccessful_files: Vec<String>,
+    /// Outcomes counted as matching by `compat::GNU_RACE_TEST`'s rule,
+    /// each with its file: accepted, and never unreported.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    accepted_gnu_races: Vec<String>,
     name_filter: Option<String>,
     #[serde(default)]
     timings: Vec<FileTiming>,
@@ -1198,7 +1202,7 @@ fn list_tests(args: ListArgs) -> Result<(), String> {
 /// evidence.  Refuse to run rather than annotate (finding 24).
 fn enforce_anti_cheat_gates() -> Result<(), String> {
     eprintln!("enforcing anti-cheat gates before the run...");
-    emaxx::anti_cheat::enforce_all().map_err(|violations| {
+    emaxx::anti_cheat::enforce_all(&emaxx::Runtime::lock()).map_err(|violations| {
         format!(
             "anti-cheat gates failed; no measured run can be produced from this tree:\n  {}",
             violations.join("\n  ")
@@ -2145,6 +2149,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
     let mut mismatching_outcomes = 0usize;
     let mut mismatches = Vec::new();
     let mut unsuccessful_files = Vec::new();
+    let mut accepted_gnu_races = Vec::new();
     let mut timings = Vec::new();
     let mut performance_regressions = Vec::new();
     let mut relative_files = Vec::new();
@@ -2260,8 +2265,16 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         invalidate_timed_out_comparison(&mut comparison, "GNU Emacs", &oracle.process);
         invalidate_timed_out_comparison(&mut comparison, "Emaxx", &emaxx.process);
         let timing = compare_runner_timings(&relative, &oracle.process, &emaxx.process);
-        execution_issues.extend(runner_execution_issues(&oracle_report, &oracle.process));
-        execution_issues.extend(runner_execution_issues(&emaxx_report, &emaxx.process));
+        execution_issues.extend(runner_execution_issues(
+            &oracle_report,
+            &oracle.process,
+            Some(&comparison),
+        ));
+        execution_issues.extend(runner_execution_issues(
+            &emaxx_report,
+            &emaxx.process,
+            Some(&comparison),
+        ));
         write_json(
             &per_file_dir.join("comparison.json"),
             &TimedComparison {
@@ -2281,6 +2294,9 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         }
         if !execution_issues.is_empty() {
             unsuccessful_files.push(relative.clone());
+        }
+        for accepted in &comparison.accepted_gnu_races {
+            accepted_gnu_races.push(format!("{relative}: {accepted}"));
         }
         print_file_result(&relative, &comparison, &execution_issues, resumed);
         if timing.emaxx_at_least_twice_as_slow {
@@ -2312,6 +2328,7 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         files: relative_files,
         mismatches,
         unsuccessful_files,
+        accepted_gnu_races,
         name_filter: name_filter_expression.map(ToOwned::to_owned),
         timings,
         performance_regressions,
@@ -2344,6 +2361,9 @@ fn run_compat_files(context: &Context, plan: CompatRunPlan<'_>) -> Result<u8, St
         aggregate.total_files,
         aggregate.unsuccessful_files.len(),
     );
+    for accepted in &aggregate.accepted_gnu_races {
+        println!("ACCEPTED {accepted}");
+    }
 
     for (runner, summary) in &aggregate.runner_summaries {
         println!(
@@ -2371,11 +2391,18 @@ fn compatibility_exit_status(aggregate: &AggregateReport) -> u8 {
     u8::from(aggregate.mismatching_files != 0 || !aggregate.unsuccessful_files.is_empty())
 }
 
+/// REPORT's and its process's execution issues; COMPARISON is the one made
+/// from REPORT and its counterpart, where there is one (it may have
+/// accepted `compat::GNU_RACE_TEST`'s pair).
 fn runner_execution_issues(
     report: &BatchReport,
     process: &ProcessResult,
+    comparison: Option<&compat::ComparisonReport>,
 ) -> Vec<compat::ComparisonIssue> {
-    let mut issues = compat::report_execution_issues(report);
+    let mut issues = match comparison {
+        Some(comparison) => compat::report_execution_issues_after(report, comparison),
+        None => compat::report_execution_issues(report),
+    };
     if process.exit_code != Some(0) {
         issues.push(compat::ComparisonIssue {
             kind: "process_exit".into(),
@@ -2404,6 +2431,9 @@ fn print_file_result(
     for issue in comparison.issues.iter().chain(execution_issues) {
         println!("  [{}] {}", issue.kind, issue.detail);
     }
+    for accepted in &comparison.accepted_gnu_races {
+        println!("  [accepted_gnu_race] {accepted}");
+    }
 }
 
 fn duration_millis(duration: Duration) -> u64 {
@@ -2431,6 +2461,8 @@ fn invalidate_timed_out_comparison(
     // second call adds zero.
     comparison.mismatching_outcomes += comparison.matching_outcomes;
     comparison.matching_outcomes = 0;
+    // Nor is an incomplete result one in which the race was accepted.
+    comparison.accepted_gnu_races.clear();
     // Name both clocks: the phase's wall time is what the timeout judged,
     // while the test-phase figure is the runner's own report interval when
     // its report reached disk -- a runner that wrote its report at 8 s and
@@ -4217,7 +4249,7 @@ mod tests {
         assert!(!comparison.matches);
         assert_eq!(comparison.mismatching_outcomes, 1);
         assert!(
-            runner_execution_issues(&emaxx.report, &emaxx.process)
+            runner_execution_issues(&emaxx.report, &emaxx.process, Some(&comparison))
                 .iter()
                 .any(|issue| issue.kind == "unexpected_outcome")
         );
@@ -4316,7 +4348,7 @@ mod tests {
         assert_eq!(report.file_status, FileStatus::LoadError);
         assert!(report.results.is_empty());
         assert!(!marker.exists());
-        assert!(!runner_execution_issues(&report, &process).is_empty());
+        assert!(!runner_execution_issues(&report, &process, None).is_empty());
         fs::remove_dir_all(root).unwrap();
     }
 
@@ -4587,12 +4619,104 @@ mod tests {
             files: vec!["a.el".into()],
             mismatches: Vec::new(),
             unsuccessful_files: Vec::new(),
+            accepted_gnu_races: Vec::new(),
             name_filter: None,
             timings: Vec::new(),
             performance_regressions: Vec::new(),
             frozen_manifest: None,
             provenance: test_provenance(),
         }
+    }
+
+    #[test]
+    fn an_accepted_gnu_race_is_recorded_and_does_not_fail_the_run() {
+        let mut summary = test_summary();
+        summary.accepted_gnu_races = vec!["test/lisp/progmodes/eglot-tests.el: accepted".into()];
+        assert_eq!(compatibility_exit_status(&summary), 0);
+        let text = serde_json::to_string(&summary).expect("serialize summary");
+        assert!(text.contains("accepted_gnu_races"));
+        let read: AggregateReport = serde_json::from_str(&text).expect("read summary");
+        assert_eq!(read.accepted_gnu_races, summary.accepted_gnu_races);
+        // A summary with none says nothing of the rule, and an older
+        // summary without the field reads as none.
+        let plain = serde_json::to_string(&test_summary()).expect("serialize summary");
+        assert!(!plain.contains("accepted_gnu_races"));
+        let read: AggregateReport = serde_json::from_str(&plain).expect("read summary");
+        assert!(read.accepted_gnu_races.is_empty());
+    }
+
+    #[test]
+    fn an_accepted_gnu_race_is_not_an_unsuccessful_execution() {
+        let report = |runner: &str, passed: bool| {
+            BatchReport {
+            runner: runner.into(),
+            file: compat::GNU_RACE_FILE.into(),
+            selector: "t".into(),
+            file_status: FileStatus::Loaded,
+            file_error: None,
+            discovered_tests: vec![compat::DiscoveredTest {
+                name: compat::GNU_RACE_TEST.into(),
+                tags: Vec::new(),
+                expected_result: ":passed".into(),
+            }],
+            selected_tests: vec![compat::GNU_RACE_TEST.into()],
+            results: vec![compat::TestOutcome {
+                name: compat::GNU_RACE_TEST.into(),
+                status: if passed {
+                    compat::TestStatus::Passed
+                } else {
+                    compat::TestStatus::Failed
+                },
+                condition_type: (!passed).then(|| "jsonrpc-error".into()),
+                message: (!passed).then(|| {
+                    r#"(jsonrpc-error "request id=2 failed:" (jsonrpc-error-message . "Timed out"))"#
+                        .into()
+                }),
+                expected: Some(passed),
+                duration_ns: None,
+                infos: Vec::new(),
+            }],
+            summary: compat::BatchSummary {
+                total: 1,
+                passed: usize::from(passed),
+                failed: usize::from(!passed),
+                skipped: 0,
+                unexpected: usize::from(!passed),
+            },
+        }
+        };
+        let oracle = report("oracle", false);
+        let emaxx = report("emaxx", true);
+        let mut comparison = compat::compare_reports(&oracle, &emaxx);
+        assert!(comparison.matches);
+        assert_eq!(comparison.accepted_gnu_races.len(), 1);
+        let exited = process_result(Duration::from_secs(1), Duration::from_secs(1), true, None);
+        assert!(runner_execution_issues(&oracle, &exited, Some(&comparison)).is_empty());
+        assert!(runner_execution_issues(&emaxx, &exited, Some(&comparison)).is_empty());
+        // By its report alone the timeout is an unexpected outcome.
+        let alone = runner_execution_issues(&oracle, &exited, None);
+        assert_eq!(alone.len(), 1);
+        assert_eq!(alone[0].kind, "unexpected_outcome");
+        // A runner that did not exit successfully is still reported.
+        let mut failed_exit =
+            process_result(Duration::from_secs(1), Duration::from_secs(1), true, None);
+        failed_exit.exit_code = Some(1);
+        let issues = runner_execution_issues(&oracle, &failed_exit, Some(&comparison));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, "process_exit");
+        // A file that timed out certifies nothing, the acceptance included.
+        let timed_out = process_result(
+            Duration::from_secs(1),
+            Duration::from_secs(180),
+            true,
+            Some(TimeoutPhase::Test),
+        );
+        invalidate_timed_out_comparison(&mut comparison, "GNU Emacs", &timed_out);
+        assert!(!comparison.matches);
+        assert!(comparison.accepted_gnu_races.is_empty());
+        let issues = runner_execution_issues(&oracle, &exited, Some(&comparison));
+        assert_eq!(issues.len(), 1);
+        assert_eq!(issues[0].kind, "unexpected_outcome");
     }
 
     #[test]
@@ -4687,6 +4811,7 @@ mod tests {
             issues: Vec::new(),
             matching_outcomes: 59,
             mismatching_outcomes: 0,
+            accepted_gnu_races: Vec::new(),
         };
         let clean = process_result(Duration::from_secs(2), Duration::from_secs(2), true, None);
         let timed_out = process_result(
@@ -4717,6 +4842,7 @@ mod tests {
             issues: Vec::new(),
             matching_outcomes: 0,
             mismatching_outcomes: 0,
+            accepted_gnu_races: Vec::new(),
         };
         let oracle = process_result(
             Duration::from_secs(180),

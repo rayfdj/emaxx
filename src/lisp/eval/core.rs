@@ -2989,31 +2989,25 @@ mod eval_value_buffer_tests {
                 &original,
                 &env
             ));
-            let reachability = interpreter.weak_hash_reachability(&env, &[]);
             let Kind::HashTable(id) = table.kind() else {
                 panic!("hash table")
             };
-            let (_, remove) = reachability
-                .tables
-                .iter()
-                .find(|(key, _)| *key == id)
-                .expect("weak table participates in root traversal");
-            let entries = id
-                .entries()
-                .map(|(_, key, value)| (key, value))
-                .collect::<Vec<_>>();
-            let retained = id
-                .entries()
-                .map(|(slot, _, _)| !remove.contains(&slot))
-                .collect::<Vec<_>>();
-            assert_eq!(entries.len(), 2, "rooted key and unrooted negative control");
-            assert_eq!(retained.len(), 2);
-            for ((key, _), retained) in entries.iter().zip(&retained) {
-                assert_eq!(
-                    *retained,
-                    primitives::values_eq_in_env(interpreter, key, &original, &env)
-                );
-            }
+            assert_eq!(
+                id.entries().count(),
+                2,
+                "rooted key and unrooted negative control"
+            );
+            // A collection keeps the entry of the rooted key and drops the
+            // negative control's (alloc.c's sweep_weak_hash_tables).
+            crate::lisp::native_comp::begin_garbage_collection(interpreter, &env);
+            let retained = id.entries().map(|(_, key, _)| key).collect::<Vec<_>>();
+            assert_eq!(retained.len(), 1);
+            assert!(primitives::values_eq_in_env(
+                interpreter,
+                &retained[0],
+                &original,
+                &env
+            ));
             (table, plain)
         }
         let mut interpreter = Interpreter::new();
@@ -3030,22 +3024,14 @@ mod eval_value_buffer_tests {
             &plain,
             &env
         ));
-        let reachability = interpreter.weak_hash_reachability(&env, &[]);
         let Kind::HashTable(id) = table.kind() else {
             panic!("hash table")
         };
-        let (_, remove) = reachability
-            .tables
-            .iter()
-            .find(|(key, _)| *key == id)
-            .expect("weak table participates in root traversal");
-        let retained = id
-            .entries()
-            .map(|(slot, _, _)| !remove.contains(&slot))
-            .collect::<Vec<_>>();
-        assert_eq!(retained.len(), 2);
-        assert!(
-            retained.iter().all(|retained| !retained),
+        assert_eq!(id.entries().count(), 1);
+        crate::lisp::native_comp::begin_garbage_collection(&mut interpreter, &env);
+        assert_eq!(
+            id.entries().count(),
+            0,
             "C replacement releases the old root"
         );
     }
@@ -3129,30 +3115,74 @@ mod eval_value_buffer_tests {
 
     #[test]
     fn lexical_binding_symbols_are_gc_roots_before_closure_projection() {
-        let interpreter = Interpreter::new();
-        let lisp_name = Value::string("binding");
-        let name = SymbolName::make_uninterned(lisp_name, "binding", 1);
-        let key = Value::Symbol(name);
-        let env = crate::lisp::types::Env::from_vec(vec![EnvFrame::bindings(
-            [(name, Value::Integer(7))],
-            &Value::Nil,
-        )]);
-        let mut marked = LispReachability::default();
-        marked.mark_env(&interpreter, &env);
+        // A collection keeps an uninterned symbol a lexical binding holds,
+        // with its name, then the same symbol a closure's parameter list
+        // holds, and frees it once neither does: the symbol and its name
+        // are a weak table's keys, and they are taken in frames of their
+        // own, cleared before each collection.
+        #[inline(never)]
+        fn bind(
+            interpreter: &mut Interpreter,
+        ) -> (crate::lisp::types::Env, crate::lisp::types::HashTableRef) {
+            let lisp_name = Value::string("binding");
+            let name = SymbolName::make_uninterned(lisp_name, "binding", 1);
+            let key = Value::Symbol(name);
+            let env = crate::lisp::types::Env::from_vec(vec![EnvFrame::bindings(
+                [(name, Value::Integer(7))],
+                &Value::Nil,
+            )]);
+            let table = crate::test_support::weak_witness_table(
+                interpreter,
+                "lexical-binding-witnesses",
+                &[
+                    (key, Value::symbol("symbol")),
+                    (lisp_name, Value::symbol("name")),
+                ],
+            );
+            (env, table)
+        }
+        // The closure over the symbol the table names, the global
+        // `lexical-binding-function's value.
+        #[inline(never)]
+        fn close_over(interpreter: &mut Interpreter, table: crate::lisp::types::HashTableRef) {
+            let Some(Kind::Symbol(name)) = table
+                .entries()
+                .find(|(_, _, tag)| *tag == Value::symbol("symbol"))
+                .map(|(_, key, _)| key.kind())
+            else {
+                panic!("the binding's symbol")
+            };
+            let function = Value::lambda(vec![name], vec![Value::Nil], Value::Nil);
+            interpreter.set_global_binding("lexical-binding-function", function);
+        }
+        let mut interpreter = Interpreter::new();
+        let (env, table) = bind(&mut interpreter);
+        crate::lisp::alloc::clobber_stack();
+        let marked = crate::test_support::weak_tags_after_collection(&mut interpreter, &env, table);
         assert!(
-            marked.contains(&key),
+            marked.contains(&Value::symbol("symbol")),
             "alloc.c marks the symbol car of a lexical binding"
         );
-        assert!(marked.contains(&lisp_name), "alloc.c marks SYMBOL_NAME");
-
-        let function = Value::lambda(vec![name], vec![Value::Nil], Value::Nil);
-        let mut marked = LispReachability::default();
-        marked.mark(&interpreter, &function);
         assert!(
-            marked.contains(&key),
+            marked.contains(&Value::symbol("name")),
+            "alloc.c marks SYMBOL_NAME"
+        );
+
+        close_over(&mut interpreter, table);
+        drop(env);
+        let env = crate::lisp::types::Env::new();
+        crate::lisp::alloc::clobber_stack();
+        let marked = crate::test_support::weak_tags_after_collection(&mut interpreter, &env, table);
+        assert!(
+            marked.contains(&Value::symbol("symbol")),
             "closure parameters retain their symbol objects"
         );
-        assert!(!LispReachability::default().contains(&key));
+        interpreter.set_global_binding("lexical-binding-function", Value::Nil);
+        crate::lisp::alloc::clobber_stack();
+        assert!(
+            !crate::test_support::weak_tags_after_collection(&mut interpreter, &env, table)
+                .contains(&Value::symbol("symbol"))
+        );
     }
 
     #[test]
@@ -3531,32 +3561,27 @@ mod eval_value_buffer_tests {
             table_id
         }
 
+        // A collection, after which the table holds the entries of the keys
+        // it kept (alloc.c's sweep_weak_hash_tables drops the others): ENTRIES
+        // before it.
         #[inline(never)]
         fn check(
-            interpreter: &Interpreter,
+            interpreter: &mut Interpreter,
             env: &Env,
             table_id: crate::lisp::types::HashTableRef,
+            entries: usize,
             quit_live: bool,
         ) {
-            let marked = interpreter.weak_hash_reachability(env, &[]);
-            let (_, remove) = marked
-                .tables
-                .iter()
-                .find(|(id, _)| *id == table_id)
-                .expect("marked weak table");
-            let entries = table_id
+            assert_eq!(table_id.entries().count(), entries);
+            crate::lisp::native_comp::begin_garbage_collection(interpreter, env);
+            let kept = table_id
                 .entries()
-                .map(|(_, key, value)| (key, value))
+                .map(|(_, _, index)| index)
                 .collect::<Vec<_>>();
-            let keep = table_id
-                .entries()
-                .map(|(slot, _, _)| !remove.contains(&slot))
-                .collect::<Vec<_>>();
-            assert_eq!(entries.len(), 9);
-            for ((_, index), retained) in entries.iter().zip(&keep) {
+            for index in (0..9).map(Value::Integer) {
                 assert_eq!(
-                    *retained,
-                    index != &Value::Integer(8) && (quit_live || index != &Value::Integer(0)),
+                    kept.contains(&index),
+                    index != Value::Integer(8) && (quit_live || index != Value::Integer(0)),
                     "all live roots must survive and unrooted controls must be rejected"
                 );
             }
@@ -3566,14 +3591,14 @@ mod eval_value_buffer_tests {
         let mut env = Env::new();
         let table_id = setup(&mut interpreter, &mut env);
         crate::lisp::alloc::clobber_stack();
-        check(&interpreter, &env, table_id, true);
+        check(&mut interpreter, &env, table_id, 9, true);
 
         // Once C clears the quit slot, no detachment snapshot may keep its
         // former object alive. The other seven independently rooted keys stay.
         interpreter.c_variables.quit_flag.set(Value::Nil);
         interpreter.refresh_call_depth_gate();
         crate::lisp::alloc::clobber_stack();
-        check(&interpreter, &env, table_id, false);
+        check(&mut interpreter, &env, table_id, 8, false);
     }
 
     #[test]

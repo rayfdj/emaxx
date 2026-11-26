@@ -112,6 +112,7 @@ macro_rules! errprintln {
 }
 
 pub mod batch;
+pub use lisp::runtime::Runtime;
 pub(crate) mod buffer;
 pub mod compat;
 pub(crate) mod file_system;

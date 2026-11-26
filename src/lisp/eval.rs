@@ -42,7 +42,7 @@ mod resource_forms;
 pub(crate) mod roots;
 pub(crate) mod runtime;
 mod specpdl;
-pub(crate) use specpdl::{SpecpdlEntry, SpecpdlRef, UnwindAction};
+pub(crate) use specpdl::{LispArray, SpecpdlEntry, SpecpdlRef, UnwindAction};
 pub(crate) mod terminal;
 mod thread_context;
 pub(crate) use dump_roots::{FIELDS_NOT_CARRIED, ROOTS_RESET_AFTER_LOAD, TRANSIENT_ROOTS};
@@ -4645,6 +4645,41 @@ pub(crate) struct LiveObjectCensus {
     pub(crate) buffers: usize,
     pub(crate) hash_table_bytes: usize,
     pub(crate) overlay_node_bytes: usize,
+    /// gcstat's free counts, as the sweeps count them: the free cells of
+    /// the blocks a sweep kept (a wholly free block it gives back is not
+    /// counted), and the words of the vector blocks' free runs.
+    pub(crate) free: FreeObjectCensus,
+}
+
+/// The `garbage-collect' report's free columns, gcstat's
+/// `total_free_conses', `total_free_symbols', `total_free_strings',
+/// `total_free_vector_slots', `total_free_floats' and
+/// `total_free_intervals'.  Intervals are no objects here (a string's or
+/// buffer's properties are a sequence of spans), so none is free.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
+pub(crate) struct FreeObjectCensus {
+    pub(crate) conses: usize,
+    pub(crate) symbols: usize,
+    pub(crate) strings: usize,
+    pub(crate) vector_slots: usize,
+    pub(crate) floats: usize,
+    pub(crate) intervals: usize,
+}
+
+impl FreeObjectCensus {
+    /// The counts the sweeps just made: the cons, float and symbol sweeps
+    /// keep theirs (gcstat's words, the process's), the string and vector
+    /// sweeps return FREE_STRINGS and FREE_VECTOR_SLOTS.
+    pub(crate) fn of_sweeps(free_strings: usize, free_vector_slots: usize) -> Self {
+        Self {
+            conses: crate::lisp::alloc::free_conses(),
+            symbols: crate::lisp::alloc::free_symbols(),
+            strings: free_strings,
+            vector_slots: free_vector_slots,
+            floats: crate::lisp::alloc::free_floats(),
+            intervals: 0,
+        }
+    }
 }
 
 // alloc.c:total_bytes_of_live_objects, tally_consing and Fgarbage_collect's
@@ -4677,9 +4712,10 @@ pub(crate) struct LispReachability {
     /// Whether an object was marked since `trace_pending' last answered.
     reached: bool,
     weak_tables: Vec<crate::lisp::types::HashTableRef>,
-    /// This collection's number: a cons, string, vector or symbol is
-    /// marked by carrying it (alloc.c's mark bit, on the object); the
-    /// other kinds are marked by address or id below.
+    /// This collection's number: a string, symbol or large vector is
+    /// marked by carrying it (alloc.c's mark bit, on the object); a cons,
+    /// float or vector in a block by its block's mark bit, which the sweep
+    /// clears; the other kinds are marked by address or id below.
     epoch: u32,
     /// The retention pass after the live sets are taken: every slot of
     /// every record is traced, a weak table's actual entries included, so
@@ -4699,9 +4735,11 @@ impl LispReachability {
     }
 }
 
-impl Default for LispReachability {
-    /// A fresh collection: its own epoch, so nothing is marked in it yet.
-    fn default() -> Self {
+impl LispReachability {
+    /// A collection's mark phase starts (`weak_hash_reachability', which
+    /// only the collector runs, and its sweeps follow): its own epoch, so
+    /// nothing is marked in it yet.
+    fn for_collection() -> Self {
         let mut marker = Self::default_without_epoch();
         marker.epoch = crate::lisp::types::begin_mark_epoch();
         marker
@@ -4734,12 +4772,12 @@ impl LispReachability {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
             Kind::BigInteger(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Float(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Float(value) => value.mark_bit().is_marked(),
             Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
             // alloc.c:survives_gc_p tests the symbol's mark. A live owner's
             // obarray marks its symbols; a retired owner's names are not roots.
             Kind::Symbol(symbol) => symbol.mark_bit().is_marked(self.epoch),
-            Kind::Cons(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::Cons(value) => value.mark_bit().is_marked(),
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Closure(value) => value.mark_bit().is_marked(self.epoch),
             Kind::NativeFunction(value) => value.mark_bit().is_marked(self.epoch),
@@ -4780,18 +4818,6 @@ impl LispReachability {
         self.trace_pending(interp)
     }
 
-    #[cfg(test)]
-    pub(crate) fn trace_order_for_test(interp: &Interpreter, value: Value) -> (u32, Vec<Value>) {
-        let mut marked = Self::default();
-        let mut visited = Vec::new();
-        marked.enqueue(&value);
-        while let Some(value) = marked.pending.pop() {
-            visited.push(value);
-            marked.trace_fields(interp, &value);
-        }
-        (marked.epoch, visited)
-    }
-
     /// alloc.c:process_mark_stack: pop an object and push what it holds;
     /// true when something not yet marked was reached since the last
     /// answer (by this drain or by the enqueues before it).
@@ -4829,10 +4855,10 @@ impl LispReachability {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => false,
             Kind::BigInteger(value) => value.mark_bit().mark(self.epoch),
-            Kind::Float(value) => value.mark_bit().mark(self.epoch),
+            Kind::Float(value) => value.mark_bit().mark(),
             Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
             Kind::Symbol(symbol) => symbol.mark(self.epoch),
-            Kind::Cons(value) => value.mark_bit().mark(self.epoch),
+            Kind::Cons(value) => value.mark_bit().mark(),
             Kind::Vector(value) => value.mark_bit().mark(self.epoch),
             Kind::Closure(value) => value.mark_bit().mark(self.epoch),
             Kind::NativeFunction(value) => value.mark_bit().mark(self.epoch),
@@ -5042,9 +5068,13 @@ impl LispReachability {
 }
 
 impl LiveObjectCensus {
-    /// alloc.c:total_bytes_of_live_objects: Lisp_Cons=16, Lisp_Float=8,
-    /// interval=56 and one vector word=8 as in the GNU C layouts; symbol and
-    /// string headers at this allocator's actual cell sizes.
+    /// alloc.c:total_bytes_of_live_objects, with the GNU C layouts' sizes
+    /// throughout: Lisp_Cons 16, Lisp_Symbol 48, Lisp_String 32, a vector
+    /// word 8, Lisp_Float 8 and an interval 56, as the report prints them;
+    /// not this allocator's cells (a symbol's is 64 bytes, a string's 48),
+    /// so that the threshold `gc-cons-percentage' sets and the memory
+    /// profiler's samples come from GNU's numbers.  The perf harness's
+    /// physical record states the cells' own sizes.
     pub(crate) fn total_bytes_of_live_objects(&self) -> usize {
         self.conses
             .saturating_mul(GNU_CONS_SIZE)
@@ -5502,19 +5532,15 @@ impl Interpreter {
     }
 
     /// Mark actual roots, then iterate weak-table reachability to a fixed
-    /// point. Both native and interpreter roots enter this one graph walk.
+    /// point. Both native and interpreter roots enter this one graph walk
+    /// (the native ones with the strings Rust borrows, which the collector
+    /// checked before this mark phase began).
     pub(crate) fn weak_hash_reachability(
         &self,
         env: &Env,
         native_roots: &[Value],
     ) -> WeakHashReachability {
-        // Check exclusive Rust string borrows before advancing the epoch.
-        // Shared guards are roots even when held off the scanned stacks.
-        let borrowed_strings = crate::lisp::alloc::borrowed_string_roots();
-        let mut marked = LispReachability::default();
-        for value in borrowed_strings {
-            marked.mark(self, &value);
-        }
+        let mut marked = LispReachability::for_collection();
         marked.mark_env(self, env);
         for value in native_roots {
             marked.mark(self, value);
@@ -6001,12 +6027,79 @@ impl Interpreter {
             buffers: self.buffer_list.len(),
             hash_table_bytes: self.gnu_hash_storage_bytes(),
             overlay_node_bytes: crate::lisp::alloc::vectors::live_overlay_node_bytes(),
+            free: self.sweeps_free_counts,
         };
         census.intervals += self.buffer.borrow().text_property_span_count();
         for (_, buffer) in &self.inactive_buffers {
             census.intervals += buffer.borrow().text_property_span_count();
         }
         census
+    }
+
+    /// The sweeps' free counts of the collection that just swept, for the
+    /// census (alloc.c's gcstat, which each sweep sets).
+    pub(crate) fn note_sweeps_free_counts(
+        &mut self,
+        free_strings: usize,
+        free_vector_slots: usize,
+    ) {
+        self.sweeps_free_counts = FreeObjectCensus::of_sweeps(free_strings, free_vector_slots);
+    }
+
+    /// gcstat's free counts from the last collection's sweeps.
+    #[cfg(test)]
+    pub(crate) fn sweeps_free_counts(&self) -> FreeObjectCensus {
+        self.sweeps_free_counts
+    }
+
+    /// The perf harness's physical record (`EMAXX_PERF_PHYSICAL_RECORD'),
+    /// never a Lisp variable: each kind's census count at GNU's size, as
+    /// `garbage-collect' reports it, and at this allocator's cell size;
+    /// each kind of block with its count, bytes and cells, the rest of a
+    /// block being its metadata (the cons blocks' mark and allocation
+    /// bitmaps, the float blocks' bitmaps, the vector blocks' marks); and
+    /// the image's bytes.
+    pub(crate) fn physical_record(&self) -> serde_json::Value {
+        let census = self.live_object_census();
+        let kind = |name: &str, count: usize, gnu: usize, actual: usize| {
+            serde_json::json!({
+                "kind": name,
+                "count": count,
+                "gnu_bytes": count * gnu,
+                "cell_bytes": count * actual,
+            })
+        };
+        let blocks = crate::lisp::alloc::block_records()
+            .into_iter()
+            .map(|record| {
+                serde_json::json!({
+                    "kind": record.kind,
+                    "blocks": record.blocks,
+                    "image_blocks": record.image_blocks,
+                    "block_bytes": record.block_bytes,
+                    "cells_per_block": record.cells_per_block,
+                    "cell_bytes": record.cell_bytes,
+                    "metadata_bytes": if record.cells_per_block == 0 {
+                        0
+                    } else {
+                        record.block_bytes - record.cells_per_block * record.cell_bytes
+                    },
+                })
+            })
+            .collect::<Vec<_>>();
+        serde_json::json!({
+            "kinds": [
+                kind("conses", census.conses, GNU_CONS_SIZE, GNU_CONS_SIZE),
+                kind("symbols", census.symbols, SYMBOL_SIZE, crate::lisp::alloc::SYMBOL_CELL_BYTES),
+                kind("strings", census.strings, STRING_HEADER_SIZE, crate::lisp::alloc::STRING_CELL_BYTES),
+                kind("string-bytes", census.string_bytes, 1, 1),
+                kind("vector-slots", census.vector_slots, GNU_VECTOR_SLOT_SIZE, GNU_VECTOR_SLOT_SIZE),
+                kind("floats", census.floats, GNU_FLOAT_SIZE, crate::lisp::alloc::FLOAT_CELL_BYTES),
+            ],
+            "blocks": blocks,
+            "hash_table_bytes": census.hash_table_bytes,
+            "image_bytes": self.pdumper_loaded.as_ref().map_or(0, |record| record.dump_size),
+        })
     }
 
     fn gnu_hash_storage_bytes(&self) -> usize {
@@ -6970,6 +7063,9 @@ pub struct InterpreterState {
     /// pdumper.c's `dump_private': the image this process loaded, if any
     /// (`dump_loaded_p'), with what `pdumper-stats' reports of it.
     pdumper_loaded: Option<PdumperLoadRecord>,
+    /// gcstat's free counts from the last collection's sweeps, which
+    /// `garbage-collect' reports.
+    sweeps_free_counts: FreeObjectCensus,
     /// Buffer-local variable cells grouped by buffer, in per-buffer insertion
     /// order.  GNU's buffer slot lookup is constant-time; mode-heavy code must
     /// not scan every other live buffer's locals on each variable read.
@@ -7726,6 +7822,7 @@ impl Interpreter {
             finalizers_run: 0,
             image_reconstruction_handoff: false,
             pdumper_loaded: None,
+            sweeps_free_counts: FreeObjectCensus::default(),
             buffer_locals: HashMap::default(),
             loaded_bindings: LoadedBindings::default(),
             specpdl: Vec::new(),
@@ -9529,3 +9626,13 @@ fn initial_default_file_modes() -> i64 {
 
 #[cfg(test)]
 mod function_cell_tests;
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the pooled frame details, which held Lisp objects, go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&FRAME_DETAIL_POOL, |pool| {
+        if let Ok(mut pool) = pool.try_borrow_mut() {
+            pool.clear();
+        }
+    });
+}

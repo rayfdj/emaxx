@@ -68,9 +68,13 @@ impl From<EmacsTermination> for BatchRunOutcome {
     }
 }
 
-/// Run the batch interpreter on a guarded stack on the calling OS thread.
-pub fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
-    lisp::runtime::with_runtime(|| with_batch_stack(|| run_batch(options)))?
+/// Run the batch interpreter on a guarded stack on the calling OS thread,
+/// which RUNTIME shows holds the runtime.
+pub fn run_batch_with_large_stack(
+    runtime: &crate::Runtime,
+    options: BatchRunOptions,
+) -> Result<BatchRunOutcome, String> {
+    lisp::runtime::with_runtime(|| with_batch_stack(|| run_batch(runtime, options)))?
 }
 
 /// Run the batch CLI with its interpreter alive through FINISH.
@@ -79,6 +83,7 @@ pub fn run_batch_with_large_stack(options: BatchRunOptions) -> Result<BatchRunOu
 /// freeing the Lisp heap. FINISH owns process termination; if it returns,
 /// ordinary Rust Drop still releases the interpreter.
 pub fn run_batch_process_with_large_stack(
+    _runtime: &crate::Runtime,
     options: BatchRunOptions,
     finish: impl FnOnce(BatchRunOutcome) -> Result<u8, String>,
 ) -> Result<u8, String> {
@@ -88,6 +93,7 @@ pub fn run_batch_process_with_large_stack(
             let actions = batch_actions(&options);
             let mut interpreter = initialize_batch_interpreter(&options)?;
             let outcome = run_initialized_batch(&mut interpreter, &options, &actions)?;
+            write_physical_record_if_requested(&interpreter)?;
             interpreter.release_external_resources_for_exit();
             // FINISH ends the process: an exit closes the output streams
             // (close_output_streams), and a restart is Fkill_emacs's
@@ -95,6 +101,23 @@ pub fn run_batch_process_with_large_stack(
             finish(outcome)
         })
     })?
+}
+
+/// The perf harness's physical record of the heap at exit, when it named a
+/// file for one (`EMAXX_PERF_PHYSICAL_RECORD'): an account outside Lisp of
+/// what the census reports at GNU's sizes.
+fn write_physical_record_if_requested(interpreter: &Interpreter) -> Result<(), String> {
+    let Some(path) = env::var_os("EMAXX_PERF_PHYSICAL_RECORD") else {
+        return Ok(());
+    };
+    let record = serde_json::to_string_pretty(&interpreter.physical_record())
+        .map_err(|error| format!("encode the physical record: {error}"))?;
+    fs::write(&path, record).map_err(|error| {
+        format!(
+            "write the physical record {}: {error}",
+            Path::new(&path).display()
+        )
+    })
 }
 
 pub(crate) fn with_batch_stack<R>(body: impl FnOnce() -> R) -> Result<R, String> {
@@ -112,9 +135,12 @@ pub(crate) fn with_batch_stack<R>(body: impl FnOnce() -> R) -> Result<R, String>
     .map_err(|_| "batch runtime panicked".to_string())
 }
 
-pub fn run_batch(options: BatchRunOptions) -> Result<BatchRunOutcome, String> {
+pub fn run_batch(
+    runtime: &crate::Runtime,
+    options: BatchRunOptions,
+) -> Result<BatchRunOutcome, String> {
     let actions = batch_actions(&options);
-    run_batch_with_actions(options, actions)
+    run_batch_with_actions(runtime, options, actions)
 }
 
 fn batch_actions(options: &BatchRunOptions) -> Vec<BatchAction> {
@@ -129,6 +155,7 @@ fn batch_actions(options: &BatchRunOptions) -> Vec<BatchAction> {
 }
 
 pub fn run_batch_with_actions(
+    _runtime: &crate::Runtime,
     options: BatchRunOptions,
     actions: Vec<BatchAction>,
 ) -> Result<BatchRunOutcome, String> {
@@ -437,7 +464,7 @@ pub(crate) fn initialize_interactive_interpreter(
 /// `initialized', from an image (`--dump-file', or the executable's own
 /// `<name>.pdmp' beside it).  A named image that cannot be loaded is
 /// fatal there, as in GNU.
-pub fn startup_image_loads(dump_file: Option<&Path>) -> bool {
+pub fn startup_image_loads(_runtime: &crate::Runtime, dump_file: Option<&Path>) -> bool {
     lisp::runtime::with_runtime(|| {
         let _symbols = crate::lisp::types::symbols::EditorSymbolScope::enter();
         let mut interpreter = Interpreter::new();
@@ -460,7 +487,10 @@ pub fn executable_fingerprint_hex() -> String {
 /// `emacs-copyright' and repository details; a process without an image
 /// (temacs) reports the C constants.  An unusable variable is the
 /// message GNU writes to stderr before exiting with status 1.
-pub fn version_banner(dump_file: Option<&Path>) -> Result<String, String> {
+pub fn version_banner(
+    _runtime: &crate::Runtime,
+    dump_file: Option<&Path>,
+) -> Result<String, String> {
     lisp::runtime::with_runtime(|| version_banner_owned(dump_file))
 }
 
@@ -553,43 +583,22 @@ pub(crate) fn initialize_batch_interpreter_as_started(
     initialize_interpreter(options, true)
 }
 
-/// A boot that has no image to start from reconstructs the dumped state
-/// by running loadup.el, whose dump-mode path runs git
-/// (`emacs-repository-get-version'): that crosses the host-process
-/// boundary, which the test harness serializes with a permit every
-/// process test takes before it boots.  Such a boot takes the permit
-/// before the boot-environment guard too, so the two are always taken
-/// in that order; whether this boot reconstructs is known only under the
-/// guard, so the attempt reports it, the permit is taken, and the boot
-/// restarts (taking the permit under the guard deadlocked against a
-/// process test waiting to boot).
-enum BootAttempt {
-    Ready(Box<Interpreter>),
-    #[cfg(test)]
-    NeedsProcessPermit,
-}
-
+/// A boot is the process's.  It maps the process's one dump (pdumper.c;
+/// comp.c's `loaded_once': each dumped unit is loaded once a process), or,
+/// with none, reconstructs the dumped state by running loadup.el, whose
+/// dump-mode path runs git (`emacs-repository-get-version'), crossing the
+/// host-process boundary.  The test harness serializes the process with a
+/// permit, so every boot takes it, and first: before the boot-environment
+/// guard, the order every process test takes the two in.  The permit is
+/// the thread's until it exits, so while an editor a boot made lives,
+/// another test lent the runtime meanwhile waits to boot rather than load
+/// the dumped units a second time.
 fn initialize_interpreter(
     options: &BatchRunOptions,
     noninteractive: bool,
 ) -> Result<Interpreter, String> {
     #[cfg(test)]
-    loop {
-        match initialize_interpreter_attempt(options, noninteractive)? {
-            BootAttempt::Ready(interpreter) => return Ok(*interpreter),
-            BootAttempt::NeedsProcessPermit => crate::test_support::mark_process_test(),
-        }
-    }
-    #[cfg(not(test))]
-    match initialize_interpreter_attempt(options, noninteractive)? {
-        BootAttempt::Ready(interpreter) => Ok(*interpreter),
-    }
-}
-
-fn initialize_interpreter_attempt(
-    options: &BatchRunOptions,
-    noninteractive: bool,
-) -> Result<BootAttempt, String> {
+    crate::test_support::mark_process_test();
     // Boot resolves its Lisp tree partly from process environment
     // (EMAXX_DUMP_SOURCE_DIRECTORY, EMACS_TEST_DIRECTORY).  Tests that
     // point those at fixture roots take this lock for WRITE; every boot
@@ -651,13 +660,6 @@ fn initialize_interpreter_attempt(
                 ));
             }
         }
-    }
-    #[cfg(test)]
-    if !initialized && !crate::test_support::holds_process_test_permit() {
-        // The reconstruction runs git (see `BootAttempt'); the fixture
-        // directory lock goes with the attempt.
-        drop(fixture_to_dump);
-        return Ok(BootAttempt::NeedsProcessPermit);
     }
     if !initialized && !temacs {
         interpreter = Interpreter::new();
@@ -822,7 +824,7 @@ fn initialize_interpreter_attempt(
             Ok(()) => {}
             Err(LispErrorKind::Terminate(termination)) => {
                 interpreter.request_termination(termination);
-                return Ok(BootAttempt::Ready(Box::new(interpreter)));
+                return Ok(interpreter);
             }
             Err(error) => return Err(format!("after-pdump-load-hook: {error}")),
         }
@@ -863,7 +865,7 @@ fn initialize_interpreter_attempt(
             other => return Err(format!("GNU batch startup did not complete: {other:?}")),
         }
     }
-    Ok(BootAttempt::Ready(Box::new(interpreter)))
+    Ok(interpreter)
 }
 
 fn configure_native_load_path_for_dump_reconstruction(
@@ -1657,8 +1659,7 @@ mod tests {
         let continuation = thread::Builder::new()
             .stack_size(128 * 1024 * 1024)
             .spawn(move || {
-                let _permit = permit;
-                crate::test_support::note_host_permit_moved_to_this_thread();
+                let _permit = permit.moved_to_this_thread();
                 test();
             })
             .expect("spawn large-stack test thread");

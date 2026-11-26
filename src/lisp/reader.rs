@@ -2679,6 +2679,21 @@ fn parse_radix_integer(base: u32, token: &str) -> Result<Value, LispError> {
     Ok(normalize_bigint(value))
 }
 
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the read stack is emptied and the saved strings go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&RDSTACK, |stack| {
+        if let Ok(mut stack) = stack.try_borrow_mut() {
+            *stack = crate::lisp::alloc::RootedVec::new();
+        }
+    });
+    crate::lisp::runtime::release_local(&SAVED_STRINGS, |saved| {
+        if let Ok(mut saved) = saved.try_borrow_mut() {
+            *saved = [None, None];
+        }
+    });
+}
+
 #[cfg(test)]
 #[allow(clippy::unwrap_used)]
 mod tests {

@@ -7,15 +7,15 @@ fn marked_cons_edges_to_positioned_symbols_are_checked() {
     let Kind::Cons(cell) = parent.kind() else {
         unreachable!();
     };
-    // No collection runs here. Give this cons a separate mark epoch while
-    // its child retains its real allocation mark, then invoke the actual
-    // pre-sweep checker. Restore the entire block bitmap before asserting.
+    // No collection runs here, and between collections every mark bit is
+    // clear. Mark this cons in its block's bitmap while its child stays
+    // unmarked, then invoke the actual pre-sweep checker with an epoch no
+    // object carries. Restore the entire block bitmap before asserting.
+    let probe_epoch = super::super::types::current_mark_epoch().wrapping_add(1);
     let mark = unsafe { cons_mark(cell.as_ptr()) };
-    let old_epoch = mark.block.epoch.get();
     let old_words: [usize; CONS_BITMAP_WORDS] =
         std::array::from_fn(|index| mark.block.marked[index].get());
-    let probe_epoch = super::super::types::current_mark_epoch().wrapping_add(1);
-    mark.mark(probe_epoch);
+    mark.mark();
     let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         verify_marking(probe_epoch);
     }));
@@ -23,7 +23,6 @@ fn marked_cons_edges_to_positioned_symbols_are_checked() {
     let accepted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
         verify_marking(probe_epoch);
     }));
-    mark.block.epoch.set(old_epoch);
     for (word, saved) in mark.block.marked.iter().zip(old_words) {
         word.set(saved);
     }
@@ -90,4 +89,30 @@ fn a_block_address_names_no_cons_or_float() {
         None
     );
     std::hint::black_box((conses, floats));
+}
+
+#[test]
+fn a_cons_block_holds_its_metadata_and_2016_conses() {
+    // The block's metadata is the mark and allocation bitmaps, a bit for
+    // each 16 bytes of the 32 KiB block: 512 bytes, the first cell at 512.
+    // GNU's block holds 2,030 (its mark bits alone); with a weak-reference
+    // serial a cons this one held 1,344, and with the marks' epoch 2,015.
+    assert_eq!(CONS_CELLS, 512);
+    assert_eq!(CELLS_PER_BLOCK, 2016);
+    assert_eq!(CONS_CELLS + CELLS_PER_BLOCK * CELL_SIZE, CONS_BLOCK_ALIGN);
+    let [_, block, payload, rest] = cons_storage_for_test();
+    assert_eq!((block, payload, rest), (32768, 2016 * 16, 512));
+    // A cell's bits are its slot's: the first cell's at 32, the last
+    // cell's in the bitmaps' last word.
+    let last = Value::cons(Value::Nil, Value::Nil);
+    let Kind::Cons(cell) = last.kind() else {
+        unreachable!();
+    };
+    let (word, _) = unsafe { cons_mark(cell.as_ptr()) }.bit();
+    assert!(word < CONS_BITMAP_WORDS);
+    assert_eq!(CONS_FIRST_SLOT, 32);
+    assert_eq!(
+        (CONS_FIRST_SLOT + CELLS_PER_BLOCK - 1) / usize::BITS as usize,
+        CONS_BITMAP_WORDS - 1
+    );
 }

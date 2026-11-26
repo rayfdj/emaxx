@@ -1397,3 +1397,9 @@ pub(crate) fn decode_bytes(
     }
     Ok((text, extended))
 }
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the char-byte cache, which names a string's state, goes.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&STRING_CHAR_BYTE_CACHE, |cell| cell.set(None));
+}

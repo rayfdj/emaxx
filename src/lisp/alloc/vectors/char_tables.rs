@@ -89,9 +89,6 @@ fn allocate_words(tag: VectorTag, slots: usize) -> NonNull<VectorHeader> {
     // The caller initializes all fields before publishing the object.
     unsafe {
         (*header).size = PSEUDOVECTOR_FLAG | ((tag as usize) << PSEUDOVECTOR_AREA_BITS) | slots;
-        (*header)
-            .mark_bit()
-            .mark(crate::lisp::types::current_mark_epoch());
         NonNull::new_unchecked(header)
     }
 }

@@ -298,10 +298,59 @@ fn run_emaxx_scenario(
     )?;
     let process = run_command(command, timeout)?;
     let report = load_or_synthesize_report("emaxx", scenario, &result_path, &process)?;
+    print_physical_record(scenario, &scenario_dir.join("emaxx-physical.json"));
     Ok(RunArtifacts {
         report,
         process: Some(process),
     })
+}
+
+/// The physical record the Emaxx run left: per kind, the census count at
+/// GNU's size (what `garbage-collect' reports) and at the cell's own
+/// size; per kind of block, the blocks, their bytes and the metadata
+/// share; the image's bytes.  Not a Lisp value: Lisp sees GNU's sizes.
+fn print_physical_record(scenario: &PerfScenario, path: &Path) {
+    let Ok(text) = fs::read_to_string(path) else {
+        return;
+    };
+    let Ok(record) = serde_json::from_str::<serde_json::Value>(&text) else {
+        eprintln!(
+            "{}: unreadable physical record {}",
+            scenario.id,
+            path.display()
+        );
+        return;
+    };
+    let number = |value: &serde_json::Value, key: &str| value[key].as_u64().unwrap_or(0);
+    for kind in record["kinds"].as_array().into_iter().flatten() {
+        println!(
+            "{} physical {}: count {} at GNU's size {} bytes, at the cell's {} bytes",
+            scenario.id,
+            kind["kind"].as_str().unwrap_or("?"),
+            number(kind, "count"),
+            number(kind, "gnu_bytes"),
+            number(kind, "cell_bytes"),
+        );
+    }
+    for block in record["blocks"].as_array().into_iter().flatten() {
+        println!(
+            "{} physical {} blocks: {} ({} of the image), {} bytes each, {} cells of {} bytes, metadata {} bytes",
+            scenario.id,
+            block["kind"].as_str().unwrap_or("?"),
+            number(block, "blocks"),
+            number(block, "image_blocks"),
+            number(block, "block_bytes"),
+            number(block, "cells_per_block"),
+            number(block, "cell_bytes"),
+            number(block, "metadata_bytes"),
+        );
+    }
+    println!(
+        "{} physical image {} bytes, hash table arrays {} bytes",
+        scenario.id,
+        number(&record, "image_bytes"),
+        number(&record, "hash_table_bytes"),
+    );
 }
 
 fn scenario_command(
@@ -321,6 +370,14 @@ fn scenario_command(
     compat::configure_upstream_like_env_with_home(&mut command, &test_directory, home);
     command.env(perf::PERF_RESULT_FILE_ENV, result_path);
     command.env("EMAXX_PERF_RUNNER", runner);
+    if runner == "emaxx" {
+        // Emaxx's account of its heap at exit at its own sizes, beside the
+        // report's GNU sizes (`print_physical_record').
+        command.env(
+            "EMAXX_PERF_PHYSICAL_RECORD",
+            result_path.with_file_name("emaxx-physical.json"),
+        );
+    }
     command.args([
         "--no-init-file",
         "--no-site-file",

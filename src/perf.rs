@@ -1192,8 +1192,7 @@ mod tests {
         std::thread::Builder::new()
             .stack_size(128 * 1024 * 1024)
             .spawn(move || {
-                let _permit = permit;
-                crate::test_support::note_host_permit_moved_to_this_thread();
+                let _permit = permit.moved_to_this_thread();
                 let mut interpreter = crate::test_support::initialized_upstream_batch_interpreter();
                 for file in ["compat/emacs_perf_runner.el", "compat/interpreter_perf.el"] {
                     let path = compat::compat_path(file);

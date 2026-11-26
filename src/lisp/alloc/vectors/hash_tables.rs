@@ -183,10 +183,6 @@ impl HashTableRef {
                 padding: [0; 2],
                 next_weak: Cell::new(std::ptr::null_mut()),
             });
-            (*raw)
-                .header
-                .mark_bit()
-                .mark(crate::lisp::types::current_mark_epoch());
         }
         let result = Self(unsafe { NonNull::new_unchecked(raw) });
         if let Some(arrays) = arrays {

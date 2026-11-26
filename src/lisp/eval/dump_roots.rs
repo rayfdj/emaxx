@@ -455,6 +455,10 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("handler_generation", "the running signal dispatch"),
     ("handler_search_memo", "the running signal dispatch"),
     ("pdumper_loaded", "set by the load itself"),
+    (
+        "sweeps_free_counts",
+        "the process's last collection, set by the next",
+    ),
     ("buffer", "written through the buffer alist"),
 ];
 

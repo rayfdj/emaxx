@@ -35,9 +35,6 @@ impl LispRecordRef {
         unsafe {
             (*header).size =
                 VectorHeader::pseudovector_slots_word(VectorTag::Record, logical_bytes, count);
-            (*header)
-                .mark_bit()
-                .mark(super::super::super::types::current_mark_epoch());
             let fields = payload(header).cast::<Cell<Value>>();
             fields.write(Cell::new(type_tag));
             for index in 1..count {

@@ -1859,6 +1859,11 @@ pub(crate) fn md5_source_bytes(
     Ok(bytes[b as usize..e as usize].to_vec())
 }
 
+/// The printer's share of `runtime::release_thread_state'.
+pub(crate) fn release_thread_state() {
+    object::release_thread_state();
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

@@ -2,22 +2,40 @@ use super::*;
 
 #[test]
 fn static_roots_trace_the_current_symbol_function_cell_only() {
+    // A collection keeps the function the symbol's cell holds and frees
+    // the payload it replaced: each is a weak table's key, made in a frame
+    // of its own that is cleared before the collection.
+    #[inline(never)]
+    fn replace(interp: &mut Interpreter, symbol: SymbolName) -> crate::lisp::types::HashTableRef {
+        let old = Value::vector([Value::Integer(17)]);
+        let current = Value::vector([Value::Integer(43)]);
+        interp.set_function_binding(symbol.as_str(), Some(old));
+        // GNU's set_symbol_function writes one cell. Exercise that actual
+        // cell here, without updating any detached function payload copy.
+        interp.globals.set_function(&symbol, Some(current));
+        assert_eq!(
+            interp.raw_function_binding_symbol(&symbol, &Env::new()),
+            Some(current)
+        );
+        crate::test_support::weak_witness_table(
+            interp,
+            "function-root-cell-witnesses",
+            &[
+                (current, Value::symbol("current")),
+                (old, Value::symbol("old")),
+            ],
+        )
+    }
     let mut interp = Interpreter::new();
     let symbol = SymbolName::intern_str("function-root-cell-owner");
-    let old = Value::vector([Value::Integer(17)]);
-    let current = Value::vector([Value::Integer(43)]);
-    interp.set_function_binding(symbol.as_str(), Some(old));
-    // GNU's set_symbol_function writes one cell. Exercise that actual
-    // cell here, without updating any detached function payload copy.
-    interp.globals.set_function(&symbol, Some(current));
+    let table = replace(&mut interp, symbol);
+    crate::lisp::alloc::clobber_stack();
+    let kept = crate::test_support::weak_tags_after_collection(&mut interp, &Env::new(), table);
     assert_eq!(
-        interp.raw_function_binding_symbol(&symbol, &Env::new()),
-        Some(current)
-    );
-    let mut reached = LispReachability::default();
-    interp.mark_static_roots_into(&mut reached);
-    assert_eq!(
-        (reached.contains(&current), reached.contains(&old)),
+        (
+            kept.contains(&Value::symbol("current")),
+            kept.contains(&Value::symbol("old"))
+        ),
         (true, false),
         "static roots must retain the current function, not its replaced payload"
     );

@@ -2532,3 +2532,13 @@ pub(crate) fn menu_bar_item_names(
     }
     Ok(names)
 }
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the terminal's menu hook, which a frontend installed, goes.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&TTY_MENU_ACTIVATE, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+}

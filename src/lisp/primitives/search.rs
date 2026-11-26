@@ -28,7 +28,8 @@ struct CacheEntry {
     /// `search-spaces-regexp' when the pattern was compiled.
     whitespace: Option<(Vec<u8>, bool)>,
     /// The syntax table whose contents the pattern holds (`[:space:]',
-    /// `[:word:]'), as GNU's `syntax_table' field.
+    /// `[:word:]'), as GNU's `syntax_table' field: a root of every
+    /// collection while cached (`mark_regexp_cache').
     syntax_table: Option<CharTableRef>,
     pattern: Pattern,
 }
@@ -752,8 +753,25 @@ impl MatchEnv for LispMatchEnv<'_, '_> {
         if self.interp.quit_check_clear() {
             return Ok(());
         }
+        self.process_quit()
+    }
+}
+
+impl LispMatchEnv<'_, '_> {
+    /// maybe_quit's handler, out of the matcher's way: it runs with the
+    /// text kept and the match's gl_state a root.
+    #[cold]
+    #[inline(never)]
+    fn process_quit(&mut self) -> Result<(), LispError> {
         self.keep_text();
-        self.interp.maybe_quit(self.env)
+        match self.gl.as_deref() {
+            Some(gl) => {
+                let env = &mut *self.env;
+                self.interp
+                    .with_lisp_stack_roots(gl, |interp| interp.maybe_quit(env))
+            }
+            None => self.interp.maybe_quit(self.env),
+        }
     }
 }
 
@@ -956,6 +974,21 @@ pub(crate) fn clear_regexp_cache() {
                     .is_some_and(|entry| entry.syntax_table.is_some())
             {
                 cell.entry = None;
+            }
+        }
+    });
+}
+
+/// syms_of_search's staticpro of each searchbufs[i].syntax_table: the
+/// cached patterns' tables, marked by every collection on this thread.
+/// A busy cell's pattern is lent to the running search, and its table,
+/// if any, is the one that search reads, held by the search's own frame
+/// (`LispMatchEnv::syntax_table').
+pub(crate) fn mark_regexp_cache(mark: &mut dyn FnMut(&Value)) {
+    SEARCHBUFS.with_borrow(|cache| {
+        for cell in &cache.cells {
+            if let Some(table) = cell.entry.as_ref().and_then(|entry| entry.syntax_table) {
+                mark(&Value::CharTable(table));
             }
         }
     });
@@ -2473,5 +2506,170 @@ mod c_string_match_tests {
                 "pattern {pattern:?}, input byte {input:#x}"
             );
         }
+    }
+}
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the compiled patterns, which hold their patterns' translate tables, go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&SEARCHBUFS, |bufs| {
+        if let Ok(mut bufs) = bufs.try_borrow_mut() {
+            *bufs = SearchBufs::default();
+        }
+    });
+}
+
+#[cfg(test)]
+mod cache_root_tests {
+    use super::*;
+    use crate::test_support::{eval_lisp, initialized_upstream_batch_interpreter};
+
+    // Each step runs in a frame of its own, the stack below the test
+    // cleared before the collection that decides, so that no stale word
+    // keeps the witnessed table: only what the editor holds does.
+    #[inline(never)]
+    fn lisp(interp: &mut Interpreter, env: &mut Env, source: &str) -> Value {
+        eval_lisp(interp, env, source).expect("evaluate the test's Lisp")
+    }
+
+    /// A match in progress, its pattern lent from the cache, whose quit
+    /// check runs the debugger: it collects there.
+    #[inline(never)]
+    fn collect_in_a_match(interp: &mut Interpreter, env: &mut Env, at: usize) {
+        crate::lisp::alloc::clobber_stack();
+        // SAFETY: nothing runs Lisp before the quit check keeps the text.
+        let snapshot = unsafe { BufferSnapshot::take(interp) };
+        interp.set_symbol_value_key(cached_symbol!("quit-flag"), Value::T);
+        let mut menv = LispMatchEnv::new(interp, env, None);
+        menv.reads(&snapshot);
+        menv.setup_syntax(at);
+        let lent = compile_pattern(&mut menv, &Value::string("q[[:word:]]"), false)
+            .expect("compile the match's pattern");
+        assert!(menv.maybe_quit().is_ok(), "the debugger returned");
+        release_pattern(lent);
+    }
+
+    /// The match's syntax setup, in a frame of its own: what it reads (a
+    /// `syntax-table' property's table) is left in the match's gl_state,
+    /// and in this frame's words, which the caller clears when it returns.
+    #[inline(never)]
+    fn set_up_syntax(menv: &mut LispMatchEnv<'_, '_>, at: usize) {
+        menv.setup_syntax(at);
+    }
+
+    /// A match in progress whose gl_state read the text's properties:
+    /// the setup's frames cleared, its quit check runs the debugger, which
+    /// collects there.
+    #[inline(never)]
+    fn collect_in_a_match_reading_properties(interp: &mut Interpreter, env: &mut Env) {
+        crate::lisp::alloc::clobber_stack();
+        // SAFETY: nothing runs Lisp before the quit check keeps the text.
+        let snapshot = unsafe { BufferSnapshot::take(interp) };
+        interp.set_symbol_value_key(cached_symbol!("quit-flag"), Value::T);
+        let mut menv = LispMatchEnv::new(interp, env, None);
+        menv.reads(&snapshot);
+        set_up_syntax(&mut menv, 0);
+        assert!(menv.gl.is_some(), "the match reads the text's properties");
+        // No word of the setup's frames is left to name the table: the
+        // match's gl_state alone holds it from here.
+        crate::lisp::alloc::clobber_stack();
+        assert!(menv.maybe_quit().is_ok(), "the debugger returned");
+    }
+
+    #[test]
+    fn a_cached_pattern_s_syntax_table_lives_through_a_match_s_collection() {
+        // search.c staticpros searchbufs[i].syntax_table: a pattern that
+        // read its syntax table holds it while cached, and a collection
+        // in another match (its debugger, here) keeps the table, which
+        // nothing else holds.
+        let mut interp = initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (setq cache-witness (make-hash-table :test 'eq :weakness 'key))
+                 (let ((table (make-syntax-table)))
+                   (modify-syntax-entry ?x " " table)
+                   (puthash table t cache-witness)
+                   (with-syntax-table table (string-match "[[:space:]]" "x")))
+                 (set-buffer (get-buffer-create "cache root"))
+                 (insert "abc")
+                 (setq debug-on-quit t
+                       debugger (lambda (&rest _)
+                                  (garbage-collect)
+                                  (setq cache-seen (hash-table-count cache-witness))
+                                  nil)))"#,
+        );
+        collect_in_a_match(&mut interp, &mut env, 0);
+        crate::lisp::alloc::clobber_stack();
+        assert_eq!(
+            lisp(&mut interp, &mut env, "cache-seen"),
+            Value::Integer(1),
+            "the cached pattern's table lived through the collection"
+        );
+        assert_eq!(
+            lisp(
+                &mut interp,
+                &mut env,
+                r#"(let (table)
+                     (maphash (lambda (key _) (setq table key)) cache-witness)
+                     (with-syntax-table table (char-syntax ?x)))"#,
+            ),
+            Value::Integer(i64::from(b' ')),
+            "and it is intact"
+        );
+    }
+
+    #[test]
+    fn a_match_s_gl_state_keeps_its_syntax_table_through_a_collection() {
+        // syntax.c staticpros gl_state.current_syntax_table and old_prop:
+        // a match reading `syntax-table' properties holds the property's
+        // table, and a collection while it runs (its debugger, which
+        // first takes the property away, so that the match's gl_state in
+        // use is all that holds the table) keeps the table.
+        let mut interp = initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (setq gl-witness (make-hash-table :test 'eq :weakness 'key))
+                 (set-buffer (get-buffer-create "gl root"))
+                 ;; No undo entry keeps the property's table.
+                 (buffer-disable-undo)
+                 (insert "xyz")
+                 (setq-local parse-sexp-lookup-properties t)
+                 (let ((table (make-syntax-table)))
+                   (modify-syntax-entry ?x "w" table)
+                   (puthash table t gl-witness)
+                   (put-text-property 1 4 'syntax-table table))
+                 (goto-char 1)
+                 (setq debug-on-quit t
+                       debugger (lambda (&rest _)
+                                  (let ((inhibit-modification-hooks t))
+                                    (remove-text-properties 1 4 '(syntax-table nil)))
+                                  (garbage-collect)
+                                  (setq gl-seen (hash-table-count gl-witness))
+                                  nil)))"#,
+        );
+        collect_in_a_match_reading_properties(&mut interp, &mut env);
+        crate::lisp::alloc::clobber_stack();
+        assert_eq!(
+            lisp(&mut interp, &mut env, "gl-seen"),
+            Value::Integer(1),
+            "the match's gl_state table lived through the collection"
+        );
+        assert_eq!(
+            lisp(
+                &mut interp,
+                &mut env,
+                r#"(let (table)
+                     (maphash (lambda (key _) (setq table key)) gl-witness)
+                     (with-syntax-table table (char-syntax ?x)))"#,
+            ),
+            Value::Integer(i64::from(b'w')),
+            "and it is intact"
+        );
     }
 }

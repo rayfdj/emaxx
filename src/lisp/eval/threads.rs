@@ -403,11 +403,9 @@ fn terminate_child_without_blocking(mut runtime: RunningProcess) {
     // active connection (notably gnutls-serv on Darwin).  Retain the Child,
     // its descriptors closed, in one detached reaper until wait(2)
     // completes, so prompt deletion does not trade the stall for a zombie.
-    let _ = std::thread::Builder::new()
-        .name("process-reaper".into())
-        .spawn(move || {
-            let _ = runtime.child.wait();
-        });
+    let _ = crate::lisp::primitives::spawn_helper_thread("process-reaper", move || {
+        let _ = runtime.child.wait();
+    });
 }
 
 impl Interpreter {

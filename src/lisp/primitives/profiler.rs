@@ -744,6 +744,28 @@ pub(crate) fn profiler_memory_log(
     Ok(ret)
 }
 
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// profiler.c's state is the process's, which the next holder starts
+/// afresh, as a new process does: the CPU profiler's timer is stopped, the
+/// memory profiler stops, and the logs, whose keys are Lisp objects, go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&PROFILER, |profiler| {
+        if let Ok(mut profiler) = profiler.try_borrow_mut() {
+            if profiler.cpu_running != CpuRunning::Not {
+                cpu_timer::stop(profiler.cpu_running);
+            }
+            *profiler = Profiler {
+                cpu: None,
+                memory: None,
+                cpu_running: CpuRunning::Not,
+                cpu_interval: 0,
+                memory_running: false,
+            };
+        }
+    });
+    MEMORY_RUNNING.store(false, Relaxed);
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

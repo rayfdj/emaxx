@@ -479,6 +479,23 @@ pub(crate) fn funcall_with_delayed_message(
     result
 }
 
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the atimers, whose callbacks hold Lisp objects, are dropped.  An alarm
+/// already set finds none, as cancel_atimer's "a too early one doesn't
+/// hurt".
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&ATIMERS, |atimers| {
+        if let Ok(mut atimers) = atimers.try_borrow_mut() {
+            // No handle outlives the release: the ids go on counting all
+            // the same.
+            *atimers = Atimers {
+                active: Vec::new(),
+                next_id: atimers.next_id,
+            };
+        }
+    });
+}
+
 #[cfg(test)]
 mod tests {
     use super::dtotimespec;

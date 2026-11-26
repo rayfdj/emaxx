@@ -357,6 +357,16 @@ pub(crate) use search::fast_string_match;
 pub(crate) use search::{elisp_regex_compile_count, reset_elisp_regex_compile_count};
 pub(crate) use search::{restore_search_regs, save_search_regs, xpalloc_registers};
 
+/// The primitives' share of `runtime::release_thread_state'.
+pub(crate) fn release_thread_state() {
+    dispatch::release_thread_state();
+    interactive::release_thread_state();
+    menu::release_thread_state();
+    print::release_thread_state();
+    search::release_thread_state();
+    syntax_scan::release_thread_state();
+}
+
 #[cfg(test)]
 mod tests;
 

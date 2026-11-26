@@ -1,13 +1,12 @@
 [env]
-# One test thread, as the grouped gate and CI run the suite.  The Lisp
-# heap is the process's, as alloc.c's is: its free lists, bump regions
-# and host symbol table are shared by every OS thread, and until the
-# runtime keeps a second OS thread out of them, a second test thread
-# races the process heap: two library tests that allocate at once can
-# hand out one cell twice or sweep objects only the other's stack holds
-# (D43; such runs crash in string data).  `force = false': an explicit
-# RUST_TEST_THREADS still wins.
-RUST_TEST_THREADS = { value = "1", force = false }
+# Two test threads, for resources.  Runtime tests serialize on the
+# runtime (GNU's global_lock, src/lisp/runtime.rs, which a test's thread
+# holds from its first Lisp until it exits); the second worker overlaps
+# them with the host-only tests; more workers only wait for the runtime
+# and starve the child-process deadlines of the tests that run GNU or a
+# subprocess.  Any count is sound (D43; docs/testing.md).
+# `force = false': an explicit RUST_TEST_THREADS still wins.
+RUST_TEST_THREADS = { value = "2", force = false }
 # Deep Lisp interpretation (descr-text's char-code property walks,
 # cl-print's structure descent) recurses past libtest's default 8 MiB
 # thread stack, and one overflow aborts the whole test binary.  Bake the

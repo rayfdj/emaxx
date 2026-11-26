@@ -33,7 +33,14 @@ and for a subr called from native code, each at 100000:300000
     native-bare-symbol native-keywordp native-nth native-nth-var
     native-point native-plus native-max native-symbol-name native-delq
     native-assoc native-logand native-cons native-eqlsign native-geq
-    native-purecopy native-current-buffer
+    native-purecopy native-current-buffer native-funcall native-apply
+    native-mapcar
+
+and for a call into native code, a call of a native-compiled function
+from byte code and from eval (a nested activation in a batch run,
+whose startup functions are native and still active):
+
+    bc-to-native:100000:300000 interp-to-native:100000:300000
 """
 import concurrent.futures
 import os

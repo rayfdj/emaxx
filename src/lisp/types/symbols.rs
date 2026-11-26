@@ -1546,6 +1546,19 @@ pub(super) fn mark_scope_roots(mark: &mut dyn FnMut(&Value)) {
     });
 }
 
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the selected editor's obarray, whose symbols are Lisp objects, is no
+/// longer selected.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&ACTIVE, |active| {
+        if let Ok(mut active) = active.try_borrow_mut() {
+            *active = None;
+        }
+    });
+    ACTIVE_KEYS.set(std::ptr::null());
+    ACTIVE_POS_FLAG.set(std::ptr::null());
+}
+
 #[cfg(test)]
 mod tests {
     use super::{EditorSymbolScope, SymbolName};

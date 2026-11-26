@@ -2009,3 +2009,13 @@ impl Printer {
         }
     }
 }
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the print stack is emptied.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&PRSTACK, |stack| {
+        if let Ok(mut stack) = stack.try_borrow_mut() {
+            *stack = crate::lisp::alloc::RootedVec::new();
+        }
+    });
+}

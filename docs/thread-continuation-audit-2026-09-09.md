@@ -26,7 +26,10 @@ but cannot establish complete Rust aliasing safety or GNU equivalence.
   handlers, pending errors, unwind actions and environment. The native heap
   still uses main's `NativeHeapOwner` allocation and integrated collector.
 - Native activation locking remains held across suspended activations and is
-  released after the last activation on the owning OS thread. Loader units
+  released after the last activation on the owning OS thread. (The native
+  execution lock has since been removed: the runtime, which the Lisp OS
+  thread holds for its life, serializes native code between OS threads,
+  as global_lock does in GNU.) Loader units
   retain stable Rc ownership across registry growth; compiler RefCell borrow
   exclusion remains shared. TLS and shared ownership are restored before
   original native frames resume, including the tested Rust panic path.

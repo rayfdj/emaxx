@@ -1743,6 +1743,1334 @@ pub(crate) fn interpreter_value_fields_are_gc_roots_or_documented() {
     );
 }
 
+/// The text of the brace-balanced item whose header starts at START (its
+/// first `{' and the matching `}').
+fn balanced_block(text: &str, start: usize) -> Option<&str> {
+    let open = start + text[start..].find('{')?;
+    let mut depth = 0usize;
+    for (offset, byte) in text[open..].bytes().enumerate() {
+        match byte {
+            b'{' => depth += 1,
+            b'}' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[start..=open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// The argument list of the call whose name ends where TEXT starts (its
+/// first `(' and the matching `)').
+fn call_arguments(text: &str) -> Option<&str> {
+    let open = text.find('(')?;
+    let mut depth = 0usize;
+    for (offset, byte) in text[open..].bytes().enumerate() {
+        match byte {
+            b'(' => depth += 1,
+            b')' => {
+                depth -= 1;
+                if depth == 0 {
+                    return Some(&text[open..=open + offset]);
+                }
+            }
+            _ => {}
+        }
+    }
+    None
+}
+
+/// SOURCE as the compiler reads its code: comments (line, block and doc
+/// comments) blanked, string and character literals emptied, newlines
+/// kept.  A gate that matches code by its text reads this, so that a
+/// commented-out call or a name in a string is not taken for code.
+fn code_only(source: &str) -> String {
+    let bytes = source.as_bytes();
+    let word = |byte: u8| byte.is_ascii_alphanumeric() || byte == b'_';
+    let mut out = String::with_capacity(source.len());
+    let mut at = 0;
+    while at < bytes.len() {
+        let byte = bytes[at];
+        let next = bytes.get(at + 1).copied();
+        if byte == b'/' && next == Some(b'/') {
+            while at < bytes.len() && bytes[at] != b'\n' {
+                at += 1;
+            }
+            continue;
+        }
+        if byte == b'/' && next == Some(b'*') {
+            let mut depth = 0usize;
+            while at < bytes.len() {
+                if bytes[at] == b'/' && bytes.get(at + 1) == Some(&b'*') {
+                    depth += 1;
+                    at += 2;
+                } else if bytes[at] == b'*' && bytes.get(at + 1) == Some(&b'/') {
+                    depth -= 1;
+                    at += 2;
+                    if depth == 0 {
+                        break;
+                    }
+                } else {
+                    if bytes[at] == b'\n' {
+                        out.push('\n');
+                    }
+                    at += 1;
+                }
+            }
+            out.push(' ');
+            continue;
+        }
+        // A raw string: r"..", r#".."#, br"..".
+        if (byte == b'r' || (byte == b'b' && next == Some(b'r')))
+            && (at == 0 || !word(bytes[at - 1]))
+        {
+            let mut quote = at + if byte == b'b' { 2 } else { 1 };
+            let mut hashes = 0;
+            while bytes.get(quote) == Some(&b'#') {
+                hashes += 1;
+                quote += 1;
+            }
+            if bytes.get(quote) == Some(&b'"') {
+                let mut end = quote + 1;
+                while end < bytes.len()
+                    && !(bytes[end] == b'"'
+                        && bytes[end + 1..].iter().take_while(|&&c| c == b'#').count() >= hashes)
+                {
+                    if bytes[end] == b'\n' {
+                        out.push('\n');
+                    }
+                    end += 1;
+                }
+                out.push_str("\"\"");
+                at = end + 1 + hashes;
+                continue;
+            }
+        }
+        if byte == b'"' {
+            let mut end = at + 1;
+            while end < bytes.len() && bytes[end] != b'"' {
+                if bytes[end] == b'\\' {
+                    end += 1;
+                } else if bytes[end] == b'\n' {
+                    out.push('\n');
+                }
+                end += 1;
+            }
+            out.push_str("\"\"");
+            at = end + 1;
+            continue;
+        }
+        if byte == b'\'' {
+            // A character literal ('x', '\n', '\u{..}'); else a lifetime.
+            if next == Some(b'\\') {
+                let mut end = at + 3;
+                while end < bytes.len() && bytes[end] != b'\'' {
+                    end += 1;
+                }
+                out.push_str("' '");
+                at = end + 1;
+                continue;
+            }
+            if let Some(character) = source[at + 1..].chars().next() {
+                let after = at + 1 + character.len_utf8();
+                if bytes.get(after) == Some(&b'\'') {
+                    out.push_str("' '");
+                    at = after + 1;
+                    continue;
+                }
+            }
+        }
+        let character = source[at..]
+            .chars()
+            .next()
+            .expect("a character at a boundary");
+        out.push(character);
+        at += character.len_utf8();
+    }
+    out
+}
+
+/// The items of the `thread_local!' block BLOCK (its braces included), as
+/// the macro reads them: each `static NAME: TYPE = INIT;' item's name and
+/// type, whatever its layout, or the text of an item that is not one.
+fn thread_local_items(block: &str) -> Vec<Result<(String, String), String>> {
+    let item = regex::Regex::new(
+        r"^(?s)(?:#\[[^\]]*\]\s*)*(?:pub(?:\([^)]*\))?\s+)?static\s+([A-Z][A-Z0-9_]*)\s*:\s*([^=]+?)\s*=",
+    )
+    .expect("compile thread-local item pattern");
+    let inner = &block[block.find('{').map_or(0, |open| open + 1)..block.len().saturating_sub(1)];
+    let mut items = Vec::new();
+    let mut depth = 0usize;
+    let mut start = 0;
+    for (offset, byte) in inner.bytes().enumerate() {
+        match byte {
+            b'(' | b'[' | b'{' => depth += 1,
+            b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+            b';' if depth == 0 => {
+                items.push(inner[start..offset].trim());
+                start = offset + 1;
+            }
+            _ => {}
+        }
+    }
+    items.push(inner[start..].trim());
+    items
+        .into_iter()
+        .filter(|text| !text.is_empty())
+        .map(|text| match item.captures(text) {
+            Some(found) => Ok((
+                found[1].to_owned(),
+                found[2].split_whitespace().collect::<Vec<_>>().join(" "),
+            )),
+            None => Err(text.to_owned()),
+        })
+        .collect()
+}
+
+/// Whether TEXT calls PATH with no arguments, as a token: `PATH()' not
+/// inside a longer name (for a bare name, not a path's last segment).
+fn calls_with_no_arguments(text: &str, path: &str) -> bool {
+    let before = if path.contains("::") {
+        r"[^\w]"
+    } else {
+        r"[^\w:]"
+    };
+    regex::Regex::new(&format!(
+        r"(?:^|{before}){}\s*\(\s*\)",
+        regex::escape(path).replace("::", r"\s*::\s*")
+    ))
+    .expect("compile call pattern")
+    .is_match(text)
+}
+
+/// SOURCE without its `#[cfg(test)]' modules (inline or declared).
+fn without_test_modules(source: &str) -> String {
+    let module = regex::Regex::new(
+        r"(?m)^[ \t]*#\[cfg\(test\)\]\s*(?:#\[[^\]]*\]\s*)*(?:pub(?:\(crate\))?\s+)?mod\s+[a-z_0-9]+\s*(;|\{)",
+    )
+    .expect("compile test module pattern");
+    let mut kept = String::new();
+    let mut rest = source;
+    while let Some(found) = module.captures(rest) {
+        let whole = found.get(0).expect("the module header");
+        kept.push_str(&rest[..whole.start()]);
+        let skip = if &found[1] == ";" {
+            whole.end()
+        } else {
+            whole.start()
+                + balanced_block(&rest[whole.start()..], 0)
+                    .map_or(rest.len() - whole.start(), str::len)
+        };
+        rest = &rest[skip..];
+    }
+    kept.push_str(rest);
+    kept
+}
+
+/// A thread-local that holds Lisp objects must not outlive the runtime's
+/// stay on its OS thread: such a root is marked only by a collection on
+/// that thread (`mark_static_roots_into' reads the collecting thread's
+/// thread-locals), so one left behind names objects another thread's
+/// collection frees.  Every `thread_local!' of the runtime (src/, less
+/// binaries, test modules and test support) is therefore reset by its
+/// module's `release_thread_state' (reached from the runtime's, which every
+/// release of the runtime runs) or by the allocation frontier's `take'
+/// (which the runtime's release calls), or is listed below with the reason
+/// it is the OS thread's own.
+///
+/// What it checks, on the sources with comments and literals removed:
+/// every item of every `thread_local!' block (parsed as the macro's items,
+/// whatever their layout; an item it cannot read fails), in a file that is
+/// not a test file; that Tenure's Drop and `let_go', where a thread's
+/// last hold goes, call `release_thread_state()' and the runtime's release
+/// calls `crate::lisp::alloc::Frontier::take()', as tokens; that the Drops
+/// of a `Runtime' handle and of a scoped entry call `let_go'; that the
+/// runtime is released (`RUNTIME.release(') only in `let_go', Tenure's
+/// Drop, a lend (`release_while') and an acquire refused before it
+/// recorded a hold (`lock', `Scope::enter'); that each module's
+/// `release_thread_state' (and each `Frontier::take') is called, as a
+/// token, from another one's; that each item is either reset in its own
+/// file's release (or take) body by a write of its whole value, or listed,
+/// and not both; that each listed name is an item of that file; and that a
+/// type naming a Lisp handle (a Lisp word or handle type, a closure, or a
+/// crate type naming one, three levels down) is listed only in the second
+/// table.
+///
+/// What it does not prove: that control reaches a call it finds (a call
+/// under a condition counts); that a reset value is the initial one; that a
+/// listed reason is true; that a type holds no Lisp object when it keeps one
+/// as an integer or a raw pointer (`usize', `*const T'), which the type names
+/// do not show, or through a type more than three levels down or outside
+/// the crate.  Those rest on the listed reasons and on review.
+pub(crate) fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
+    // Not editor state, and no Lisp object in it.
+    const PER_OS_THREAD: &[(&str, &str, &str)] = &[
+        (
+            "src/allocator.rs",
+            "SMALL_BLOCKS",
+            "the host allocator's per-thread free lists",
+        ),
+        (
+            "src/allocator.rs",
+            "FLUSH_AT_EXIT",
+            "returns the host allocator's blocks when the thread exits",
+        ),
+        (
+            "src/compat.rs",
+            "BOOT_ENV_WRITE_HELD",
+            "this thread holds the boot-environment write guard",
+        ),
+        (
+            "src/tty.rs",
+            "TERMINAL_GONE",
+            "the frontend's terminal hangup flag, no Lisp object",
+        ),
+        (
+            "src/tty.rs",
+            "PAINT_TERMINAL",
+            "the frontend's terminal colors and sent strings, no Lisp object",
+        ),
+        (
+            "src/lisp/alloc.rs",
+            "PARKED_STACKS",
+            "this OS thread's parked coroutine stacks",
+        ),
+        (
+            "src/lisp/alloc.rs",
+            "DRIVER_REGIONS",
+            "this OS thread's stacks driving coroutines",
+        ),
+        (
+            "src/lisp/alloc.rs",
+            "STACK_TOP",
+            "this OS thread's collection's stack top",
+        ),
+        (
+            "src/lisp/alloc/strings.rs",
+            "LIVE_GUARDS",
+            "the string guards alive on this OS thread's stacks",
+        ),
+        (
+            "src/lisp/runtime.rs",
+            "ENTERED",
+            "how this OS thread holds the runtime",
+        ),
+        (
+            "src/lisp/runtime.rs",
+            "TENURE",
+            "gives this OS thread's tenure back at its exit",
+        ),
+        (
+            "src/lisp/reader.rs",
+            "INFILE_LOADS",
+            "a count of nested loads, no Lisp object",
+        ),
+        (
+            "src/lisp/modules/mod.rs",
+            "MODULE_GC",
+            "set during a module call's collection",
+        ),
+        (
+            "src/lisp/bytecode/verify.rs",
+            "CACHE",
+            "verified code by address, checked against CODE_CHANGES and VECTOR_SWEEPS",
+        ),
+        (
+            "src/lisp/bytecode/verify.rs",
+            "VERIFIED",
+            "verified code by address, checked against CODE_CHANGES and VECTOR_SWEEPS",
+        ),
+        (
+            "src/lisp/bytecode/verify.rs",
+            "CLOSURES_SWEPT",
+            "the VECTOR_SWEEPS count CLOSURES was filled at",
+        ),
+        (
+            "src/lisp/native_comp/loader.rs",
+            "ACTIVE_COMPILER",
+            "set during a native compilation call",
+        ),
+        (
+            "src/lisp/native_comp/runtime.rs",
+            "ACTIVE_GC",
+            "set during a native call's collection",
+        ),
+        (
+            "src/lisp/native_comp/runtime.rs",
+            "ACTIVE_GC_TRIGGER",
+            "a native call's collection counter",
+        ),
+        (
+            "src/lisp/primitives/accessors_random.rs",
+            "RANDOM",
+            "the random state, a C global without Lisp objects",
+        ),
+        (
+            "src/lisp/primitives/file_io.rs",
+            "AUTO_SAVING",
+            "fileio.c's auto_saving, a C flag",
+        ),
+        (
+            "src/lisp/primitives/file_io.rs",
+            "AUTO_SAVE_MODE_BITS",
+            "fileio.c's auto_save_mode_bits, a C int",
+        ),
+        (
+            "src/lisp/primitives/file_io.rs",
+            "AUTO_SAVE_ERROR_OCCURRED",
+            "fileio.c's auto_save_error_occurred, a C flag",
+        ),
+        (
+            "src/lisp/primitives/file_io.rs",
+            "AUTO_SAVING_DIR_UMASK",
+            "fileio.c's auto_saving_dir_umask, a C int",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "SYMBOL_WITH_POS_FLAG_READ_COUNT",
+            "a count of flag reads, no Lisp object",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "TTY_CURSOR_IN_ECHO_AREA",
+            "a C flag of the tty cursor",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "TTY_READ_END_TIME",
+            "the tty read's deadline, a time",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "RAW_EVENT_READ",
+            "a C flag of the tty read",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "TTY_IDLE_START",
+            "keyboard.c's timer_idleness_start_time, a time",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "TTY_LAST_IDLE_START",
+            "keyboard.c's timer_last_idleness_start_time, a time",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "READ_CHAR_RETRY",
+            "a C flag of read_char",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "READ_RECORDED",
+            "a C flag of read_char",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "READ_USED_MOUSE_MENU",
+            "a C flag of read_char",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "READ_MENU_EXIT",
+            "a C flag of read_char",
+        ),
+        (
+            "src/lisp/primitives/interactive.rs",
+            "LAST_EVENT_SOURCE",
+            "where the last event came from, an enumeration",
+        ),
+        (
+            "src/lisp/primitives/search.rs",
+            "PATTERN_CODES",
+            "the compiler's scratch codes",
+        ),
+        (
+            "src/lisp/primitives/search.rs",
+            "COMPILES",
+            "a count of compiled patterns",
+        ),
+        (
+            "src/lisp/primitives/tz.rs",
+            "TZFILES",
+            "time zone files by name, host data",
+        ),
+        (
+            "src/lisp/primitives/tz.rs",
+            "ZONES",
+            "time zones by name, host data",
+        ),
+        (
+            "src/lisp/primitives/window.rs",
+            "INTERACTIVE_WINDOW_METRICS",
+            "the frontend's window end, a position",
+        ),
+        (
+            "src/lisp/primitives/window.rs",
+            "SCROLL_PRESERVE",
+            "window.c's scroll positions, two integers",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "KEYBOARD_WAITING_THREAD",
+            "a thread id",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "FORCE_QUIT_COUNT",
+            "keyboard.c's force_quit_count, a C int",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "WAITING_FOR_INPUT",
+            "keyboard.c's waiting_for_input, a C flag",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "QUIT_THROWN_TO_READ_CHAR",
+            "a C flag of read_char",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "QUIT_CHAR",
+            "keyboard.c's quit_char, a C int",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "TTY_INPUT_MODES",
+            "the terminal's input modes, host data",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "FRAME_GARBAGED",
+            "frame_garbaged, a C flag",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "TTY_SHOWING_MENU",
+            "a C flag of the tty menu",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "INPUT_WAS_PENDING",
+            "keyboard.c's input_was_pending, a C flag",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "REDISPLAY_INPUT_PENDING",
+            "a C flag of redisplay",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "LAST_AUTO_SAVE",
+            "keyboard.c's last_auto_save, a C int",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "LAST_NON_MINIBUF_SIZE",
+            "keyboard.c's last_non_minibuf_size, a C int",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "REDISPLAYING_P",
+            "xdisp.c's redisplaying_p, a C flag",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "DEV_TTY",
+            "whether the terminal is /dev/tty, a flag",
+        ),
+        (
+            "src/lisp/primitives/interactive/kbd_input.rs",
+            "TTY_ERASE_CHAR",
+            "the terminal's erase character, a byte",
+        ),
+        (
+            "src/lisp/primitives/dispatch/display.rs",
+            "ECHO_PRESERVE_REDISPLAY",
+            "a C flag of the echo area",
+        ),
+        (
+            "src/lisp/primitives/dispatch/display.rs",
+            "ECHO_FROM_PRINT",
+            "a C flag of the echo area",
+        ),
+        (
+            "src/lisp/primitives/dispatch/display.rs",
+            "MESSAGE_LOG_NEED_NEWLINE",
+            "xdisp.c's message_log_need_newline, a C flag",
+        ),
+        (
+            "src/lisp/primitives/dispatch/display.rs",
+            "ECHO_MESSAGE_TICK",
+            "a count of echo-area messages",
+        ),
+        (
+            "src/lisp/primitives/dispatch/misc.rs",
+            "DOC_FILE_CACHE",
+            "documentation text by file, host data",
+        ),
+        (
+            "src/lisp/primitives/dispatch/misc.rs",
+            "LISP_SOURCE_DOC_CACHE",
+            "documentation text by file, host data",
+        ),
+        (
+            "src/lisp/primitives/dispatch/display/mode_line.rs",
+            "LINE_NUMBER_DISPLAYED",
+            "xdisp.c's line_number_displayed, a C flag",
+        ),
+        (
+            "src/lisp/primitives/print/object.rs",
+            "PRINT_OBJECTS",
+            "a count of print calls",
+        ),
+        (
+            "src/lisp/eval/continuations.rs",
+            "CURRENT_STACK_BASE",
+            "this OS thread's stack base",
+        ),
+        (
+            "src/lisp/eval/continuations.rs",
+            "CURRENT_STACK_LIMIT",
+            "this OS thread's stack limit",
+        ),
+        (
+            "src/lisp/eval/continuations.rs",
+            "C_STACK_FLOOR",
+            "this OS thread's stack floor",
+        ),
+        (
+            "src/lisp/eval/core.rs",
+            "PROFILE_CHILD_STACK",
+            "the host profiler's timings",
+        ),
+        (
+            "src/lisp/eval/core.rs",
+            "PROFILE_TABLE",
+            "the host profiler's table",
+        ),
+        (
+            "src/lisp/eval/core.rs",
+            "PROFILE_DUMP_COUNTDOWN",
+            "the host profiler's countdown",
+        ),
+        (
+            "src/lisp/eval/terminal.rs",
+            "DEFAULT_TTY_COLORS",
+            "terminal color strings, host data",
+        ),
+        (
+            "src/lisp/eval/terminal.rs",
+            "TPUTS_OUTPUT",
+            "tputs's output buffer, bytes",
+        ),
+        (
+            "src/lisp/eval/threads.rs",
+            "READ_BUFFER",
+            "a read buffer, bytes",
+        ),
+        (
+            "src/lisp/regex_emacs/compile.rs",
+            "WORK",
+            "the regex compiler's scratch",
+        ),
+        (
+            "src/lisp/regex_emacs/exec.rs",
+            "SPARE_STATE",
+            "the matcher's scratch",
+        ),
+    ];
+    // Lisp words or handles that are not editor state: each is set only
+    // for the length of a call (and empty between calls, when the runtime
+    // can go), or is checked against a global epoch before use.
+    const LISP_PER_OS_THREAD: &[(&str, &str, &str)] = &[
+        (
+            "src/lisp/primitives/dispatch.rs",
+            "NAME_FACTS",
+            "facts found from a primitive's name (flags, arities, function pointers whose \
+             signatures name Lisp types): no Lisp object, the same in every editor",
+        ),
+        (
+            "src/lisp/modules/mod.rs",
+            "ACTIVE_ENVS",
+            "a module call's activations, set only during the call",
+        ),
+        (
+            "src/lisp/modules/mod.rs",
+            "ACTIVE_RUNTIMES",
+            "a module call's environments, set only during the call",
+        ),
+        (
+            "src/lisp/bytecode/verify.rs",
+            "CLOSURES",
+            "closure entries by address, rebuilt when VECTOR_SWEEPS changes",
+        ),
+        (
+            "src/lisp/bytecode/verify.rs",
+            "CLOSURE_TABLE",
+            "closure entries by address, rebuilt when VECTOR_SWEEPS changes",
+        ),
+        (
+            "src/lisp/native_comp/loader.rs",
+            "ACTIVE_REGISTERED_RUNTIME",
+            "the native runtime of a load, set only during it",
+        ),
+        (
+            "src/lisp/native_comp/runtime.rs",
+            "ACTIVE_CALL",
+            "the running native call, set only during it",
+        ),
+        (
+            "src/lisp/eval/continuations.rs",
+            "CURRENT_RESUME",
+            "the running coroutine's resume context, set only while it runs",
+        ),
+    ];
+    let lisp_handle = regex::Regex::new(
+        r"\b(Value|FrameRef|TerminalRef|WindowRef|BufferRef|SymbolName|ConsRef|StringObjectRef|VectorRef|CharTableRef|RecordRef|MarkerRef|OverlayRef|Env|Symbols|SharedStringState)\b|dyn\s+Fn",
+    )
+    .expect("compile Lisp handle pattern");
+    let definition = regex::Regex::new(
+        r"(?m)^\s*(?:pub(?:\((?:crate|super)\))?\s+)?(?:struct|enum|type)\s+([A-Z][A-Za-z0-9_]*)\b",
+    )
+    .expect("compile definition pattern");
+    let identifier =
+        regex::Regex::new(r"\b[A-Z][A-Za-z0-9_]*\b").expect("compile identifier pattern");
+    let root = repo_root();
+    let sources: Vec<(String, String)> = rust_files_below("src")
+        .into_iter()
+        .map(|path| {
+            let relative = path
+                .strip_prefix(root)
+                .expect("a source below the repository")
+                .to_string_lossy()
+                .replace('\\', "/");
+            let text = fs::read_to_string(&path).expect("read a runtime source");
+            (relative, without_test_modules(&code_only(&text)))
+        })
+        .collect();
+    // Crate definitions by name, for the types a thread-local's names.
+    let mut definitions: std::collections::HashMap<String, Vec<String>> = Default::default();
+    for (_, text) in &sources {
+        for found in definition.captures_iter(text) {
+            let whole = found.get(0).expect("the definition");
+            let rest = &text[whole.end()..];
+            let body = match (rest.find(';'), rest.find('{')) {
+                (Some(semi), Some(brace)) if brace < semi => {
+                    balanced_block(rest, 0).unwrap_or(&rest[..semi])
+                }
+                (Some(semi), _) => &rest[..semi],
+                (None, Some(_)) => balanced_block(rest, 0).unwrap_or(rest),
+                (None, None) => rest,
+            };
+            definitions
+                .entry(found[1].to_owned())
+                .or_default()
+                .push(body.to_owned());
+        }
+    }
+    fn holds_lisp(
+        kind: &str,
+        depth: usize,
+        seen: &mut std::collections::BTreeSet<String>,
+        handle: &regex::Regex,
+        identifier: &regex::Regex,
+        definitions: &std::collections::HashMap<String, Vec<String>>,
+    ) -> bool {
+        if handle.is_match(kind) {
+            return true;
+        }
+        depth > 0
+            && identifier.find_iter(kind).any(|name| {
+                seen.insert(name.as_str().to_owned())
+                    && definitions.get(name.as_str()).is_some_and(|bodies| {
+                        bodies.iter().any(|body| {
+                            holds_lisp(body, depth - 1, seen, handle, identifier, definitions)
+                        })
+                    })
+            })
+    }
+    let runtime_file = |path: &str| {
+        !(path.starts_with("src/bin/")
+            || path.ends_with("/tests.rs")
+            || path.ends_with("_tests.rs")
+            || path.contains("/tests/")
+            || path == "src/test_support.rs"
+            || path == "src/anti_cheat.rs")
+    };
+    let function_body = |text: &str, header: &str| -> Option<String> {
+        let at = text.find(header)?;
+        balanced_block(text, at).map(str::to_owned)
+    };
+    let stem = |path: &str| {
+        let file = path.rsplit('/').next().unwrap_or(path);
+        file.trim_end_matches(".rs").to_owned()
+    };
+    // The release path: runtime.rs's release, run at every release.
+    let runtime = &sources
+        .iter()
+        .find(|(path, _)| path == "src/lisp/runtime.rs")
+        .expect("the runtime's source")
+        .1;
+    for (owner, call) in [
+        ("impl Drop for Tenure {", "release_thread_state"),
+        ("fn let_go(poison: bool) {", "release_thread_state"),
+        (
+            "fn release(&self, poison: bool) {",
+            "crate::lisp::alloc::Frontier::take",
+        ),
+    ] {
+        let body =
+            function_body(runtime, owner).unwrap_or_else(|| panic!("{owner} in the runtime"));
+        assert!(
+            calls_with_no_arguments(&body, call),
+            "{owner} must call {call}()"
+        );
+    }
+    // A thread gives the runtime back at its last hold alone.
+    for owner in ["impl Drop for Runtime {", "impl Drop for Scope {"] {
+        let body =
+            function_body(runtime, owner).unwrap_or_else(|| panic!("{owner} in the runtime"));
+        assert!(body.contains("let_go("), "{owner} must let its hold go");
+    }
+    let releases = runtime.matches("RUNTIME.release(").count();
+    let allowed: usize = [
+        "fn let_go(poison: bool) {",
+        "impl Drop for Tenure {",
+        "fn release_while<R>(",
+        "pub fn lock() -> Self {",
+        "fn enter() -> Self {",
+    ]
+    .iter()
+    .map(|owner| {
+        function_body(runtime, owner).map_or(0, |body| body.matches("RUNTIME.release(").count())
+    })
+    .sum();
+    assert_eq!(
+        releases, allowed,
+        "the runtime is released elsewhere than at a thread's last hold, a tenure's end, a lend \
+         or a refused acquire"
+    );
+    let release_bodies: Vec<(String, String)> = sources
+        .iter()
+        .filter(|(path, _)| runtime_file(path))
+        .filter_map(|(path, text)| {
+            function_body(text, "fn release_thread_state() {").map(|body| (path.clone(), body))
+        })
+        .collect();
+    let frontier_bodies: Vec<(String, String)> = sources
+        .iter()
+        .filter(|(path, _)| runtime_file(path))
+        .filter_map(|(path, text)| {
+            let frontier = text.find("impl Frontier {")?;
+            function_body(&text[frontier..], "fn take() -> Self {").map(|body| (path.clone(), body))
+        })
+        .collect();
+    let called = |path: &str, call: &str| {
+        release_bodies
+            .iter()
+            .chain(&frontier_bodies)
+            .any(|(caller, body)| caller != path && calls_with_no_arguments(body, call))
+            || (path == "src/lisp/alloc.rs"
+                && function_body(runtime, "fn release(&self, poison: bool) {")
+                    .is_some_and(|body| calls_with_no_arguments(&body, "alloc::Frontier::take")))
+    };
+    let mut violations = Vec::new();
+    for (path, _) in &release_bodies {
+        if path != "src/lisp/runtime.rs"
+            && !called(path, &format!("{}::release_thread_state", stem(path)))
+        {
+            violations.push(format!("{path}: its release_thread_state is not called"));
+        }
+    }
+    for (path, _) in &frontier_bodies {
+        if !called(path, &format!("{}::Frontier::take", stem(path))) {
+            violations.push(format!("{path}: its Frontier::take is not called"));
+        }
+    }
+    let mut found = std::collections::BTreeSet::new();
+    // A release replaces the thread-local's whole value: it sets,
+    // replaces or takes the key's cell, or it passes the key to
+    // `release_local' (or reads it with `with') in a closure that assigns
+    // a whole binding (`*value = ..'), or sets, replaces, takes or clears a
+    // binding itself; a write to a field (`value.field.clear()') is not
+    // one.
+    let whole = regex::Regex::new(
+        r"(?:^|[^\w.])(?:\*\s*\w+\s*=[^=]|\w+\s*\.\s*(?:set|replace|take|clear)\s*\()",
+    )
+    .expect("compile whole-value write pattern");
+    let resets = |text: &str, name: &str| {
+        let direct = regex::Regex::new(&format!(
+            r"(?:^|[^\w.]){name}\s*\.\s*(?:replace|set|take)\s*\("
+        ))
+        .expect("compile direct write pattern");
+        let call = regex::Regex::new(&format!(
+            r"(?:^|[^\w.])(?:release_local\s*\(\s*&\s*{name}\s*,|{name}\s*\.\s*with\s*\()"
+        ))
+        .expect("compile release call pattern");
+        direct.is_match(text)
+            || call.find_iter(text).any(|at| {
+                call_arguments(&text[at.start()..])
+                    .is_some_and(|arguments| whole.is_match(arguments))
+            })
+    };
+    let block_start = regex::Regex::new(r"\bthread_local!\s*\{").expect("compile block pattern");
+    for (path, text) in sources.iter().filter(|(path, _)| runtime_file(path)) {
+        let mut rest = text.as_str();
+        while let Some(at) = block_start.find(rest).map(|found| found.start()) {
+            let block = balanced_block(rest, at).expect("a thread_local! block");
+            for item in thread_local_items(block) {
+                let (name, kind) = match &item {
+                    Ok((name, kind)) => (name.as_str(), kind.as_str()),
+                    Err(text) => {
+                        violations.push(format!(
+                            "{path}: a thread_local! item the gate cannot read: {text}"
+                        ));
+                        continue;
+                    }
+                };
+                found.insert((path.clone(), name.to_owned()));
+                let released = release_bodies
+                    .iter()
+                    .chain(&frontier_bodies)
+                    .any(|(owner, body)| owner == path && resets(body, name));
+                let plain = PER_OS_THREAD
+                    .iter()
+                    .any(|(file, listed, _)| file == path && *listed == name);
+                let lisp_listed = LISP_PER_OS_THREAD
+                    .iter()
+                    .any(|(file, listed, _)| file == path && *listed == name);
+                let lisp = holds_lisp(
+                    kind,
+                    3,
+                    &mut Default::default(),
+                    &lisp_handle,
+                    &identifier,
+                    &definitions,
+                );
+                match (released, plain, lisp_listed, lisp) {
+                    (true, false, false, _) | (false, true, false, false) | (false, false, true, true) => {}
+                    (false, false, false, _) => violations.push(format!(
+                        "{path}: {name}: {kind} is neither released with the runtime nor the OS thread's own"
+                    )),
+                    (false, true, false, true) => violations.push(format!(
+                        "{path}: {name}: {kind} holds Lisp objects: release it, or list why it is not editor state"
+                    )),
+                    (false, false, true, false) => violations.push(format!(
+                        "{path}: {name}: {kind} holds no Lisp object: list it with the plain entries"
+                    )),
+                    _ => violations.push(format!("{path}: {name}: both released and listed")),
+                }
+            }
+            rest = &rest[at + block.len()..];
+        }
+    }
+    for (file, name, reason) in PER_OS_THREAD.iter().chain(LISP_PER_OS_THREAD) {
+        assert!(!reason.is_empty(), "{file}: {name}: give the reason");
+        if !found.contains(&((*file).to_owned(), (*name).to_owned())) {
+            violations.push(format!(
+                "{file}: {name}: listed but not a thread-local there"
+            ));
+        }
+    }
+    assert!(
+        found.len() > 100,
+        "the inventory must find the runtime's thread-locals, found {}",
+        found.len()
+    );
+    assert!(
+        violations.is_empty(),
+        "thread-locals not released with the runtime nor documented as the OS thread's own: {violations:#?}"
+    );
+}
+
+/// A thread the runtime starts is a host helper made by
+/// `processes::spawn_helper_thread', with the signals a process receives
+/// blocked as glibc blocks them in its own helpers, so they go to a thread
+/// that runs Lisp (sysdep.c:deliver_process_signal).  This checks, on the
+/// runtime's sources with comments and literals removed (test modules and
+/// test files left out), that no other function calls `thread::spawn',
+/// `thread::Builder' or `thread::scope'.  It does not see a spawn through a
+/// renamed import or a crate that spawns threads of its own.
+pub(crate) fn runtime_threads_start_with_process_signals_blocked() {
+    let spawn = regex::Regex::new(r"\bthread\s*::\s*(?:spawn|Builder|scope)\b")
+        .expect("compile spawn pattern");
+    let root = repo_root();
+    let mut violations = Vec::new();
+    let mut helper_found = false;
+    for path in rust_files_below("src") {
+        let relative = path
+            .strip_prefix(root)
+            .expect("a source below the repository")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative.starts_with("src/bin/")
+            || relative.ends_with("/tests.rs")
+            || relative.ends_with("_tests.rs")
+            || relative.contains("/tests/")
+            || relative == "src/test_support.rs"
+            || relative == "src/anti_cheat.rs"
+        {
+            continue;
+        }
+        let text = without_test_modules(&code_only(
+            &fs::read_to_string(&path).expect("read a runtime source"),
+        ));
+        let helper = text
+            .find("pub(crate) fn spawn_helper_thread(")
+            .and_then(|at| balanced_block(&text, at).map(|body| (at, at + body.len())));
+        helper_found |= helper.is_some() && relative == "src/lisp/primitives/processes.rs";
+        for found in spawn.find_iter(&text) {
+            if helper.is_some_and(|(start, end)| start < found.start() && found.start() < end) {
+                continue;
+            }
+            let line = text[..found.start()].matches('\n').count() + 1;
+            violations.push(format!("{relative}:{line}: {}", found.as_str()));
+        }
+    }
+    assert!(helper_found, "processes.rs's spawn_helper_thread");
+    assert!(
+        violations.is_empty(),
+        "threads the runtime starts without spawn_helper_thread: {violations:#?}"
+    );
+}
+
+/// The calls by which native code's helpers signal, `remember_helper_error'
+/// and `remember_active_helper_error', longjmp past the Rust frames between
+/// them and the handler or escape record they jump to (`jump_nonlocal'), as
+/// eval.c:unwind_to_catch longjmps past C frames.  Those frames must own
+/// nothing live: a destructor skipped there is storage never freed or state
+/// never restored.  Every call into native code from Rust makes an escape
+/// record in the calling frame, and every call into Lisp returns its error
+/// as an `Err', so the frames a jump passes are the helpers' own: those
+/// from an entry native code calls down to the jumping call.
+///
+/// What it checks, on the runtime's sources with comments and literals
+/// removed (test modules and test files left out):
+/// - the jumping functions: those that call either helper, or a function
+///   defined only under src/lisp/native_comp that is one, to a fixed point;
+/// - in each, at every call of a helper or of a jumping function, that no
+///   local of an owning type is live (Vec, SmallVec, String, Box, Rc, a Ref
+///   or RefMut, a MutexGuard: its type or its initializer's own level
+///   naming one, or a call making one; bound before the call in a block
+///   that encloses it, and not given to `drop' in a block that does), and
+///   that no parameter has such a type;
+/// - that a helper's call ends its arm or block, nothing following it
+///   there but a trivial value (`0', `false', `None', `Some(0)', a null
+///   pointer, or a `return' of one);
+/// - that a crate function a jumping call is passed to inside a closure
+///   (`with_active') declares no local or parameter of an owning type.
+///
+/// What it does not prove: that a type it cannot see (an inferred one
+/// whose initializer names none of those at its own level, or one with a
+/// destructor of its own under another name) owns nothing; that frames of
+/// the standard library a jumping closure runs in (`LocalKey::with',
+/// `unwrap_or_else') hold nothing, which they do not; that a call reached
+/// only through a function pointer or a name defined outside
+/// src/lisp/native_comp is seen; or that the call is on an error path.
+/// Those rest on `jump_nonlocal''s rule and on review.
+pub(crate) fn native_helper_errors_leave_plain_frames() {
+    let helper = regex::Regex::new(r"^remember_(?:active_)?helper_error$")
+        .expect("compile helper name pattern");
+    let call = regex::Regex::new(r"(?:^|[^\w:])(\w+)\s*(?:::\s*<[^>]*>\s*)?\(")
+        .expect("compile call pattern");
+    let header =
+        regex::Regex::new(r"\bfn\s+(\w+)\s*(?:<[^>{]*>)?\s*\(").expect("compile fn pattern");
+    let binding = regex::Regex::new(r"\blet\s+(?:mut\s+)?").expect("compile let pattern");
+    let owning = regex::Regex::new(
+        r"\b(?:Vec|SmallVec|String|Box|Rc|Ref|RefMut|MutexGuard)\b|smallvec::|\bvec!|\bformat!|\.to_string\s*\(|\.to_owned\s*\(|\.to_vec\s*\(|\.collect\b|\.borrow(?:_mut)?\s*\(\s*\)\s*;$|\.lock\s*\(\s*\)",
+    )
+    .expect("compile owning type pattern");
+    let owning_parameter = regex::Regex::new(
+        r"\b\w+\s*:\s*(?:Vec|SmallVec|String|Box|Rc|MutexGuard)\b|\b\w+\s*:\s*smallvec::",
+    )
+    .expect("compile owning parameter pattern");
+    let trivial = regex::Regex::new(
+        r"^\s*(?:return\b\s*)?(?:0|false|None|Some\s*\(\s*0\s*\)|std::ptr::null_mut\s*\(\s*\))?\s*;?\s*$",
+    )
+    .expect("compile trivial tail pattern");
+    struct Function {
+        name: String,
+        path: String,
+        parameters: String,
+        start: usize,
+        end: usize,
+    }
+    let root = repo_root();
+    let mut texts = std::collections::BTreeMap::new();
+    let mut functions = Vec::new();
+    for path in rust_files_below("src") {
+        let relative = path
+            .strip_prefix(root)
+            .expect("a source below the repository")
+            .to_string_lossy()
+            .replace('\\', "/");
+        if relative.starts_with("src/bin/")
+            || relative.ends_with("/tests.rs")
+            || relative.ends_with("_tests.rs")
+            || relative.contains("/tests/")
+            || relative == "src/test_support.rs"
+            || relative == "src/anti_cheat.rs"
+        {
+            continue;
+        }
+        let text = without_test_modules(&code_only(
+            &fs::read_to_string(&path).expect("read a runtime source"),
+        ));
+        for found in header.captures_iter(&text) {
+            let whole = found.get(0).expect("the header");
+            let Some(parameters) = call_arguments(&text[whole.end() - 1..]) else {
+                continue;
+            };
+            let after = whole.end() - 1 + parameters.len();
+            let Some(open) = text[after..].find('{').map(|open| after + open) else {
+                continue;
+            };
+            if text[after..open].contains(';') {
+                continue;
+            }
+            let Some(block) = balanced_block(&text, open) else {
+                continue;
+            };
+            functions.push(Function {
+                name: found[1].to_owned(),
+                path: relative.clone(),
+                parameters: parameters.to_owned(),
+                start: open,
+                end: open + block.len(),
+            });
+        }
+        texts.insert(relative, text);
+    }
+    // A function's calls, by name, at their offsets in its body; a nested
+    // item's are its own.
+    let calls_of = |function: &Function| -> Vec<(String, usize)> {
+        let text = &texts[&function.path];
+        let body = &text[function.start..function.end];
+        let nested: Vec<(usize, usize)> = functions
+            .iter()
+            .filter(|other| {
+                other.path == function.path
+                    && function.start < other.start
+                    && other.start < function.end
+            })
+            .map(|other| (other.start - function.start, other.end - function.start))
+            .collect();
+        call.captures_iter(body)
+            .filter_map(|found| {
+                let name = found.get(1).expect("the called name");
+                let inside_nested = nested
+                    .iter()
+                    .any(|(start, end)| *start < name.start() && name.start() < *end);
+                (!inside_nested && !body[..name.start()].trim_end().ends_with("fn"))
+                    .then(|| (name.as_str().to_owned(), name.start()))
+            })
+            .collect()
+    };
+    let native_only: std::collections::BTreeSet<&str> = functions
+        .iter()
+        .map(|function| function.name.as_str())
+        .filter(|name| {
+            functions
+                .iter()
+                .filter(|function| function.name == *name)
+                .all(|function| function.path.starts_with("src/lisp/native_comp/"))
+        })
+        .collect();
+    let calls: Vec<Vec<(String, usize)>> = functions
+        .iter()
+        .map(|function| {
+            calls_of(function)
+                .into_iter()
+                .filter(|(name, _)| helper.is_match(name) || native_only.contains(name.as_str()))
+                .collect()
+        })
+        .collect();
+    let mut jumping = std::collections::BTreeSet::new();
+    loop {
+        let before = jumping.len();
+        for (index, function) in functions.iter().enumerate() {
+            if calls[index].iter().any(|(name, _)| {
+                helper.is_match(name)
+                    || native_only.contains(name.as_str()) && jumping.contains(name.as_str())
+            }) {
+                jumping.insert(function.name.clone());
+            }
+        }
+        if jumping.len() == before {
+            break;
+        }
+    }
+    let jumps =
+        |name: &str| helper.is_match(name) || native_only.contains(name) && jumping.contains(name);
+    // The owning locals of BODY live at OFFSET: bound before it in a
+    // block that encloses it, not dropped in one that does.
+    let live_owners = |body: &str, offset: usize| -> Vec<String> {
+        let mut owners = Vec::new();
+        for local in binding.find_iter(body) {
+            if local.start() >= offset {
+                break;
+            }
+            let mut depth = 0usize;
+            let mut statement_end = body.len();
+            for (index, byte) in body[local.start()..].bytes().enumerate() {
+                match byte {
+                    b'(' | b'[' | b'{' => depth += 1,
+                    b')' | b']' | b'}' => depth = depth.saturating_sub(1),
+                    b';' if depth == 0 => {
+                        statement_end = local.start() + index + 1;
+                        break;
+                    }
+                    _ => {}
+                }
+            }
+            if statement_end > offset {
+                continue;
+            }
+            let statement = &body[local.start()..statement_end];
+            let mut level = String::new();
+            let mut depth = 0usize;
+            for character in statement.chars() {
+                match character {
+                    '{' => depth += 1,
+                    '}' => depth = depth.saturating_sub(1),
+                    _ if depth == 0 => level.push(character),
+                    _ => {}
+                }
+            }
+            if !owning.is_match(&level) {
+                continue;
+            }
+            let encloses = |from: usize| {
+                let mut depth = 0usize;
+                for byte in body[from..offset].bytes() {
+                    match byte {
+                        b'{' => depth += 1,
+                        b'}' => {
+                            if depth == 0 {
+                                return false;
+                            }
+                            depth -= 1;
+                        }
+                        _ => {}
+                    }
+                }
+                true
+            };
+            if !encloses(local.start()) {
+                continue;
+            }
+            let bound = body[local.end()..]
+                .split(|c: char| !(c.is_alphanumeric() || c == '_'))
+                .next()
+                .unwrap_or_default();
+            let dropped = !bound.is_empty()
+                && body[statement_end..offset]
+                    .match_indices(&format!("drop({bound})"))
+                    .any(|(at, _)| encloses(statement_end + at));
+            if !dropped {
+                owners.push(level.split_whitespace().collect::<Vec<_>>().join(" "));
+            }
+        }
+        owners
+    };
+    let mut violations = Vec::new();
+    let mut helper_calls = 0usize;
+    let mut checked = std::collections::BTreeSet::new();
+    for (index, function) in functions.iter().enumerate() {
+        if function.name == "remember_helper_error" {
+            continue;
+        }
+        let text = &texts[&function.path];
+        let body = &text[function.start..function.end];
+        let line = |offset: usize| text[..function.start + offset].matches('\n').count() + 1;
+        let name = &function.name;
+        let relative = &function.path;
+        for (called, offset) in &calls[index] {
+            if !jumps(called) {
+                continue;
+            }
+            let at_line = line(*offset);
+            checked.insert(name.clone());
+            if owning_parameter.is_match(&function.parameters) {
+                violations.push(format!(
+                    "{relative}:{at_line}: {name}: a parameter of an owning type"
+                ));
+            }
+            for owner in live_owners(body, *offset) {
+                violations.push(format!(
+                    "{relative}:{at_line}: {name}: `{owner}' is live across {called}"
+                ));
+            }
+            if !helper.is_match(called) {
+                continue;
+            }
+            helper_calls += 1;
+            let arguments = call_arguments(&body[*offset..]).expect("the call's arguments");
+            let after =
+                &body[*offset + body[*offset..].find('(').expect("a call") + arguments.len()..];
+            let after = after.trim_start_matches(|c: char| c == ')' || c.is_whitespace());
+            let ends = after.starts_with(',')
+                || after.starts_with('}')
+                || after.starts_with(';')
+                    && after[1..]
+                        .find('}')
+                        .is_some_and(|close| trivial.is_match(&after[1..1 + close]));
+            if !ends {
+                violations.push(format!(
+                    "{relative}:{at_line}: {name}: the call does not end its arm or block"
+                ));
+            }
+            // The crate functions this call runs inside, passed a closure
+            // holding it: the enclosing calls up to the function's body.
+            let mut depth = 0usize;
+            for (back, byte) in body[..*offset].bytes().enumerate().rev() {
+                match byte {
+                    b')' => depth += 1,
+                    b'(' if depth > 0 => depth -= 1,
+                    b'(' => {
+                        let head = body[..back].trim_end();
+                        let callee = head
+                            .rsplit(|c: char| !(c.is_alphanumeric() || c == '_'))
+                            .next()
+                            .unwrap_or_default();
+                        for runner in functions.iter().filter(|other| other.name == callee) {
+                            let runner_body = &texts[&runner.path][runner.start..runner.end];
+                            let owners =
+                                live_owners(runner_body, runner_body.len().saturating_sub(1));
+                            if !owners.is_empty() || owning_parameter.is_match(&runner.parameters) {
+                                violations.push(format!(
+                                    "{relative}:{at_line}: {name}: {callee}, which runs the call, owns {owners:?}"
+                                ));
+                            }
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+    }
+    assert!(
+        helper_calls > 60,
+        "the gate must find the helpers' callers, found {helper_calls}"
+    );
+    assert!(
+        checked.len() > helper_calls / 2,
+        "the gate must find the jumping functions' callers too, found {}",
+        checked.len()
+    );
+    violations.sort();
+    violations.dedup();
+    assert!(
+        violations.is_empty(),
+        "frames a native helper's jump passes that own something: {violations:#?}"
+    );
+}
+
 /// pdumper.c:dump_roots visits every staticpro'd slot.  Every root the
 /// mark phase visits (the `self.<field>' references of the root-marking
 /// function) must be written by the image (`dump_root_values' or
@@ -2095,7 +3423,7 @@ pub(crate) fn builtin_arities_match_fresh_regeneration() {
 /// this before it will write a summary (finding 24).  Each gate still has
 /// a thin `#[test]' wrapper below, so `cargo test anti_cheat' behaves as
 /// before.
-pub fn enforce_all() -> Result<(), Vec<String>> {
+pub fn enforce_all(_runtime: &crate::Runtime) -> Result<(), Vec<String>> {
     crate::lisp::runtime::with_runtime(enforce_all_owned)
 }
 
@@ -2176,6 +3504,18 @@ fn enforce_all_owned() -> Result<(), Vec<String>> {
         (
             "interpreter_value_fields_are_gc_roots_or_documented",
             interpreter_value_fields_are_gc_roots_or_documented as fn(),
+        ),
+        (
+            "thread_locals_are_released_with_the_runtime_or_per_os_thread",
+            thread_locals_are_released_with_the_runtime_or_per_os_thread as fn(),
+        ),
+        (
+            "native_helper_errors_leave_plain_frames",
+            native_helper_errors_leave_plain_frames as fn(),
+        ),
+        (
+            "runtime_threads_start_with_process_signals_blocked",
+            runtime_threads_start_with_process_signals_blocked as fn(),
         ),
         (
             "gnu_c_forwarded_defaults_manifest_matches_fresh_regeneration",
@@ -2313,6 +3653,21 @@ mod gate_tests {
     #[test]
     fn interpreter_value_fields_are_gc_roots_or_documented() {
         super::interpreter_value_fields_are_gc_roots_or_documented();
+    }
+
+    #[test]
+    fn thread_locals_are_released_with_the_runtime_or_per_os_thread() {
+        super::thread_locals_are_released_with_the_runtime_or_per_os_thread();
+    }
+
+    #[test]
+    fn native_helper_errors_leave_plain_frames() {
+        super::native_helper_errors_leave_plain_frames();
+    }
+
+    #[test]
+    fn runtime_threads_start_with_process_signals_blocked() {
+        super::runtime_threads_start_with_process_signals_blocked();
     }
 
     #[test]

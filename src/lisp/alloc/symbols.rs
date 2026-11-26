@@ -1243,10 +1243,6 @@ pub(crate) fn allocate_symbol(cell: SymbolCell) -> SymbolRef {
         // SAFETY: a free cell's first word is the free-list link.
         let next = unsafe { (*head.cast::<FreeSymbol>()).next };
         SYMBOL_FREE_LIST.set(next);
-        FREE_SYMBOLS.store(
-            FREE_SYMBOLS.load(Ordering::Relaxed).saturating_sub(1),
-            Ordering::Relaxed,
-        );
         head
     };
     LIVE_SYMBOLS.store(LIVE_SYMBOLS.load(Ordering::Relaxed) + 1, Ordering::Relaxed);
@@ -1416,6 +1412,8 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
 /// The allocated symbol cells that are uninterned, live or not yet swept.
 #[cfg(test)]
 pub(crate) fn allocated_uninterned_symbols() -> usize {
+    // The blocks and the frontier are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
     let bump_next = SYMBOL_BUMP_NEXT.get();
     let bump_end = SYMBOL_BUMP_END.get();
     let mut count = 0;
@@ -1440,5 +1438,118 @@ pub(crate) fn allocated_uninterned_symbols() -> usize {
 }
 
 pub(crate) fn live_symbols() -> usize {
+    // The books are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
     LIVE_SYMBOLS.load(Ordering::Relaxed)
+}
+
+/// gcstat's `total_free_symbols': the last sweep's count (Fmake_symbol does
+/// not lower it).
+pub(crate) fn free_symbols() -> usize {
+    // The books are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
+    FREE_SYMBOLS.load(Ordering::Relaxed)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{SYMBOL_BUMP_END, abandon_allocation_frontier};
+    use crate::lisp::alloc::SYMBOLS_PER_BLOCK;
+    use crate::lisp::eval::Interpreter;
+    use crate::lisp::types::{Env, Kind, Value};
+    use crate::lisp::{json, primitives};
+
+    // Every symbol is made in a frame of its own, cleared before the
+    // collection that expects it dead, and the witnessed one is kept as
+    // its address's complement: no word of the test's names it.
+    #[inline(never)]
+    fn make_symbols(interpreter: &mut Interpreter, count: usize) {
+        for _ in 0..count {
+            primitives::call(
+                interpreter,
+                "make-symbol",
+                &[Value::String("dead".into())],
+                &mut Env::new(),
+            )
+            .expect("make a symbol");
+        }
+    }
+
+    #[inline(never)]
+    fn witnessed_symbol(interpreter: &mut Interpreter, table: &Value) -> usize {
+        let symbol = primitives::call(
+            interpreter,
+            "make-symbol",
+            &[Value::String("first".into())],
+            &mut Env::new(),
+        )
+        .expect("make a symbol");
+        primitives::call(
+            interpreter,
+            "puthash",
+            &[symbol, Value::T, *table],
+            &mut Env::new(),
+        )
+        .expect("witness the symbol");
+        !symbol.word()
+    }
+
+    #[inline(never)]
+    fn frontier_ends_at(complement: usize) -> bool {
+        SYMBOL_BUMP_END.get() == !complement
+    }
+
+    #[inline(never)]
+    fn witnesses_after_collection(interpreter: &mut Interpreter, table: &Value) -> usize {
+        crate::lisp::alloc::clobber_stack();
+        let Kind::HashTable(id) = table.kind() else {
+            panic!("a hash table");
+        };
+        primitives::call(interpreter, "garbage-collect", &[], &mut Env::new()).expect("collect");
+        id.count()
+    }
+
+    #[test]
+    fn a_dead_symbol_at_the_frontier_s_block_end_dies_in_its_first_collection() {
+        // garbage_collect_reports_the_live_census's case.  Blocks are carved
+        // in address order and reused last released first, and a sweep
+        // releases them in address order, so the block the frontier takes
+        // can end where a block already holding symbols begins: the
+        // frontier's block end then names that block's first symbol.  GNU
+        // frees a dead symbol at the first collection after its last
+        // reference goes (symbol_block is no root), and so must a thread
+        // whose stack is the OS's to scan, as this test's own (no Lisp
+        // entry of it records a stack bottom).
+        let mut interpreter = Interpreter::new();
+        let table = json::make_hash_table(&mut interpreter, "eq", Vec::new());
+        let Kind::HashTable(id) = table.kind() else {
+            panic!("a hash table");
+        };
+        id.set_weakness(1);
+        interpreter.set_global_binding("frontier-end-witnesses", table);
+        // Blocks of dead symbols for the collection to release.
+        abandon_allocation_frontier();
+        make_symbols(&mut interpreter, 8 * SYMBOLS_PER_BLOCK);
+        witnesses_after_collection(&mut interpreter, &table);
+        let mut arranged = false;
+        for _ in 0..4096 {
+            primitives::call(&mut interpreter, "clrhash", &[table], &mut Env::new())
+                .expect("forget the last try");
+            abandon_allocation_frontier();
+            let first = witnessed_symbol(&mut interpreter, &table);
+            // The rest of its block, then the first symbol of the next.
+            make_symbols(&mut interpreter, SYMBOLS_PER_BLOCK);
+            if frontier_ends_at(first) {
+                arranged = true;
+                break;
+            }
+        }
+        assert!(arranged, "no block was taken just below a symbol's");
+        crate::lisp::alloc::clobber_stack();
+        assert_eq!(
+            witnesses_after_collection(&mut interpreter, &table),
+            0,
+            "the dead symbol at the frontier's block end is freed"
+        );
+    }
 }

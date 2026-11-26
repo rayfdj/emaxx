@@ -1650,24 +1650,31 @@ define_dispatch!(
                 // walk joins a fresh enumeration, which this snapshot does
                 // not see, as GNU's walk need not) instead of copying every
                 // symbol into a vector first -- a quarter of a walk's cost.
+                // The walk holds the symbols it has still to visit, a
+                // root of the function's collections: one the function
+                // uninterns is visited all the same, and must be live.
                 if let Kind::Record(id) = obarray.kind()
                     && interp.is_standard_obarray_id(id.id)
                 {
                     let symbols = interp.known_symbols_shared();
-                    for symbol in symbols.iter() {
-                        // The shared Value constructor preserves the nil/t ABI.
-                        let symbol = Value::Symbol(*symbol);
-                        call_function_value(interp, &args[0], &[symbol], env)?;
-                    }
-                    return Ok(Value::Nil);
+                    return interp.with_lisp_stack_roots(&*symbols, |interp| {
+                        for symbol in symbols.iter() {
+                            // The shared Value constructor preserves the nil/t ABI.
+                            let symbol = Value::Symbol(*symbol);
+                            call_function_value(interp, &args[0], &[symbol], env)?;
+                        }
+                        Ok(Value::Nil)
+                    });
                 }
                 let symbols = obarray_symbols(interp, &obarray)?;
-                for symbol in symbols {
-                    // Resolve a symbol's current function cell on every
-                    // call, as call1 does. Empty obarrays never call it.
-                    call_function_value(interp, &args[0], &[symbol], env)?;
-                }
-                Ok(Value::Nil)
+                interp.with_lisp_stack_roots(&symbols, |interp| {
+                    for symbol in &symbols {
+                        // Resolve a symbol's current function cell on every
+                        // call, as call1 does. Empty obarrays never call it.
+                        call_function_value(interp, &args[0], &[*symbol], env)?;
+                    }
+                    Ok(Value::Nil)
+                })
             }
         }
     }
@@ -2511,5 +2518,54 @@ pub(super) fn direct_symbol_value(
             ])))
         }
         other => other,
+    }
+}
+
+#[cfg(test)]
+mod mapatoms_root_tests {
+    use crate::lisp::eval::Interpreter;
+    use crate::lisp::types::{Env, Value};
+    use crate::test_support::{eval_lisp, initialized_upstream_batch_interpreter};
+
+    // Each step in a frame of its own, the stack below the test cleared
+    // before the walk, so that no stale word keeps the probe symbol.
+    #[inline(never)]
+    fn lisp(interp: &mut Interpreter, env: &mut Env, source: &str) -> Value {
+        eval_lisp(interp, env, source).expect("evaluate the test's Lisp")
+    }
+
+    #[test]
+    fn a_symbol_mapatoms_has_still_to_visit_lives_through_a_collection() {
+        // mapatoms walks an enumeration of the obarray taken as it began
+        // (lread.c walks the buckets), so a symbol the function uninterns
+        // is still visited: the walk holds it, and a collection in the
+        // function keeps it, intact when its turn comes.
+        let mut interp = initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (setq mapatoms-witness (make-hash-table :test 'eq :weakness 'key))
+                 (puthash (intern "mapatoms-root-probe") t mapatoms-witness)
+                 nil)"#,
+        );
+        crate::lisp::alloc::clobber_stack();
+        let result = lisp(
+            &mut interp,
+            &mut env,
+            r#"(let ((first t) (seen nil) (visited nil))
+                 (mapatoms
+                  (lambda (symbol)
+                    (when first
+                      (setq first nil)
+                      (unintern "mapatoms-root-probe" obarray)
+                      (garbage-collect)
+                      (setq seen (hash-table-count mapatoms-witness)))
+                    (when (equal (symbol-name symbol) "mapatoms-root-probe")
+                      (setq visited t))))
+                 (list seen visited))"#,
+        );
+        assert_eq!(result.to_string(), "(1 t)");
     }
 }

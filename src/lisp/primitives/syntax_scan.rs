@@ -353,6 +353,25 @@ thread_local! {
         const { std::cell::Cell::new(None) };
 }
 
+/// A gl_state in use is a root of the Lisp its scan or match runs
+/// (`internal--syntax-propertize', `syntax-ppss', a word boundary
+/// function, a quit's handler), as GNU's staticpro'd gl_state is.
+impl crate::lisp::eval::roots::TraceLispRoots for GlState {
+    fn trace_lisp_roots(&self, marker: &mut crate::lisp::eval::roots::LispRootMarker<'_>) {
+        self.each_object(&mut |value| marker.value(value));
+    }
+}
+
+/// The kept gl_state's objects, marked by every collection on this
+/// thread (syms_of_syntax's staticpros).
+pub(crate) fn mark_kept_gl_state(mark: &mut dyn FnMut(&Value)) {
+    let kept = GL_STATE.take();
+    if let Some(gl) = &kept {
+        gl.each_object(mark);
+    }
+    GL_STATE.set(kept);
+}
+
 impl GlState {
     /// A gl_state for OBJECT with nothing read yet: `Scanner::read_state'
     /// or `for_regexp' reads the variables.
@@ -396,6 +415,18 @@ impl GlState {
     /// Give back a scan's or a regexp match's gl_state for the next one.
     pub(super) fn release(gl: Box<Self>) {
         GL_STATE.set(Some(gl));
+    }
+
+    /// The objects syms_of_syntax staticpros in gl_state: its object,
+    /// global_code (a code here, no object), current_syntax_table and
+    /// old_prop; and the buffer's table it read.
+    fn each_object(&self, mark: &mut dyn FnMut(&Value)) {
+        if let GlObject::String(string) = &self.object {
+            mark(string);
+        }
+        mark(&Value::CharTable(self.current_syntax_table));
+        mark(&self.old_prop);
+        mark(&Value::CharTable(self.buffer_table));
     }
 
     /// What `new' makes for OBJECT, in place, but for the ASCII entries,
@@ -555,15 +586,17 @@ impl GlState {
             // safe_calln: an error in the propertizer is not the scan's,
             // and its internal_condition_case_n with Qt keeps it from
             // handler-bind handlers and the debugger.
-            let handlers =
-                interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
-            let _ = interp.call_function_value(
-                Value::Symbol("internal--syntax-propertize".into()),
-                Some("internal--syntax-propertize"),
-                &[Value::Integer(zv.min(1 + pos))],
-                env,
-            );
-            interp.pop_handler_bindings(handlers);
+            interp.with_lisp_stack_roots(&*self, |interp| {
+                let handlers =
+                    interp.push_internal_condition_case(crate::lisp::eval::InternalHandlers::All);
+                let _ = interp.call_function_value(
+                    Value::Symbol("internal--syntax-propertize".into()),
+                    Some("internal--syntax-propertize"),
+                    &[Value::Integer(zv.min(1 + pos))],
+                    env,
+                );
+                interp.pop_handler_bindings(handlers);
+            });
             self.ran_lisp = true;
             if modiffs != interp.current_buffer().chars_modiff() {
                 return Err(error("internal--syntax-propertize modified the buffer!"));
@@ -1127,9 +1160,32 @@ impl<'a, 'r> Scanner<'a, 'r> {
     fn rarely_quit(&mut self) -> Result<(), LispError> {
         self.quit_count = self.quit_count.wrapping_add(1);
         if self.quit_count == 0 {
-            self.interp.maybe_quit(self.env)?;
+            self.maybe_quit()?;
         }
         Ok(())
+    }
+
+    /// maybe_quit, whose handler (a quit's debugger, a pending signal's)
+    /// runs with the scan's gl_state a root.
+    #[inline]
+    fn maybe_quit(&mut self) -> Result<(), LispError> {
+        if self.interp.quit_check_clear() {
+            return Ok(());
+        }
+        self.process_quit()
+    }
+
+    /// maybe_quit's handler, out of the scan's way.
+    #[cold]
+    #[inline(never)]
+    fn process_quit(&mut self) -> Result<(), LispError> {
+        self.call_lisp(|interp, env| interp.maybe_quit(env))
+    }
+
+    /// BODY, which runs Lisp, with the scan's gl_state a root.
+    fn call_lisp<R>(&mut self, body: impl FnOnce(&mut Interpreter, &mut Env) -> R) -> R {
+        let (interp, gl, env) = (&mut *self.interp, &**self.gl, &mut *self.env);
+        interp.with_lisp_stack_roots(gl, |interp| body(interp, env))
     }
 
     #[inline]
@@ -1300,12 +1356,14 @@ impl<'a, 'r> Scanner<'a, 'r> {
         let (value, value_byte) = if self.comment_use_syntax_ppss() {
             let modiffs = self.interp.current_buffer().chars_modiff();
             let opoint = self.point();
-            let ppss = self.interp.call_function_value(
-                Value::Symbol("syntax-ppss".into()),
-                Some("syntax-ppss"),
-                &[Value::Integer(pos as i64)],
-                self.env,
-            )?;
+            let ppss = self.call_lisp(|interp, env| {
+                interp.call_function_value(
+                    Value::Symbol("syntax-ppss".into()),
+                    Some("syntax-ppss"),
+                    &[Value::Integer(pos as i64)],
+                    env,
+                )
+            })?;
             if modiffs != self.interp.current_buffer().chars_modiff() {
                 return Err(error("syntax-ppss modified the buffer!"));
             }
@@ -1958,7 +2016,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
         let mut from = from0.clamp(self.begv as i64, self.zv as i64) as usize;
         let mut from_byte = self.text.char_to_byte(from);
 
-        self.interp.maybe_quit(self.env)?;
+        self.maybe_quit()?;
 
         let lose = |last_good: i64, from: usize| {
             scan_error("Unbalanced parentheses", last_good, from as i64)
@@ -2405,12 +2463,14 @@ impl<'a, 'r> Scanner<'a, 'r> {
             // position of the next character.
             if let Some(func) = self.word_boundary_function(ch0)? {
                 let modiff = self.interp.current_buffer().chars_modiff();
-                let pos = self.interp.call_function_value(
-                    func,
-                    None,
-                    &[Value::Integer(from as i64 - 1), Value::Integer(end as i64)],
-                    self.env,
-                )?;
+                let pos = self.call_lisp(|interp, env| {
+                    interp.call_function_value(
+                        func,
+                        None,
+                        &[Value::Integer(from as i64 - 1), Value::Integer(end as i64)],
+                        env,
+                    )
+                })?;
                 let zv = self.interp.current_buffer().zv();
                 if let Kind::Integer(pos) = pos.kind()
                     && (from as i64) < pos
@@ -2462,12 +2522,14 @@ impl<'a, 'r> Scanner<'a, 'r> {
             // position of it.
             if let Some(func) = self.word_boundary_function(ch1)? {
                 let modiff = self.interp.current_buffer().chars_modiff();
-                let pos = self.interp.call_function_value(
-                    func,
-                    None,
-                    &[Value::Integer(from as i64), Value::Integer(beg as i64)],
-                    self.env,
-                )?;
+                let pos = self.call_lisp(|interp, env| {
+                    interp.call_function_value(
+                        func,
+                        None,
+                        &[Value::Integer(from as i64), Value::Integer(beg as i64)],
+                        env,
+                    )
+                })?;
                 let begv = self.interp.current_buffer().begv();
                 if let Kind::Integer(pos) = pos.kind()
                     && begv as i64 <= pos
@@ -2534,7 +2596,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
             }
             self.dec(&mut pos, &mut pos_byte);
             if pos.trailing_zeros() >= 16 {
-                self.interp.maybe_quit(self.env)?;
+                self.maybe_quit()?;
             }
         }
         self.set_point(opoint);
@@ -2574,7 +2636,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
                     }
                     self.inc(&mut pos, &mut pos_byte);
                     if pos.trailing_zeros() >= 16 {
-                        self.interp.maybe_quit(self.env)?;
+                        self.maybe_quit()?;
                     }
                     if self.gl.lookup_properties && pos >= self.gl.e_property {
                         break;
@@ -2596,7 +2658,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
                 pos -= 1;
                 pos_byte = prev_byte;
                 if pos.trailing_zeros() >= 16 {
-                    self.interp.maybe_quit(self.env)?;
+                    self.maybe_quit()?;
                 }
             }
             self.set_point(pos);
@@ -2678,7 +2740,7 @@ impl<'a, 'r> Scanner<'a, 'r> {
             self.dec(&mut prev_from, &mut prev_from_byte);
         }
 
-        self.interp.maybe_quit(self.env)?;
+        self.maybe_quit()?;
 
         let mut depth = state.depth;
         let start_quoted = state.quoted;
@@ -3361,4 +3423,11 @@ pub(super) fn parse_partial_sexp(
             Value::Integer(i64::from(state.prev_syntax))
         },
     ]))
+}
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// gl_state and the scan's remembered start, which name Lisp objects, go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&GL_STATE, |cell| cell.set(None));
+    crate::lisp::runtime::release_local(&FIND_START, |cell| cell.set(None));
 }

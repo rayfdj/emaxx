@@ -136,6 +136,19 @@ class GroupedGateTests(unittest.TestCase):
             },
         )
 
+    def test_full_scope_runs_the_library_doctests_after_the_targets(self):
+        stages = gate.cargo_stages(
+            {"bins": ["compat-harness", "emaxx"], "integrations": ["cli", "runtime_ownership"]}
+        )
+        self.assertEqual(
+            stages,
+            [
+                ("bins", ("--bins",), 2),
+                ("integration", ("--test", "cli", "--test", "runtime_ownership"), 2),
+                ("doc", ("--doc",), 2),
+            ],
+        )
+
     def test_phase_cleans_up_first_worker_if_second_launch_fails(self):
         first = mock.Mock()
         first.spec.name = "eval_01"

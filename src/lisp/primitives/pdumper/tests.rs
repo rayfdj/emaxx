@@ -1192,6 +1192,49 @@ fn image_conses_are_cells_of_the_image_where_it_is_mapped() {
 }
 
 #[test]
+fn a_collection_clears_the_marks_of_the_image_blocks() {
+    // The image's conses and vectors are marked in their blocks' bitmaps
+    // where the image is mapped, as the heap's are, and the sweeps reach
+    // those blocks too: they clear the bits they read, when they read the
+    // image's vectors and when they pass their unchanged blocks by (from
+    // the second collection on), so that the next mark phase starts from
+    // nothing marked there either.
+    let mut interp = Interpreter::new();
+    let graph = Value::list([
+        Value::vector([Value::Integer(1), Value::string("v")]),
+        Value::cons(Value::Integer(2), Value::Nil),
+    ]);
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("the graph loads");
+    assert!(image.header.cons_blocks.nr_entries > 0);
+    assert!(image.header.vector_blocks.nr_entries > 0);
+    let loaded = image
+        .roots
+        .iter()
+        .find(|(slot, _)| *slot == RootSlot::LoadPath)
+        .map(|(_, value)| *value)
+        .expect("the root was installed");
+    target.set_symbol_value_cell("zz-image-marks", loaded);
+    for _ in 0..3 {
+        crate::test_support::eval_lisp(
+            &mut target,
+            &mut crate::lisp::types::Env::new(),
+            "(garbage-collect)",
+        )
+        .expect("a collection");
+        assert!(crate::lisp::alloc::every_mark_bit_clear());
+    }
+    let answer = crate::test_support::eval_lisp(
+        &mut target,
+        &mut crate::lisp::types::Env::new(),
+        "zz-image-marks",
+    )
+    .expect("the image graph");
+    assert_eq!(answer.to_string(), "([1 \"v\"] (2))");
+}
+
+#[test]
 fn image_strings_are_cells_of_the_image_where_it_is_mapped() {
     // pdumper.c maps the dump and relocates it in place: the strings come
     // back as cells of the image's own string blocks, each string once,

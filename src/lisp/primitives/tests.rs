@@ -21176,6 +21176,68 @@ fn big5_conversion_follows_the_oracle_contract() {
 }
 
 #[test]
+fn garbage_collect_reports_the_sweeps_free_counts() {
+    // alloc.c:Fgarbage_collect's free columns are gcstat's, which the sweeps
+    // set: the free cells of the blocks they kept (sweep_conses,
+    // sweep_floats, sweep_symbols, sweep_strings) and the words of the
+    // vector blocks' free runs (sweep_vectors).  Intervals are no objects
+    // here, so none is free.
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let report = call(&mut interp, "garbage-collect", &[], &mut env).expect("collect");
+    let free = interp.sweeps_free_counts();
+    let column = |name: &str| {
+        report
+            .to_vec()
+            .expect("the report")
+            .into_iter()
+            .find_map(|entry| {
+                let entry = entry.to_vec().expect("an entry");
+                (entry[0] == Value::symbol(name)).then(|| entry[3])
+            })
+            .expect("the kind's entry")
+    };
+    for (name, count) in [
+        ("conses", free.conses),
+        ("symbols", free.symbols),
+        ("strings", free.strings),
+        ("vector-slots", free.vector_slots),
+        ("floats", free.floats),
+        ("intervals", free.intervals),
+    ] {
+        assert_eq!(column(name), Value::Integer(count as i64), "free {name}");
+    }
+    // The cons, float and symbol sweeps' own words.
+    assert_eq!(free.conses, crate::lisp::alloc::free_conses());
+    assert_eq!(free.floats, crate::lisp::alloc::free_floats());
+    assert_eq!(free.symbols, crate::lisp::alloc::free_symbols());
+    assert_eq!(free.intervals, 0);
+}
+
+#[test]
+fn garbage_collect_reports_free_conses_after_freeing_100000() {
+    // The plan's free.el: GNU 30.2 reports (conses 16 1936 11311) after a
+    // collection that freed 100,000 conses, a third of them kept until
+    // then.  A block is given back only once it is wholly free and more
+    // than a block's worth is free (alloc.c:sweep_conses), so free cells
+    // remain: a positive count in both editors.
+    let program = r#"(progn
+          (setq gc-cons-threshold most-positive-fixnum)
+          (garbage-collect)
+          (defvar zz-free-keep nil)
+          (let ((l nil))
+            (dotimes (i 100000)
+              (push (cons i i) l)
+              (when (= 0 (% i 3)) (push (car l) zz-free-keep)))
+            (setq l nil))
+          (garbage-collect)
+          (setq zz-free-keep nil)
+          (let ((conses (assq 'conses (garbage-collect))))
+            (list (car conses) (nth 1 conses) (> (nth 3 conses) 0))))"#;
+    assert_oracle_contract_matches_interpreter(program, "(conses 16 t)", "free conses");
+}
+
+#[test]
 fn garbage_collect_reports_the_live_census() {
     // Finding 110: every count was a fabricated 0.  The alist shape --
     // nine rows, this exact order, these exact lengths, integer columns
@@ -40388,4 +40450,58 @@ fn rust_bindings_are_undone_by_unbind_to_their_depth() {
         Some(Value::Integer(0))
     );
     assert_eq!(interp.specpdl_index(), base);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn helper_threads_block_process_signals() {
+    // A host helper thread blocks the signals a process receives, so they
+    // go to a thread that runs Lisp (sysdep.c:deliver_process_signal),
+    // and leaves a thread's own faults to deliver_fatal_thread_signal.
+    fn blocked() -> u64 {
+        let status =
+            fs::read_to_string("/proc/thread-self/status").expect("read the thread's status");
+        let mask = status
+            .lines()
+            .find_map(|line| line.strip_prefix("SigBlk:"))
+            .expect("the thread's blocked signals");
+        u64::from_str_radix(mask.trim(), 16).expect("a hexadecimal mask")
+    }
+    let bit = |signal: libc::c_int| 1u64 << (signal - 1);
+    let before = blocked();
+    let (sender, receiver) = std::sync::mpsc::channel();
+    crate::lisp::primitives::spawn_helper_thread("signal-mask-probe", move || {
+        sender.send(blocked()).expect("report the helper's mask");
+    })
+    .expect("spawn a helper thread")
+    .join()
+    .expect("the helper thread");
+    let helper = receiver.recv().expect("the helper's mask");
+    for signal in [
+        libc::SIGCHLD,
+        libc::SIGALRM,
+        libc::SIGPROF,
+        libc::SIGIO,
+        libc::SIGINT,
+        libc::SIGTERM,
+        libc::SIGHUP,
+        libc::SIGWINCH,
+        libc::SIGUSR1,
+        libc::SIGUSR2,
+        libc::SIGPIPE,
+    ] {
+        assert_ne!(
+            helper & bit(signal),
+            0,
+            "signal {signal} reaches the helper"
+        );
+    }
+    for signal in crate::lisp::primitives::THREAD_FATAL_SIGNALS {
+        assert_eq!(
+            helper & bit(signal),
+            0,
+            "the helper blocks its fault {signal}"
+        );
+    }
+    assert_eq!(blocked(), before, "the caller's own mask is as it was");
 }

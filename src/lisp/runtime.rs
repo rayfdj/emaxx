@@ -44,23 +44,34 @@ static RUNTIME: GlobalLock = GlobalLock::new();
 /// How long an OS thread waits for the runtime before it names the holder.
 const PATIENCE: Duration = Duration::from_secs(60);
 
-/// How this OS thread holds the runtime, if it does.
+/// How this OS thread holds the runtime, if it does.  It holds it while
+/// it has a tenure or any hold, and gives it back when the last of them
+/// goes (`let_go'), as a recursive lock counts its holder's locks.
 #[derive(Clone, Copy)]
 struct Entered {
     /// It holds the runtime until it exits.
     tenure: bool,
+    /// Its live `Runtime' handles and the scoped entries running on it.
+    holds: u32,
     /// A scoped entry runs on it and has registered its stack base.
     boundary: bool,
 }
 
+impl Entered {
+    const NONE: Self = Self {
+        tenure: false,
+        holds: 0,
+        boundary: false,
+    };
+
+    fn held(self) -> bool {
+        self.tenure || self.holds > 0
+    }
+}
+
 thread_local! {
     /// Plain words with no destructor, so that `held' is a load and a test.
-    static ENTERED: Cell<Entered> = const {
-        Cell::new(Entered {
-            tenure: false,
-            boundary: false,
-        })
-    };
+    static ENTERED: Cell<Entered> = const { Cell::new(Entered::NONE) };
     /// Gives a tenure back when its OS thread exits, as run_thread's
     /// release_global_lock does once the thread's function has returned.
     static TENURE: Tenure = const { Tenure };
@@ -76,10 +87,28 @@ impl Drop for Tenure {
                 tenure: false,
                 ..entered
             });
-            // The thread's own panic was caught before its thread-locals
-            // went: a failed test does not poison the runtime for the next.
-            RUNTIME.release(false);
+            // A hold left (a handle forgotten) keeps the runtime.
+            if entered.holds == 0 {
+                release_thread_state();
+                // The thread's own panic was caught before its
+                // thread-locals went: a failed test does not poison the
+                // runtime for the next.
+                RUNTIME.release(false);
+            }
         }
+    }
+}
+
+/// One of this thread's holds goes; with the last, and no tenure, the
+/// runtime goes back (thread.c:release_global_lock), the thread's editor
+/// state released first.
+fn let_go(poison: bool) {
+    let entered = ENTERED.get();
+    let holds = entered.holds - 1;
+    ENTERED.set(Entered { holds, ..entered });
+    if holds == 0 && !entered.tenure {
+        release_thread_state();
+        RUNTIME.release(poison);
     }
 }
 
@@ -108,6 +137,15 @@ impl GlobalLock {
     fn acquire(&self, patience: Duration, report: &mut dyn FnMut(&str)) -> bool {
         let me = std::thread::current();
         let mut state = self.state();
+        // A holder that asks again would wait for itself: a release whose
+        // reset reached a new block's path or the host obarray.
+        debug_assert!(
+            state
+                .holder
+                .as_ref()
+                .is_none_or(|holder| holder.id() != me.id()),
+            "the runtime's holder asks for the runtime again"
+        );
         if state.holder.is_some() {
             state.waiters += 1;
             let deadline = Instant::now() + patience;
@@ -194,8 +232,7 @@ pub(crate) fn holder_name() -> Option<String> {
 /// thread.c:in_current_thread: whether this OS thread holds the runtime.
 #[inline]
 pub(crate) fn held() -> bool {
-    let entered = ENTERED.get();
-    entered.tenure || entered.boundary
+    ENTERED.get().held()
 }
 
 /// Hold the runtime on this OS thread: at once if it already does, else
@@ -257,9 +294,10 @@ fn take_tenure() {
 /// again after, as thread.c's thread_join_callback waits on the joined
 /// thread's condition variable (sys_cond_wait gives global_lock up) and
 /// then post_acquire_global_lock.  The test harness waits so for the
-/// thread it continues a test on.  GNU's collector scans every thread's
-/// stack (mark_threads) and ours scans only its own OS thread's, so the
-/// waiting thread must not count on its stack alone to keep an object.
+/// thread it continues a test on, and for the process-test permit.  GNU's
+/// collector scans every thread's stack (mark_threads) and ours scans the
+/// collecting OS thread's, so the waiting thread's stacks are entered in
+/// the heap-root registry while it waits.
 #[cfg(test)]
 pub(crate) fn release_while<R>(wait: impl FnOnce() -> R) -> R {
     struct Retake(Entered);
@@ -272,25 +310,116 @@ pub(crate) fn release_while<R>(wait: impl FnOnce() -> R) -> R {
     if !held() {
         return wait();
     }
-    let entered = ENTERED.replace(Entered {
-        tenure: false,
-        boundary: false,
+    // alloc.c:mark_threads marks every thread's stack, and GNU's C globals
+    // are the process's.  Ours mark the collecting OS thread's stacks and
+    // thread-locals only: the lender's editor state, which it keeps, and
+    // its stacks are entered in the heap-root registry for the wait.
+    let mut roots = Vec::new();
+    let mut keep = |value: &crate::lisp::types::Value| roots.push(*value);
+    crate::lisp::primitives::profiler::mark_profiler(&mut keep);
+    crate::lisp::primitives::atimer::mark_atimers(&mut keep);
+    crate::lisp::primitives::mark_thread_local_roots(&mut keep);
+    let roots = crate::lisp::alloc::RootedVec::from_vec(roots);
+    let base = crate::lisp::eval::continuations::current_stack_base().map(|base| base as usize);
+    // The runtime is taken again before the stacks leave the registry.
+    let result = crate::lisp::alloc::with_stacks_lent(base, || {
+        let entered = ENTERED.replace(Entered::NONE);
+        RUNTIME.release(false);
+        let _retake = Retake(entered);
+        wait()
     });
-    RUNTIME.release(false);
-    let _retake = Retake(entered);
-    wait()
+    drop(roots);
+    result
 }
 
-/// The outermost scoped entry on an OS thread. It holds the runtime for
-/// its call unless the thread's tenure already does.
-struct Scope {
-    acquired: bool,
+/// The process's Lisp runtime as the calling OS thread holds it: GNU's
+/// global_lock, which emacs.c:main's init_threads takes for the main
+/// thread before any Lisp.  Every public function that runs Lisp takes a
+/// `&Runtime`, and a `Runtime` is neither `Send` nor `Sync`, so that a
+/// call can only come from the thread that holds it.  `lock' waits for
+/// another holder; on a thread that holds the runtime already it waits for
+/// nothing and counts one more hold.  The thread holds the runtime until
+/// its last handle goes and no call made through one is running.
+///
+/// An owned result of a call crosses to another thread:
+///
+/// ```
+/// let runtime = emaxx::Runtime::lock();
+/// let banner = emaxx::batch::version_banner(&runtime, None).expect("the banner");
+/// std::thread::spawn(move || drop(banner)).join().expect("the thread");
+/// ```
+///
+/// The runtime does not:
+///
+/// ```compile_fail
+/// let runtime = emaxx::Runtime::lock();
+/// let banner = emaxx::batch::version_banner(&runtime, None).expect("the banner");
+/// std::thread::spawn(move || drop(banner)).join().expect("the thread");
+/// std::thread::spawn(move || drop(runtime)).join().expect("the thread");
+/// ```
+///
+/// Another thread may use what a call made:
+///
+/// ```
+/// let runtime = emaxx::Runtime::lock();
+/// let banner = emaxx::batch::version_banner(&runtime, None).expect("the banner");
+/// std::thread::scope(|scope| {
+///     scope.spawn(|| banner.len());
+/// });
+/// ```
+///
+/// but not call with this thread's runtime:
+///
+/// ```compile_fail
+/// let runtime = emaxx::Runtime::lock();
+/// let banner = emaxx::batch::version_banner(&runtime, None).expect("the banner");
+/// std::thread::scope(|scope| {
+///     scope.spawn(|| banner.len());
+///     scope.spawn(|| emaxx::batch::version_banner(&runtime, None));
+/// });
+/// ```
+pub struct Runtime {
+    _holder_only: std::marker::PhantomData<*const ()>,
 }
+
+impl Runtime {
+    /// Take the runtime for this OS thread, once no other one holds it
+    /// (thread.c:acquire_global_lock); at once on a thread that holds it,
+    /// as one more hold.  The runtime goes back when the thread's last
+    /// hold does: every handle, and every call made through one, so no
+    /// handle's drop gives it up while another or a call is alive.
+    /// Uncontended, taking it makes no futex wait.
+    pub fn lock() -> Self {
+        let entered = ENTERED.get();
+        if !entered.held() && RUNTIME.acquire(PATIENCE, &mut report_wait) {
+            RUNTIME.release(false);
+            // Do not recover a poisoned heap after a panic escapes the runtime.
+            panic!("Lisp runtime panicked while active");
+        }
+        ENTERED.set(Entered {
+            holds: entered.holds + 1,
+            ..entered
+        });
+        Self {
+            _holder_only: std::marker::PhantomData,
+        }
+    }
+}
+
+impl Drop for Runtime {
+    fn drop(&mut self) {
+        let_go(std::thread::panicking());
+    }
+}
+
+/// The outermost scoped entry on an OS thread: one hold of the runtime
+/// for its call, taken first if the thread holds none.
+struct Scope;
 
 impl Scope {
     fn enter() -> Self {
         let entered = ENTERED.get();
-        let acquired = !entered.tenure;
+        let acquired = !entered.held();
         let poisoned = if acquired {
             RUNTIME.acquire(PATIENCE, &mut report_wait)
         } else {
@@ -304,10 +433,11 @@ impl Scope {
             panic!("Lisp runtime panicked while active");
         }
         ENTERED.set(Entered {
+            holds: entered.holds + 1,
             boundary: true,
             ..entered
         });
-        Self { acquired }
+        Self
     }
 }
 
@@ -317,9 +447,39 @@ impl Drop for Scope {
             boundary: false,
             ..ENTERED.get()
         });
-        if self.acquired {
-            RUNTIME.release(std::thread::panicking());
-        }
+        let_go(std::thread::panicking());
+    }
+}
+
+/// The editor state the runtime leaves in this OS thread's thread-locals
+/// when it goes: GNU's C globals of the process, which a later holder
+/// finds as a new process does.  Those that hold Lisp objects are marked
+/// only by a collection on this thread (`mark_static_roots_into'), so one
+/// left behind would name objects another thread's collection freed.
+/// Each module resets its own (the anti-cheat gate
+/// `thread_locals_are_released_with_the_runtime_or_per_os_thread' checks
+/// that every thread-local is reset here or is the OS thread's own).  A
+/// thread that lends the runtime keeps its state (`release_while').
+fn release_thread_state() {
+    crate::lisp::primitives::profiler::release_thread_state();
+    crate::lisp::primitives::atimer::release_thread_state();
+    crate::lisp::primitives::release_thread_state();
+    crate::lisp::eval::terminal::release_thread_state();
+    crate::lisp::eval::release_thread_state();
+    crate::lisp::reader::release_thread_state();
+    crate::lisp::types::release_thread_state();
+    crate::tty::release_thread_state();
+}
+
+/// RESET the thread-local KEY of the runtime that leaves this OS thread,
+/// unless the thread's exit has already destroyed it (its contents went
+/// with it).
+pub(crate) fn release_local<T: 'static>(
+    key: &'static std::thread::LocalKey<T>,
+    reset: impl FnOnce(&T),
+) {
+    if key.try_with(reset).is_err() {
+        // Destroyed: nothing of it is left to release.
     }
 }
 
@@ -651,6 +811,37 @@ mod tests {
         waits_for_the_holder(|| Value::symbol("runtime-frontier-intern-probe").is_symbol());
     }
 
+    /// The words of alloc.c's empty_unibyte_string, empty_multibyte_string
+    /// and zero_vector as this OS thread finds them.
+    fn empty_objects() -> [usize; 3] {
+        let empty = |multibyte| {
+            crate::lisp::types::StringObjectRef::from_storage_kind(
+                &[],
+                0,
+                multibyte,
+                crate::lisp::alloc::StringAllocation::Ordinary,
+            )
+            .map(|string| Value::StringObject(string).word())
+            .expect("an empty string")
+        };
+        [empty(false), empty(true), Value::vector(Vec::new()).word()]
+    }
+
+    #[test]
+    fn the_empty_strings_and_vector_are_the_runtimes() {
+        // alloc.c's staticpro'd globals: one object each for the process,
+        // which a thread without the runtime takes the runtime to reach.
+        let first = std::thread::spawn(empty_objects)
+            .join()
+            .expect("the first thread");
+        let second = std::thread::spawn(empty_objects)
+            .join()
+            .expect("the second thread");
+        assert_eq!(first, second);
+        waits_for_the_holder(|| Value::string("").is_string());
+        waits_for_the_holder(|| Value::vector(Vec::new()).is_vectorlike());
+    }
+
     /// This thread's newest cons: its cell, the cell its frontier gives
     /// next, the live conses and the mark epoch.
     fn cons_here() -> (usize, Option<usize>, usize, u32) {
@@ -810,5 +1001,54 @@ mod tests {
             .or_else(|| refused.downcast_ref::<String>().map(String::as_str))
             .expect("the assertion's message");
         assert!(message.contains("outlived"), "{message}");
+    }
+
+    #[test]
+    fn a_release_leaves_no_editor_state_on_the_thread() {
+        // GNU's C globals are the process's: a scoped entry's editor state
+        // goes with the runtime, as a later call finds a new process's.
+        std::thread::spawn(|| {
+            with_runtime(|| {
+                let mut interp = crate::lisp::eval::Interpreter::new();
+                assert_eq!(fixnum(&mut interp, "(progn (profiler-memory-start) 1)"), 1);
+                assert!(!crate::lisp::primitives::profiler::profiler_memory_running_p().is_nil());
+            });
+            assert!(!held());
+            assert!(crate::lisp::primitives::profiler::profiler_memory_running_p().is_nil());
+        })
+        .join()
+        .expect("the scoped entry's thread");
+    }
+
+    #[test]
+    fn a_lender_keeps_its_editor_state_and_its_objects() {
+        // A thread that lends the runtime keeps its editor state, and the
+        // objects only its stack and its thread-locals hold survive the
+        // borrower's collections (alloc.c's mark_threads).
+        std::thread::spawn(|| {
+            let mut interp = crate::lisp::eval::Interpreter::new();
+            assert_eq!(fixnum(&mut interp, "(progn (profiler-memory-start) 1)"), 1);
+            let kept = std::hint::black_box(Value::cons(Value::Integer(41), Value::Nil));
+            let Kind::Cons(cell) = kept.kind() else {
+                unreachable!("a cons")
+            };
+            let address = cell.as_ptr() as usize;
+            let borrower = std::thread::spawn(|| {
+                let mut interp = crate::lisp::eval::Interpreter::new();
+                fixnum(
+                    &mut interp,
+                    "(let ((i 0)) (while (< i 3) (make-list 5000 nil) (garbage-collect) (setq i (1+ i))) i)",
+                )
+            });
+            assert_eq!(release_while(|| borrower.join()).expect("the borrower"), 3);
+            // Still the cell's allocation: allocated where it was, and its
+            // car its own.
+            assert!(crate::lisp::alloc::cons_allocated_at(address));
+            assert_eq!(kept.car().expect("a cons"), Value::Integer(41));
+            assert!(!crate::lisp::primitives::profiler::profiler_memory_running_p().is_nil());
+            std::hint::black_box(&kept);
+        })
+        .join()
+        .expect("the lender's thread");
     }
 }

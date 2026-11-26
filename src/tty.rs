@@ -539,7 +539,11 @@ pub fn set_dev_tty(name: &str) {
     crate::lisp::eval::terminal::set_dev_tty(name);
 }
 
-pub fn run(command_line_args: &[String], options: &batch::BatchRunOptions) -> Result<i32, String> {
+pub fn run(
+    _runtime: &crate::Runtime,
+    command_line_args: &[String],
+    options: &batch::BatchRunOptions,
+) -> Result<i32, String> {
     crate::lisp::runtime::with_runtime(|| run_owned(command_line_args, options))
 }
 
@@ -793,13 +797,17 @@ fn run_owned(
     // therefore inspect the real terminal or read events before top-level.
     // Then main's Frecursive_edit: the top level's command loop, whose
     // top_level_1 evaluates `top-level' (startup.el's normal-top-level).
-    batch::set_command_line_args(&mut interpreter, command_line_args);
-    let session = batch::safe_run_hooks(
-        &mut interpreter,
-        &crate::lisp::types::symbols::SymbolKey::new("after-pdump-load-hook").symbol(),
-    )
-    .and_then(|()| crate::lisp::primitives::set_initial_minibuffer_mode(&mut interpreter))
-    .and_then(|()| crate::lisp::primitives::recursive_edit_1(&mut interpreter, &mut env));
+    // The session reads its events into the keyboard buffer, whose Lisp
+    // events every collection marks while it runs.
+    let session = with_keyboard_buffer(&mut interpreter, &queue, |interpreter| {
+        batch::set_command_line_args(interpreter, command_line_args);
+        batch::safe_run_hooks(
+            interpreter,
+            &crate::lisp::types::symbols::SymbolKey::new("after-pdump-load-hook").symbol(),
+        )
+        .and_then(|()| crate::lisp::primitives::set_initial_minibuffer_mode(interpreter))
+        .and_then(|()| crate::lisp::primitives::recursive_edit_1(interpreter, &mut env))
+    });
     let code = match session.map_err(LispError::into_kind) {
         Err(LispErrorKind::Terminate(termination)) => Ok(termination.exit_code),
         Err(error) => Err(LispError::from(error).to_string()),
@@ -849,6 +857,25 @@ thread_local! {
     /// gobble_input's -2 for the controlling terminal: its device
     /// terminated, and the command loop ends.
     static TERMINAL_GONE: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+}
+
+/// keyboard.c's kbd_buffer for the length of a session: BODY runs with
+/// QUEUE's Lisp events marked by every collection, as mark_kboards marks
+/// kbd_buffer's.
+fn with_keyboard_buffer<R>(
+    interpreter: &mut Interpreter,
+    queue: &SharedEventQueue,
+    body: impl FnOnce(&mut Interpreter) -> R,
+) -> R {
+    interpreter.with_lisp_stack_roots(queue, body)
+}
+
+impl crate::lisp::eval::roots::TraceLispRoots for SharedEventQueue {
+    fn trace_lisp_roots(&self, marker: &mut crate::lisp::eval::roots::LispRootMarker<'_>) {
+        for QueuedInput::Lisp(event) in self.0.borrow().iter() {
+            marker.value(event);
+        }
+    }
 }
 
 #[derive(Clone, Default)]
@@ -5241,6 +5268,18 @@ thread_local! {
 /// change the text again (false).
 fn share_walk_layouts(on: bool) {
     WALK_LAYOUTS.with(|cache| *cache.borrow_mut() = on.then(Default::default));
+}
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the walk layouts, whose keys are windows, go.  They are kept only while
+/// one window's redisplay walks, so a release finds them gone unless it
+/// unwinds out of that redisplay.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&WALK_LAYOUTS, |cache| {
+        if let Ok(mut layouts) = cache.try_borrow_mut() {
+            *layouts = None;
+        }
+    });
 }
 
 impl<'a> ScreenLineLayouter<'a> {
@@ -12768,6 +12807,63 @@ mod tests {
                 Value::Integer(i64::from(b'x'))
             ]
         );
+    }
+
+    /// An event the terminal read, which nothing but the keyboard buffer
+    /// holds, put in a weak table.
+    #[inline(never)]
+    fn queue_a_lisp_event(interp: &mut Interpreter, env: &mut Env, queue: &SharedEventQueue) {
+        let event = crate::test_support::eval_lisp(
+            interp,
+            env,
+            "(let ((event (list 'queued-event 1 2))) (puthash event t queue-witness) event)",
+        )
+        .expect("make the event");
+        queue.0.borrow_mut().push_back(QueuedInput::Lisp(event));
+    }
+
+    #[test]
+    fn a_queued_lisp_event_lives_through_a_collection_until_it_is_read() {
+        // keyboard.c's mark_kboards marks the events in kbd_buffer: an
+        // event read from the terminal and not yet read by Lisp lives
+        // through a collection, and is the event it was.
+        let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
+            "(setq queue-witness (make-hash-table :test 'eq :weakness 'key))",
+        )
+        .expect("make the witness");
+        let queue = SharedEventQueue::default();
+        with_keyboard_buffer(&mut interp, &queue, |interp| {
+            queue_a_lisp_event(interp, &mut env, &queue);
+            crate::lisp::alloc::clobber_stack();
+            assert_eq!(
+                crate::test_support::eval_lisp(
+                    interp,
+                    &mut env,
+                    "(progn (garbage-collect) (hash-table-count queue-witness))"
+                )
+                .expect("collect"),
+                Value::Integer(1),
+                "the queued event lived through the collection"
+            );
+            let Some(QueuedInput::Lisp(event)) = queue.pop() else {
+                panic!("the event is still queued");
+            };
+            interp.set_global_binding("queued", event);
+            assert_eq!(
+                crate::test_support::eval_lisp(
+                    interp,
+                    &mut env,
+                    "(equal queued '(queued-event 1 2))"
+                )
+                .expect("compare"),
+                Value::T,
+                "and it is intact"
+            );
+        });
     }
 
     #[test]

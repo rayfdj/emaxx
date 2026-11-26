@@ -26,12 +26,16 @@ Run:
 cargo test --lib
 ```
 
-The repository defaults the Rust test harness to one test thread
-(`.cargo/config.toml`), as the grouped gate and CI run it.  The Lisp heap is
-the process's, as alloc.c's is, and until the runtime keeps a second OS thread
-out of it, two library tests that allocate at once can corrupt it (D43:
-parallel runs crash in string data).  Asynchronous behavior inside each
-interpreter remains fully exercised.
+The repository defaults the Rust test harness to two test threads
+(`.cargo/config.toml`).  The Lisp runtime is the process's, as GNU's is: a
+library test's thread takes it (GNU's `global_lock`, `src/lisp/runtime.rs`)
+at its first Lisp and keeps it until the test ends, and every boot takes the
+process-test permit, since the image it starts from is the process's one
+dump.  Tests that run Lisp therefore run one at a time at any thread count,
+and the second worker overlaps them with the host-only tests; more workers
+only wait for the runtime, and starve the deadlines of the tests that run
+GNU or a subprocess.  A run at four test threads passes whole (D43).
+Asynchronous behavior inside each interpreter remains fully exercised.
 
 What this covers:
 
@@ -89,7 +93,9 @@ silently leave it outside the gate.
 Per-group logs, timings, test-binary hash, inventory hash, Git state, and a
 machine-readable summary are written under `target/grouped-gate/`.
 The runner pins the gate locale, stack size, and one test thread a group
-instead of inheriting a caller's potentially unsafe test-thread override.
+instead of inheriting a caller's test-thread override: a group's tests run
+Lisp, which serializes on the runtime, so a second worker would only wait
+for it and set off libtest's 60-second warnings.
 
 Use `--scope eval --repetitions 3` to stress only the five eval groups, or
 `--scope lib` to omit the binary and integration stages.  Until repeated
@@ -331,6 +337,22 @@ For each file, the harness compares:
 - failure or skip condition type
 
 It fails the run on mismatches.
+
+One test is compared by a rule of its own, by the owner's decision of 25
+November 2026: `eglot-test-rust-completion-exit-function` in
+`test/lisp/progmodes/eglot-tests.el`. GNU's own test starts two
+rust-analyzer processes that share one jsonrpc process buffer, and in about a
+quarter of GNU's own runs the completion request fails with jsonrpc's
+`"Timed out"` (HANDOVER.md has the mechanism and the measurements). When one
+runner passed this test and the other failed it with that timeout, the pair
+counts as matching and the timeout is not that runner's unsuccessful
+execution. The test still runs on both sides, and every acceptance is
+reported: `[accepted_gnu_race]` under the file, an `ACCEPTED` line after the
+totals, and `accepted_gnu_races` in `comparison.json` and `summary.json`,
+each naming both runners' results. Everything else is compared as before:
+any other result of this test, both runners timing out (the outcomes match
+and neither run succeeded), and the same failure in any other test or file
+(`compat::GNU_RACE_TEST` in `src/compat.rs`).
 
 ### Coverage Scope
 

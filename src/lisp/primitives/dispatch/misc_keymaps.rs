@@ -1,14 +1,6 @@
 use super::*;
 use crate::lisp::primitives::string_like;
 use crate::lisp::types::Kind;
-use std::cell::RefCell;
-use std::collections::HashMap;
-use std::path::PathBuf;
-
-thread_local! {
-    static SEMANTIC_CPP_INCLUDE_TAG_CACHE: RefCell<HashMap<PathBuf, Vec<Value>>> =
-        RefCell::new(HashMap::new());
-}
 
 pub(crate) fn restore_unicode_menu_case_table(
     interp: &mut Interpreter,
@@ -1607,18 +1599,6 @@ pub(super) fn direct_symbol_name(
     Ok(symbol_name.lisp_name())
 }
 
-/// Include tags are roots while cached. The captured Unicode menu table is
-/// marked with the editor that owns it.
-pub(crate) fn mark_semantic_cache_roots(mark: &mut dyn FnMut(&Value)) {
-    SEMANTIC_CPP_INCLUDE_TAG_CACHE.with_borrow(|cache| {
-        for tags in cache.values() {
-            for tag in tags {
-                mark(tag);
-            }
-        }
-    });
-}
-
 /// The `garbage-collect' primitive, callable directly (a subr's function
 /// pointer): alloc.c's Fgarbage_collect is a subr of its own with a small
 /// frame above the collection's stack top, and so is this, rather than
@@ -1647,6 +1627,8 @@ pub(super) fn direct_garbage_collect(
 #[inline(never)]
 fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value {
     let cons_size = crate::lisp::eval::GNU_CONS_SIZE as i64;
+    // alloc.c's report: each kind's free column is gcstat's, the sweep's.
+    let free = census.free;
     let entry = |name: &str, rest: &[i64]| {
         Value::list(
             std::iter::once(Value::Symbol(name.into()))
@@ -1654,13 +1636,16 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
         )
     };
     Value::list([
-        entry("conses", &[cons_size, census.conses as i64, 0]),
+        entry(
+            "conses",
+            &[cons_size, census.conses as i64, free.conses as i64],
+        ),
         entry(
             "symbols",
             &[
                 crate::lisp::eval::SYMBOL_SIZE as i64,
                 census.symbols as i64,
-                0,
+                free.symbols as i64,
             ],
         ),
         entry(
@@ -1668,7 +1653,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
             &[
                 crate::lisp::eval::STRING_HEADER_SIZE as i64,
                 census.strings as i64,
-                0,
+                free.strings as i64,
             ],
         ),
         entry("string-bytes", &[1, census.string_bytes as i64]),
@@ -1684,7 +1669,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
             &[
                 crate::lisp::eval::GNU_VECTOR_SLOT_SIZE as i64,
                 census.vector_slots as i64,
-                0,
+                free.vector_slots as i64,
             ],
         ),
         entry(
@@ -1692,7 +1677,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
             &[
                 crate::lisp::eval::GNU_FLOAT_SIZE as i64,
                 census.floats as i64,
-                0,
+                free.floats as i64,
             ],
         ),
         entry(
@@ -1700,7 +1685,7 @@ fn garbage_collect_report(census: &crate::lisp::eval::LiveObjectCensus) -> Value
             &[
                 crate::lisp::eval::GNU_INTERVAL_SIZE as i64,
                 census.intervals as i64,
-                0,
+                free.intervals as i64,
             ],
         ),
         entry(

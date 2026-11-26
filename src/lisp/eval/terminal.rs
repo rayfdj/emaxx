@@ -1761,3 +1761,21 @@ impl super::Interpreter {
 pub(crate) fn secondary_output_active() -> bool {
     OUTPUT_DEVICE.with_borrow(|device| device.strong_count() > 0)
 }
+
+/// The runtime leaves this OS thread (`runtime::release_thread_state'):
+/// the frame route (its device, its top frame) and the controlling
+/// terminal's output, which name Lisp objects, go.
+pub(crate) fn release_thread_state() {
+    crate::lisp::runtime::release_local(&OUTPUT_DEVICE, |device| {
+        if let Ok(mut device) = device.try_borrow_mut() {
+            *device = std::sync::Weak::new();
+        }
+    });
+    crate::lisp::runtime::release_local(&TTY_ROUTE_ACTIVE, |active| active.set(false));
+    crate::lisp::runtime::release_local(&PRIMARY_TOP_FRAME, |cell| cell.set(None));
+    crate::lisp::runtime::release_local(&CONTROLLING_OUTPUT, |cell| {
+        if let Ok(mut value) = cell.try_borrow_mut() {
+            *value = None;
+        }
+    });
+}
