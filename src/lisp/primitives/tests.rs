@@ -40454,6 +40454,124 @@ fn rust_bindings_are_undone_by_unbind_to_their_depth() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn the_child_signal_handler_reaps_deleted_children_and_no_thread_waits() {
+    // process.c's deleted_pid_list: a child call-process does not wait
+    // for (BUFFER 0), one call-process-region does not wait for (its input
+    // file removed at its end), and one delete-process killed are reaped
+    // by handle_child_signal.  No thread waits for any of them.
+    fn threads_named(name: &str) -> usize {
+        fs::read_dir("/proc/self/task")
+            .expect("this process's tasks")
+            .flatten()
+            .filter(|task| {
+                fs::read_to_string(task.path().join("comm")).is_ok_and(|comm| comm.trim() == name)
+            })
+            .count()
+    }
+    // Still this process's child, running or a zombie.
+    fn ours(pid: u32) -> bool {
+        fs::read_to_string(format!("/proc/{pid}/stat")).is_ok_and(|stat| {
+            stat.rfind(')').is_some_and(|close| {
+                stat[close + 1..].split_whitespace().nth(1)
+                    == Some(std::process::id().to_string().as_str())
+            })
+        })
+    }
+    fn reaped_within(pid: u32, limit: std::time::Duration) -> bool {
+        let deadline = std::time::Instant::now() + limit;
+        while ours(pid) {
+            if std::time::Instant::now() >= deadline {
+                return false;
+            }
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+        true
+    }
+    let directory = std::env::temp_dir().join(format!("emaxx-deleted-{}", std::process::id()));
+    fs::create_dir_all(&directory).expect("a temporary directory");
+    let path = |name: &str| directory.join(name).display().to_string();
+    // call-process-region encodes its input: the coding systems loadup makes.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Env::new();
+    let mut eval = |source: String| {
+        crate::test_support::eval_lisp(&mut interp, &mut env, &source)
+            .unwrap_or_else(|error| panic!("{source}: {error}"))
+    };
+    eval(format!(
+        "(setq temporary-file-directory {:?})",
+        format!("{}/", directory.display())
+    ));
+    let pid_of = |name: &str| -> u32 {
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(5);
+        loop {
+            if let Ok(text) = fs::read_to_string(path(name))
+                && let Ok(pid) = text.trim().parse()
+            {
+                return pid;
+            }
+            assert!(
+                std::time::Instant::now() < deadline,
+                "{name} was not written"
+            );
+            std::thread::sleep(std::time::Duration::from_millis(10));
+        }
+    };
+    let limit = std::time::Duration::from_secs(10);
+
+    let nowait = eval(format!(
+        "(call-process \"sh\" nil 0 nil \"-c\" \"echo $$ > {}; sleep 0.3\")",
+        path("a")
+    ));
+    assert_eq!(nowait, Value::Nil);
+    let first = pid_of("a");
+    assert_eq!(threads_named("process-reaper"), 0);
+    assert!(
+        reaped_within(first, limit),
+        "call-process's child {first} reaped"
+    );
+
+    eval(format!(
+        "(call-process-region \"abc\" nil \"sh\" nil 0 nil \"-c\" \"echo $$ > {}; cat > /dev/null; sleep 0.3\")",
+        path("b")
+    ));
+    let second = pid_of("b");
+    let inputs = || {
+        fs::read_dir(&directory)
+            .expect("the temporary directory")
+            .flatten()
+            .filter(|entry| entry.file_name().to_string_lossy().starts_with("emacs"))
+            .count()
+    };
+    assert_eq!(threads_named("process-reaper"), 0);
+    assert!(
+        reaped_within(second, limit),
+        "call-process-region's child {second} reaped"
+    );
+    assert_eq!(
+        inputs(),
+        0,
+        "the handler removes the input file at the child's end"
+    );
+
+    let third = eval(
+        "(let ((p (make-process :name \"deleted\" :command '(\"sleep\" \"30\") :noquery t))) \
+           (prog1 (process-id p) (delete-process p)))"
+            .to_owned(),
+    );
+    let Kind::Integer(third) = third.kind() else {
+        panic!("a pid: {third:?}")
+    };
+    let third = u32::try_from(third).expect("a pid");
+    assert_eq!(threads_named("process-reaper"), 0);
+    assert!(
+        reaped_within(third, limit),
+        "the deleted process's child {third} reaped"
+    );
+    fs::remove_dir_all(&directory).expect("remove the temporary directory");
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn helper_threads_block_process_signals() {
     // A host helper thread blocks the signals a process receives, so they
     // go to a thread that runs Lisp (sysdep.c:deliver_process_signal),

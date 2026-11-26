@@ -372,16 +372,15 @@ enum NullOutputSlot {
 }
 
 fn terminate_child_without_blocking(mut runtime: RunningProcess) {
-    // record_kill_process: SIGKILL to the child's process group while
-    // p->alive.  GNU's SIGCHLD handler clears p->alive as soon as the child
-    // exits, so a child that has exited is reaped here as that handler
-    // would have reaped it, and its group, which may outlive it, is left
-    // alone.
-    let exited = matches!(runtime.child.try_wait(), Ok(Some(_)));
+    // record_kill_process: while p->alive, the child on deleted_pid_list
+    // and SIGKILL to its process group, which handle_child_signal reaps
+    // whenever it exits.  GNU's handler clears p->alive as soon as the
+    // child exits, so a child that has exited is left to its status, and
+    // its group, which may outlive it, alone.
     #[cfg(unix)]
-    if !exited {
-        runtime.child.kill_group();
-    }
+    runtime.child.record_kill_process(None);
+    #[cfg(not(unix))]
+    let exited = matches!(runtime.child.try_wait(), Ok(Some(_)));
     #[cfg(not(unix))]
     if !exited {
         let _ = runtime.child.kill();
@@ -394,18 +393,14 @@ fn terminate_child_without_blocking(mut runtime: RunningProcess) {
     runtime.child.stderr = None;
     runtime.pty_input = None;
     runtime.pty_output = None;
-    if matches!(runtime.child.try_wait(), Ok(Some(_))) {
-        return;
+    // The handler, not this owner, reaps the child: dropping RUNTIME
+    // closes what is left and waits for nothing.
+    #[cfg(not(unix))]
+    if !matches!(runtime.child.try_wait(), Ok(Some(_))) {
+        let _ = crate::lisp::primitives::spawn_helper_thread("process-reaper", move || {
+            let _ = runtime.child.wait();
+        });
     }
-    // GNU `delete-process' closes the Lisp process immediately and reaps the
-    // OS child later (handle_child_signal, by deleted_pid_list).  Waiting
-    // inline can deadlock when a killed server is still unwinding an
-    // active connection (notably gnutls-serv on Darwin).  Retain the Child,
-    // its descriptors closed, in one detached reaper until wait(2)
-    // completes, so prompt deletion does not trade the stall for a zombie.
-    let _ = crate::lisp::primitives::spawn_helper_thread("process-reaper", move || {
-        let _ = runtime.child.wait();
-    });
 }
 
 impl Interpreter {
