@@ -3444,3 +3444,133 @@ fn image_refills_the_buffer_local_c_variables_from_the_current_buffer() {
     );
     assert!(target.parse_sexp_lookup_properties());
 }
+
+/// The image's root value for SLOT, as the load installed it.
+fn loaded_root(image: &super::load::LoadedImage, slot: RootSlot) -> Value {
+    image
+        .roots
+        .iter()
+        .find(|(root, _)| *root == slot)
+        .map(|(_, value)| *value)
+        .expect("the root was installed")
+}
+
+fn cons_address(value: Value) -> usize {
+    let Kind::Cons(cell) = value.kind() else {
+        panic!("not a cons: {value}");
+    };
+    cell.as_ptr() as usize
+}
+
+// Each step in a frame of its own, the stack below cleared after it, so
+// that no stale word keeps what the step made or let go.
+#[inline(never)]
+fn lisp_step(interp: &mut Interpreter, source: &str) -> Value {
+    let value = crate::test_support::eval_lisp(interp, &mut crate::lisp::types::Env::new(), source)
+        .expect("evaluate the test's Lisp");
+    crate::lisp::alloc::clobber_stack();
+    value
+}
+
+/// The load of a_mapped_cons_nothing_reaches_stays_as_a_dumped_one_does's
+/// image, in a frame of its own: the inner list goes to a variable, and
+/// its address comes back complemented, a word the conservative scan
+/// does not take for a reference.
+#[inline(never)]
+fn load_inner_list(target: &mut Interpreter) -> usize {
+    let mut interp = Interpreter::new();
+    let graph = Value::list([Value::Integer(1), Value::list([Value::Integer(2)])]);
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+    let image = load_image(&bytes, target).expect("the graph loads");
+    let inner = loaded_root(&image, RootSlot::LoadPath)
+        .cdr()
+        .and_then(|rest| rest.car())
+        .expect("the inner list");
+    assert!(
+        crate::lisp::alloc::cons_is_mapped(cons_address(inner)),
+        "the inner list is a cell of the image"
+    );
+    target.select_symbol_owner();
+    target.set_symbol_value_cell("zz-dump-inner", inner);
+    !cons_address(inner)
+}
+
+#[test]
+fn a_mapped_cons_nothing_reaches_stays_as_a_dumped_one_does() {
+    // alloc.c's sweeps iterate the heap's own blocks: a dumped object is
+    // never swept or freed, dead or not (pdumper.h's pdumper_object_p),
+    // and nothing reads its fields again.  A mapped cons nothing reaches
+    // stays where the image is, its words as they were, and is no longer
+    // an object a word can name (it was not marked last); a heap cons only
+    // that cell holds is collected without the verifier taking the dead
+    // cell's field for a live one's.
+    let mut target = Interpreter::new();
+    let complement = load_inner_list(&mut target);
+    crate::lisp::alloc::clobber_stack();
+    lisp_step(
+        &mut target,
+        "(progn
+           (setq zz-dump-witness (make-hash-table :test 'eq :weakness 'key))
+           (puthash zz-dump-inner t zz-dump-witness)
+           (setcar zz-dump-inner (list 'fresh (make-string 3 ?x)))
+           (setq zz-dump-inner nil load-path nil)
+           nil)",
+    );
+    let witnessed = lisp_step(
+        &mut target,
+        "(progn (garbage-collect) (garbage-collect) (hash-table-count zz-dump-witness))",
+    );
+    assert_eq!(
+        witnessed,
+        Value::Integer(0),
+        "nothing reaches the inner list"
+    );
+    // SAFETY: a cell of a mapped block, which stays where it is; only its
+    // words are read, the car's tag alone and whether the cdr is nil.
+    let cell = unsafe { &*(!complement as *const crate::lisp::types::ConsCell) };
+    assert!(
+        cell.car.get().is_cons() && cell.cdr.get().is_nil(),
+        "the mapped cell keeps its words: the list the test set, then nil"
+    );
+    assert!(
+        !crate::lisp::alloc::cons_allocated_at(!complement),
+        "a word no longer names the dead mapped cell"
+    );
+}
+
+#[test]
+fn a_mapped_cons_keeps_the_heap_object_it_holds() {
+    // A dumped object a root reaches is marked (pdumper_set_marked) and
+    // traced, so a heap object stored into it lives through collections.
+    let mut interp = Interpreter::new();
+    let graph = Value::list([Value::Integer(1), Value::Integer(2)]);
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("the graph loads");
+    let list = loaded_root(&image, RootSlot::LoadPath);
+    assert!(
+        crate::lisp::alloc::cons_is_mapped(cons_address(list)),
+        "the list is the image's"
+    );
+    target.set_symbol_value_cell("zz-dump-list", list);
+    drop(image);
+    lisp_step(
+        &mut target,
+        "(progn
+           (setq zz-dump-witness (make-hash-table :test 'eq :weakness 'key))
+           (let ((fresh (make-string 3 ?y)))
+             (puthash fresh t zz-dump-witness)
+             (setcar zz-dump-list fresh))
+           nil)",
+    );
+    let kept = lisp_step(
+        &mut target,
+        "(progn (garbage-collect) (garbage-collect) (garbage-collect)
+           (hash-table-count zz-dump-witness))",
+    );
+    assert_eq!(
+        kept,
+        Value::Integer(1),
+        "the string the mapped cell holds lives"
+    );
+}

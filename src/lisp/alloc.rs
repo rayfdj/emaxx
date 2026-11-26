@@ -2069,6 +2069,13 @@ pub(crate) fn cons_allocated_at(address: usize) -> bool {
     unsafe { mem_find_cons(address) }.is_some_and(|cell| cell as usize == address)
 }
 
+/// For tests: whether ADDRESS is in one of the image's mapped cons blocks.
+#[cfg(test)]
+pub(crate) fn cons_is_mapped(address: usize) -> bool {
+    crate::lisp::runtime::ensure_held();
+    is_mapped_block(address & !(CONS_BLOCK_ALIGN - 1))
+}
+
 /// For tests: whether every mark bit of the cons, float and vector blocks
 /// is clear, as a collection's sweeps leave them.
 #[cfg(test)]
