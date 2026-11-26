@@ -24921,6 +24921,23 @@ ert-tests as a whole 26,307 ms against 27,211.
   binaries' tests (63) and the gate's new doc stage, three doctests
   passing and three that must fail to compile, none failed.
 
+**On `a874999`** (round 396): the frozen run (run 45756167402) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, and round 394's rule was exercised for the first time:
+  `eglot-test-rust-completion-exit-function' failed for GNU with
+  `jsonrpc-error' "Timed out" (request 2, after 10.9 s) and passed for
+  Emaxx, the acceptance was reported in the file's line and after the
+  totals, and the file's 52 outcomes count as matching.  Setup 51.8 s
+  against 45.0 s (1.151), test bodies 227.7 s against 223.1 s (1.021),
+  in all 1.043 (GNU's suite took 268 s).  The widest body gaps are
+  tramp-tests (15.1 s against 13.3 s), comp-tests (10.5 against 9.2),
+  semantic-utest-ia (2.60 against 1.87), process-tests (2.17 against
+  1.43) and mule-tests (1.87 against 1.28).  GNU's threads test did
+  not abort.  The Rust gate (run 45756164482) passed: 3,684 library
+  tests, the eight integration targets (237; the two new parity
+  cases), the binaries' tests (63) and the doc stage, three doctests
+  passing and three that must fail to compile, none failed.
+
 **The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
   25 Nov by running the one test alone.
   `eglot-test-rust-completion-exit-function' connects twice
@@ -24944,6 +24961,7 @@ ert-tests as a whole 26,307 ms against 27,211.
   owner's decision of the same day, and reports each acceptance with
   the side that failed; the test still runs on both sides, and
   anything else about it is compared as before (round 394's entry).
+  The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
 - **Found after the scope lock (round 396 and its review), within the
