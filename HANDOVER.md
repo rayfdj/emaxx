@@ -225,7 +225,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   across a signal is the specpdl's, the public entry points take a
   `Runtime' handle whose holds are counted, and the library passes
   whole at four test threads; the four items of thread safety wait on
-  the CI control (the owner's), a macOS run and C5.3's gate.
+  the CI control (the owner's), a macOS run and C5.3's gate.  Round
+  396: the two reaper threads are gone, GNU's deleted list in the
+  SIGCHLD handler in their place; C5.3's gate was written, passed by
+  the review in eight ways, and held back.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -21246,6 +21249,89 @@ setup_process_coding_systems's check now refuses). A 13-form
   notes of test or reporting infrastructure are the two gates' tools
   (a doc stage, and comments), the cargo configuration, anti_cheat.rs,
   and two binaries whose calls gained the handle.
+- **Round 396: the SIGCHLD handler reaps deleted children, and no
+  thread waits on one (M2: the reaper threads, an open question of the
+  plan of runtime ownership, by the owner's rule; none closed).**
+  **The threads**: a process deleted before its child had exited, and
+  a `call-process' with buffer 0, each left a helper thread waiting on
+  the child.  GNU has no such thread: `delete-process' puts the
+  child's pid on deleted_pid_list, and handle_child_signal reaps it
+  there (process.c).  Now a child's slot belongs either to a live
+  process or to the deleted list; the handler asks a deleted child
+  with WNOHANG alone, as child_status_changed (pid, 0, 0) does, and at
+  its end, or at ECHILD, removes the child's temporary file and frees
+  the slot.  A batch run with a live child, a deleted child or a
+  buffer-0 `call-process' child shows one task in /proc, as GNU's
+  does, where it showed two.  (On Unix; elsewhere a thread a child
+  stays, as w32proc.c has one.)  **A race removed**: the kill of a
+  child checked that it was unreaped and then signalled its group, and
+  a child that exited between the two, its pid given to a new fork,
+  had the signal sent to the wrong group.  The kill now holds the
+  slot across the check and the signal, as GNU's block_child_signal
+  makes the two one; the handler finds the slot busy and leaves it,
+  and the poll after the release reaps the child.
+  `process-send-signal' still tests and signals without the hold, as
+  GNU's does.  **SAFE_FREE**: the release of a native helper's array
+  on the specpdl unbinds to its own entry's depth, as
+  unbind_to (sa_count) does, where it popped whatever entry was
+  innermost.  **A test by identity**: the test that another thread's
+  sweep frees its creator's uninterned symbols read a global count in
+  two holds, which is true only while no other test runs, and failed
+  once at four test threads.  It now looks for each of the creator's
+  64 symbols at its address by its own unique name, in the collecting
+  thread's hold: 64 of 64 kept when the sweep is broken, none
+  otherwise, and twenty runs of its group at four test threads pass
+  it.  **Held back**: the gate that every public function able to run
+  Lisp takes `&Runtime' (C5.3's) was written in this round, and the
+  review passed it eight ways (a type alias, a conversion's
+  constructor, a deref, an impl in another file, three forms of
+  re-export, an import alias, a trait's default method, a `;' in a
+  return type).  Nothing in the tree gets through any of them, but the
+  gate does not do what it says, so it is not landed and goes on in
+  the next thread round.  **Lisp sees nothing change**, and when
+  Emaxx notices a child's exit is as before and as GNU, quiet and
+  under six busy loops, over 50 runs a case: the exited pty child's
+  window size t in 26 of 50 for GNU under load and 28 of 50 before and
+  after; a child's end waiting for its notification the same in all
+  three; a pty child's last output lost without the drain in 3, 2 and
+  4 of 30 and never with it.  **Counts**: every probe equal to round
+  395's build, the process probes among them (`process-name' 392.6
+  instructions against GNU's 371.0, not looked into).  The
+  independent review (the one question: does the round cheat or break
+  something) compared the build before, this one and GNU on
+  `delete-process' of live, ended and stopped children, `kill-emacs'
+  with children alive, two threads each waiting on a process, a
+  SIGCHLD during native code, a collection and a background thread,
+  and a deep native `apply' and `mapcar' under throws, errors and
+  quits: the same answers, no zombie on any build; it read the slot's
+  protocol for a lost wakeup and the handler for what a signal handler
+  may do, and found no cheat and nothing broken.  A reading of the
+  rewritten test found it stronger than the one it replaces (each of
+  the 64 cells must be gone, where a count could be made up by other
+  symbols) and safe in what it reads.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,677 passed, 0 failed, 2 ignored (one
+  library test more); cli 30, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 1, package_lifecycle 5,
+  runtime_ownership 7 and runtime_forgotten_handle 1; the doctests,
+  three passing and three that must fail to compile; the harness's
+  own tests 59; clippy `-D warnings' and rustfmt clean.  cli_parity
+  gave 187 of its 189 cases (two are new), and neither failure is the
+  round's; each case then passed six times of six alone on the same
+  build.  In the gnutls case every connection of Emaxx's side was
+  refused: the case starts its server on a fixed port, another
+  worktree was running the same case, and two overlapping runs of the
+  program give that answer whichever of GNU, round 395's build and
+  this one is the second (measured at four offsets), while under
+  sixteen busy loops all three give the usual answer eight times of
+  eight.  In a child's end waiting for its notification it was GNU
+  that gave its other answer, as in round 392's validation: under
+  sixteen busy loops GNU gives it in 1 run of 10, round 395's build
+  and this one in none.  The round audit reports no hard finding, 732
+  changed lines with 3 tests and 14 assertions added; its three notes
+  of a dropped result are outside Unix (the thread a child keeps
+  there, and a kill before it), and its note of a changed assertion is
+  SAFE_FREE's, the same assertion on the unbind to the entry's depth.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24860,6 +24946,28 @@ ert-tests as a whole 26,307 ms against 27,211.
   anything else about it is compared as before (round 394's entry).
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 396 and its review), within the
+  plan's later stages or outside the round.**  One line each: the
+  release of a helper's array would run, not only pop, entries an
+  unbalanced callee left above it, and in a release build returns in
+  silence when no entry records the array, where GNU asserts in a
+  checking build (an always-on stop on that cold path is the next
+  thread round's); `process-name' costs 392.6 instructions against
+  GNU's 371.0; the performance runner requires each `benchmark-run'
+  sample to be above 0, and GNU itself gives a negative elapsed time
+  in 111 of 20,000 runs of a short form, so that check fails by
+  chance (once in twenty four-thread runs here); a template-clone
+  test reads a process-wide counter outside any hold, harmless while
+  this build never clones a template; a slot's sweep releases it
+  without rechecking, which only reaped slots reach; `Runtime::lock'
+  is not a seed of the held-back gate, since it takes the lock
+  directly; the gnutls parity case starts its server on a fixed port,
+  so two worktrees running that case at once refuse each other's
+  connections (this round's validation met it); and a child's end
+  waiting for its notification is a parity case whose GNU answer
+  changes under load (1 run in 10 under sixteen busy loops, and in the
+  validations of rounds 392 and 396), which wants the deterministic
+  form the other timing cases were given.
 - **Found after the scope lock (round 395 and its reviews), within the
   plan's later stages or outside the round.**  One line each: a native
   `apply' costs 915.1 instructions against GNU's 545.0 and a native
