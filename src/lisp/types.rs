@@ -68,19 +68,29 @@ impl Hasher for IdentityHasher {
 
 pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
 
-/// The current collection's number; see `MarkBit'.  The process's, as
-/// the mark bits and `gc_in_progress' are alloc.c's globals: the objects
-/// carry it, whichever thread marked them.
+/// The collections begun in the process, as alloc.c's `gcs_done' counts
+/// the ones done: a count, the process's as alloc.c's is.  A collection
+/// is counted at its start because the strings' marks still carry the
+/// count as their collection's number (see `MarkBit'); no other object
+/// carries it, and nothing else reads it while a collection runs.
 static GC_MARK_EPOCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// The current collection's epoch (the last one begun).
+/// The collections begun so far: two reads agree when no collection
+/// began between them.
 #[inline]
-pub(crate) fn current_mark_epoch() -> u32 {
+pub(crate) fn collections_begun() -> u32 {
     GC_MARK_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
 }
 
+/// The number a string marked in the current collection carries, and a
+/// new string is made with: the count of the last collection begun.
+#[inline]
+pub(crate) fn current_mark_epoch() -> u32 {
+    collections_begun()
+}
+
 /// Between a mark phase and its sweep (a checked build's guard: a second
-/// mark phase in between would give the cells born after it a newer
+/// mark phase in between would give the strings born after it a newer
 /// epoch, and the sweep would free them).
 static GC_SWEEP_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -88,7 +98,8 @@ pub(crate) fn set_sweep_pending(pending: bool) {
     GC_SWEEP_PENDING.store(pending, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Start a collection: the epoch every object marked in it will carry.
+/// Start a collection: count it, which gives the epoch every string
+/// marked in it will carry.
 pub(crate) fn begin_mark_epoch() -> u32 {
     debug_assert!(
         !GC_SWEEP_PENDING.load(std::sync::atomic::Ordering::Relaxed),

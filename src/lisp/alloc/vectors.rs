@@ -56,8 +56,8 @@ const fn vroundup(bytes: usize) -> usize {
     (bytes + ROUNDUP_SIZE - 1) & !(ROUNDUP_SIZE - 1)
 }
 
-/// Space available to vectors. The allocator's block bitmap replaces the
-/// per-vector epoch words; no Lisp payload contains this metadata.
+/// Space available to vectors. The block's bitmap holds the marks of the
+/// vectors in it; no Lisp payload contains this metadata.
 const VECTOR_BLOCK_BYTES: usize =
     (VECTOR_BLOCK_SIZE - std::mem::size_of::<VectorBlockMarks>()) & !(ROUNDUP_SIZE - 1);
 // Distinct objects are at least VBLOCK_BYTES_MIN bytes apart even when their

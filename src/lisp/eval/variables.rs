@@ -3829,13 +3829,13 @@ impl Interpreter {
         let error_symbol = error.condition_symbol();
         let identity = error.identity();
         let condition = error_symbol.identity_ptr();
-        let epoch = crate::lisp::types::current_mark_epoch();
+        let collections = crate::lisp::types::collections_begun();
         let depth = self.active_handlers.len();
         if let Some(memo) = self.handler_search_memo
             && memo.error == identity
             && memo.condition == condition
             && memo.generation == self.handler_generation
-            && memo.epoch == epoch
+            && memo.collections == collections
             && memo.decisive.is_none_or(|index| index < depth)
         {
             return memo;
@@ -3875,7 +3875,7 @@ impl Interpreter {
             error: identity,
             condition,
             generation: self.handler_generation,
-            epoch,
+            collections,
             decisive,
         };
         self.handler_search_memo = Some(search);

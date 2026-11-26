@@ -4882,7 +4882,7 @@ impl LispReachability {
 impl LispReachability {
     /// A collection's mark phase starts (`weak_hash_reachability', which
     /// only the collector runs, and its sweeps follow): its own epoch, so
-    /// nothing is marked in it yet.
+    /// no string is marked in it yet.
     fn for_collection() -> Self {
         let mut marker = Self::default_without_epoch();
         marker.epoch = crate::lisp::types::begin_mark_epoch();
@@ -4903,8 +4903,8 @@ impl LispReachability {
 }
 
 pub(crate) struct WeakHashReachability {
-    /// The collection's epoch: the mark every reached object carries,
-    /// which the sweep tests.
+    /// The collection's epoch: the mark every reached string carries,
+    /// which the strings' sweep tests.
     pub(crate) epoch: u32,
     pub(crate) tables: Vec<WeakHashTableReachability>,
 }
@@ -5720,15 +5720,15 @@ impl Interpreter {
             // SAFETY: the registered allocation stays alive and parked
             // while this collection reads its roots. The view owns no box.
             let other = unsafe { Interpreter::registered_gc_view(state) };
-            // Its own marker for the kinds marked by id (a record id names
-            // a different object in each state), this collection's epoch
-            // on the objects; every record it keeps is retained as this
-            // state's are below.
+            // Its own marker (its work list and the weak tables it finds),
+            // the marks on the objects themselves, the process's, the
+            // strings' this collection's epoch; every record it keeps is
+            // retained as this state's are below.
             // Nothing sweeps that state's weak tables in this collection,
             // so their entries are held as strongly as the rest: retaining
             // from the first root.
             let mut other_marked = LispReachability::with_epoch(marked.epoch);
-            // These roots share the allocator and this collection's epoch.
+            // These roots share the allocator and this collection's marks.
             other_marked.retaining = true;
             other.mark_static_roots_into(&mut other_marked);
         }
@@ -7459,7 +7459,9 @@ pub(crate) struct HandlerSearch {
     error: usize,
     condition: usize,
     generation: u64,
-    epoch: u32,
+    /// The collections begun when the search was made: a collection since
+    /// may have freed the condition's symbol and made another in its cell.
+    collections: u32,
     /// The innermost module boundary or matching entry; the search stops
     /// at the innermost matching `condition-case'.
     pub(crate) decisive: Option<usize>,

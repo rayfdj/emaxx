@@ -9,8 +9,8 @@
 //! free cell's first word links the free list.
 //!
 //! The blocks, the free list, the bump pointer into the newest block and
-//! the collection's epoch are the process's, as `cons_block',
-//! `cons_free_list', `cons_block_index' and the mark state are plain
+//! the count of collections are the process's, as `cons_block',
+//! `cons_free_list', `cons_block_index' and `gcs_done' are plain
 //! globals in alloc.c: one Lisp thread runs at a time there (the global
 //! lock), and here too (a template interpreter built on one thread is
 //! used from another, one at a time, under a lock).  A collection sweeps

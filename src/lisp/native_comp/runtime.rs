@@ -11780,7 +11780,7 @@ mod tests {
         // The collector is inactive between native calls.  Give it a real
         // call/stack boundary and prove it swept an unreachable allocation;
         // simply calling begin_garbage_collection here was a no-op.
-        let epoch_before_collection = crate::lisp::types::current_mark_epoch();
+        let collections_before = crate::lisp::types::collections_begun();
         runtime.heap.begin_call();
         let stack_marker = 0;
         runtime
@@ -11797,8 +11797,8 @@ mod tests {
         );
         assert!(!hidden_cons_is_live(&runtime.heap, unreachable));
         assert_ne!(
-            crate::lisp::types::current_mark_epoch(),
-            epoch_before_collection,
+            crate::lisp::types::collections_begun(),
+            collections_before,
             "collection must run the shared marker"
         );
         runtime
@@ -17634,7 +17634,7 @@ mod tests {
             environment: &Env,
             stack_marker: *const NativeWord,
         ) {
-            let epoch = crate::lisp::types::current_mark_epoch();
+            let collections = crate::lisp::types::collections_begun();
             let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 heap.collect(stack_marker, &[], interpreter, environment);
             }));
@@ -17644,9 +17644,9 @@ mod tests {
                 Some(&"cannot collect while a string is mutably borrowed")
             );
             assert_eq!(
-                crate::lisp::types::current_mark_epoch(),
-                epoch,
-                "rejected before the mark epoch starts"
+                crate::lisp::types::collections_begun(),
+                collections,
+                "rejected before the collection begins"
             );
         }
 
