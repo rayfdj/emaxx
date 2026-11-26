@@ -32,7 +32,9 @@ jobs:
           devices = json.load(sys.stdin)["devices"]
           phones = [d for runtime in sorted(devices) if "iOS" in runtime
                     for d in devices[runtime] if d["name"].startswith("iPhone")]
-          print(phones[-1]["udid"])')
+          # Prefer a Pro model: its Dynamic Island and home indicator exercise the safe areas.
+          pros = [d for d in phones if d["name"].endswith(" Pro")]
+          print((pros or phones)[-1]["udid"])')
           echo "UDID=$UDID" >> "$GITHUB_ENV"
           xcrun simctl list devices available | grep "$UDID"
           xcrun simctl bootstatus "$UDID" -b
@@ -47,10 +49,16 @@ jobs:
             cat "$DATA/Documents/selftest.json"; echo
             mv "$DATA/Documents/selftest.json" "out/$1.json"
             xcrun simctl io "$UDID" screenshot "out/$1.png"
-            xcrun simctl terminate "$UDID" "$BUNDLE_ID" || true
           }
           run first
+          # Leave the app the way a person does: switch to another app, which
+          # sends it to the background. Its running timer must be saved by then.
+          sleep 3
+          xcrun simctl launch "$UDID" com.apple.Preferences
+          sleep 4
+          xcrun simctl terminate "$UDID" "$BUNDLE_ID" || true
           run second
+          xcrun simctl terminate "$UDID" "$BUNDLE_ID" || true
           python3 - <<'PY'
           import json
           first, second = (json.load(open(f"out/{name}.json")) for name in ("first", "second"))
@@ -59,6 +67,7 @@ jobs:
           assert not page1["resumed"], page1
           assert first["cells"] == 36 and first["savedHasGame"], first
           assert page2["resumed"], page2
+          assert page2["savedElapsed"] >= 3000, page2
           print("self-test passed")
           PY
       - name: Screenshot of the home screen

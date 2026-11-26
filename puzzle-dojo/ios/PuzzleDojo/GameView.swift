@@ -44,6 +44,8 @@ final class GameBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
         webView.isInspectable = true
         #endif
         self.webView = webView
+        NotificationCenter.default.addObserver(self, selector: #selector(appDidEnterBackground),
+                                               name: UIApplication.didEnterBackgroundNotification, object: nil)
 
         if let page = Bundle.main.url(forResource: "index", withExtension: "html") {
             webView.loadFileURL(page, allowingReadAccessTo: page.deletingLastPathComponent())
@@ -65,6 +67,12 @@ final class GameBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
               let array = String(data: data, encoding: .utf8) else { return "null" }
         // ["..."] without the brackets is a quoted, escaped string literal.
         return String(array.dropFirst().dropLast())
+    }
+
+    /// iOS may end the app while it is in the background, so ask the page to
+    /// save right away (it saves on `pagehide`), timer included.
+    @objc private func appDidEnterBackground() {
+        webView?.evaluateJavaScript("window.dispatchEvent(new Event('pagehide'))", completionHandler: nil)
     }
 
     // MARK: Messages from the page
@@ -140,6 +148,7 @@ final class GameBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
     /// Starts a board through the page's own buttons and writes what happened
     /// to Documents/selftest.json, so a build script can check that the page
     /// loaded, the bridge works and progress survives a relaunch.
+    /// `savedElapsed` is the timer of the game found at launch, in ms.
     private func runSelfTest(_ webView: WKWebView) {
         let probe = """
         (function () {
@@ -147,9 +156,12 @@ final class GameBridge: NSObject, WKScriptMessageHandler, WKNavigationDelegate {
           var play = all('button').filter(function (b) { return /Play a 6/.test(b.textContent); })[0];
           var resumed = all('.eyebrow').some(function (e) { return e.textContent === 'Continue'; });
           var heading = document.querySelector('h1');
+          var savedElapsed = -1;
+          try { savedElapsed = JSON.parse(window.__dojoNative.saved).game.elapsed; } catch (e) {}
           if (play) play.click();
           return JSON.stringify({
             bridge: !!window.__dojoNative,
+            savedElapsed: savedElapsed,
             heading: heading ? heading.textContent : null,
             resumed: resumed,
             started: !!play
