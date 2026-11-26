@@ -88,7 +88,8 @@ fn allocate_words(tag: VectorTag, slots: usize) -> NonNull<VectorHeader> {
     // SAFETY: freshly allocated, aligned storage; allocation does not collect.
     // The caller initializes all fields before publishing the object.
     unsafe {
-        (*header).size = PSEUDOVECTOR_FLAG | ((tag as usize) << PSEUDOVECTOR_AREA_BITS) | slots;
+        (*header).size =
+            Cell::new(PSEUDOVECTOR_FLAG | ((tag as usize) << PSEUDOVECTOR_AREA_BITS) | slots);
         NonNull::new_unchecked(header)
     }
 }
@@ -141,7 +142,7 @@ impl CharTableRef {
 
     #[inline]
     pub(crate) fn slot_count(&self) -> usize {
-        self.header().size & PSEUDOVECTOR_SIZE_MASK
+        self.header().size.get() & PSEUDOVECTOR_SIZE_MASK
     }
 
     #[inline]

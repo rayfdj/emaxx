@@ -173,11 +173,12 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
 #[test]
 fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
     // alloc.c's sweeps unmark what they keep (XUNMARK_CONS, the float
-    // blocks' bits, the vector blocks' ARRAY_MARK_FLAG), and Fcons and
+    // blocks' bits, the vectors' ARRAY_MARK_FLAG), and Fcons and
     // make_float give a new object no mark: after a collection no bit of a
-    // cons, float or vector block is set, an object made between
-    // collections is unmarked until the next one marks it, and that one
-    // leaves it unmarked again, kept.
+    // cons, float or vector block is set and no large vector's header
+    // carries the flag, an object made between collections is unmarked
+    // until the next one marks it, and that one leaves it unmarked again,
+    // kept.
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     crate::test_support::eval_lisp(&mut interp, &mut env, "(garbage-collect)")
@@ -194,11 +195,32 @@ fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
     };
     assert!(!cell.mark_bit().is_marked());
     assert!(!cell_float.mark_bit().is_marked());
+    // A vector too large for a block, whose mark is its header's
+    // ARRAY_MARK_FLAG: made without it, and unmarked again by the sweep
+    // that keeps it (XUNMARK_VECTOR), so its length reads as it was made.
+    let large = Value::vector(std::iter::repeat_n(cons, 600));
+    let Kind::Vector(large_vector) = large.kind() else {
+        unreachable!("constructed vector");
+    };
+    assert!(!large_vector.mark_bit().is_marked());
     interp.set_symbol_value_cell("zz-made-between", vector);
+    interp.set_symbol_value_cell("zz-large-made-between", large);
     crate::test_support::eval_lisp(&mut interp, &mut env, "(garbage-collect)")
         .expect("the next collection");
     assert!(crate::lisp::alloc::every_mark_bit_clear());
     assert!(!cell.mark_bit().is_marked() && !cell_float.mark_bit().is_marked());
+    assert!(!large_vector.mark_bit().is_marked());
+    assert_eq!(large_vector.len(), 600);
+    assert_eq!(
+        crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
+            "(list (length zz-large-made-between) (aref zz-large-made-between 599))"
+        )
+        .expect("the large vector")
+        .to_string(),
+        "(600 (5))"
+    );
     assert_eq!(
         crate::test_support::eval_lisp(&mut interp, &mut env, "zz-made-between")
             .expect("the vector")

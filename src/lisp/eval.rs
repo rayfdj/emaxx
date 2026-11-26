@@ -1400,12 +1400,12 @@ fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReac
     let epoch = marked.epoch;
     let active_state = std::ptr::from_ref::<InterpreterState>(active) as usize;
     let states = crate::lisp::alloc::live_states();
-    active.queue_doomed_finalizers(epoch);
+    active.queue_doomed_finalizers();
     for &state in &states {
         if state != active_state {
             // SAFETY: the registered state is parked during serialized GC.
             let other = unsafe { Interpreter::registered_gc_view(state) };
-            other.queue_doomed_finalizers(epoch);
+            other.queue_doomed_finalizers();
         }
     }
     // SAFETY: the list stays intact while tracing; callbacks run after GC.
@@ -4856,10 +4856,10 @@ pub(crate) struct LispReachability {
     /// Whether an object was marked since `trace_pending' last answered.
     reached: bool,
     weak_tables: Vec<crate::lisp::types::HashTableRef>,
-    /// This collection's number: a string, symbol or large vector is
-    /// marked by carrying it (alloc.c's mark bit, on the object); a cons,
-    /// float or vector in a block by its block's mark bit, which the sweep
-    /// clears; the other kinds are marked by address or id below.
+    /// This collection's number: a string or symbol is marked by carrying
+    /// it (alloc.c's mark bit, on the object); a cons, float or vector in
+    /// a block by its block's mark bit and a large vector by its header's
+    /// ARRAY_MARK_FLAG, which the sweeps clear.
     epoch: u32,
     /// The retention pass after the live sets are taken: every slot of
     /// every record is traced, a weak table's actual entries included, so
@@ -4915,31 +4915,31 @@ impl LispReachability {
     fn contains(&self, value: &Value) -> bool {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
-            Kind::BigInteger(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::BigInteger(value) => value.mark_bit().is_marked(),
             Kind::Float(value) => value.mark_bit().is_marked(),
             Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
             // alloc.c:survives_gc_p tests the symbol's mark. A live owner's
             // obarray marks its symbols; a retired owner's names are not roots.
             Kind::Symbol(symbol) => symbol.is_marked(self.epoch),
             Kind::Cons(value) => value.mark_bit().is_marked(),
-            Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Closure(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::NativeFunction(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::NativeCompUnit(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Marker(marker) => marker.mark_bit().is_marked(self.epoch),
-            Kind::Overlay(overlay) => overlay.mark_bit().is_marked(self.epoch),
-            Kind::HashTable(table) => table.mark_bit().is_marked(self.epoch),
-            Kind::CharTable(table) => table.mark_bit().is_marked(self.epoch),
-            Kind::SubCharTable(table) => table.mark_bit().is_marked(self.epoch),
-            Kind::Frame(frame) => frame.mark_bit().is_marked(self.epoch),
-            Kind::Terminal(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Window(window) => window.mark_bit().is_marked(self.epoch),
-            Kind::SymbolWithPos(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
-            Kind::LispRecord(record) => record.mark_bit().is_marked(self.epoch),
-            Kind::BoolVector(vector) => vector.mark_bit().is_marked(self.epoch),
-            Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
+            Kind::Vector(value) => value.mark_bit().is_marked(),
+            Kind::Closure(value) => value.mark_bit().is_marked(),
+            Kind::NativeFunction(value) => value.mark_bit().is_marked(),
+            Kind::NativeCompUnit(value) => value.mark_bit().is_marked(),
+            Kind::Buffer(value) => value.mark_bit().is_marked(),
+            Kind::Marker(marker) => marker.mark_bit().is_marked(),
+            Kind::Overlay(overlay) => overlay.mark_bit().is_marked(),
+            Kind::HashTable(table) => table.mark_bit().is_marked(),
+            Kind::CharTable(table) => table.mark_bit().is_marked(),
+            Kind::SubCharTable(table) => table.mark_bit().is_marked(),
+            Kind::Frame(frame) => frame.mark_bit().is_marked(),
+            Kind::Terminal(value) => value.mark_bit().is_marked(),
+            Kind::Window(window) => window.mark_bit().is_marked(),
+            Kind::SymbolWithPos(value) => value.mark_bit().is_marked(),
+            Kind::Record(record) => record.mark_bit().is_marked(),
+            Kind::LispRecord(record) => record.mark_bit().is_marked(),
+            Kind::BoolVector(vector) => vector.mark_bit().is_marked(),
+            Kind::Finalizer(object) => object.mark_bit().is_marked(),
         }
     }
 
@@ -4998,29 +4998,29 @@ impl LispReachability {
     fn mark_object(&mut self, value: &Value) -> bool {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => false,
-            Kind::BigInteger(value) => value.mark_bit().mark(self.epoch),
+            Kind::BigInteger(value) => value.mark_bit().mark(),
             Kind::Float(value) => value.mark_bit().mark(),
             Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
             Kind::Symbol(symbol) => symbol.mark(self.epoch),
             Kind::Cons(value) => value.mark_bit().mark(),
-            Kind::Vector(value) => value.mark_bit().mark(self.epoch),
-            Kind::Closure(value) => value.mark_bit().mark(self.epoch),
-            Kind::NativeFunction(value) => value.mark_bit().mark(self.epoch),
-            Kind::NativeCompUnit(value) => value.mark_bit().mark(self.epoch),
-            Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
-            Kind::Marker(marker) => marker.mark_bit().mark(self.epoch),
-            Kind::Overlay(overlay) => overlay.mark_bit().mark(self.epoch),
-            Kind::HashTable(table) => table.mark_bit().mark(self.epoch),
-            Kind::CharTable(table) => table.mark_bit().mark(self.epoch),
-            Kind::SubCharTable(table) => table.mark_bit().mark(self.epoch),
-            Kind::Frame(frame) => frame.mark_bit().mark(self.epoch),
-            Kind::Terminal(value) => value.mark_bit().mark(self.epoch),
-            Kind::Window(window) => window.mark_bit().mark(self.epoch),
-            Kind::SymbolWithPos(value) => value.mark_bit().mark(self.epoch),
-            Kind::Record(record) => record.mark_bit().mark(self.epoch),
-            Kind::LispRecord(record) => record.mark_bit().mark(self.epoch),
-            Kind::BoolVector(vector) => vector.mark_bit().mark(self.epoch),
-            Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
+            Kind::Vector(value) => value.mark_bit().mark(),
+            Kind::Closure(value) => value.mark_bit().mark(),
+            Kind::NativeFunction(value) => value.mark_bit().mark(),
+            Kind::NativeCompUnit(value) => value.mark_bit().mark(),
+            Kind::Buffer(value) => value.mark_bit().mark(),
+            Kind::Marker(marker) => marker.mark_bit().mark(),
+            Kind::Overlay(overlay) => overlay.mark_bit().mark(),
+            Kind::HashTable(table) => table.mark_bit().mark(),
+            Kind::CharTable(table) => table.mark_bit().mark(),
+            Kind::SubCharTable(table) => table.mark_bit().mark(),
+            Kind::Frame(frame) => frame.mark_bit().mark(),
+            Kind::Terminal(value) => value.mark_bit().mark(),
+            Kind::Window(window) => window.mark_bit().mark(),
+            Kind::SymbolWithPos(value) => value.mark_bit().mark(),
+            Kind::Record(record) => record.mark_bit().mark(),
+            Kind::LispRecord(record) => record.mark_bit().mark(),
+            Kind::BoolVector(vector) => vector.mark_bit().mark(),
+            Kind::Finalizer(object) => object.mark_bit().mark(),
         }
     }
 
@@ -5074,8 +5074,9 @@ impl LispReachability {
                 self.enqueue(&cell.car.get());
             }
             Kind::Vector(vector) => {
-                // Slot by slot, in place.
-                for child in vector.slots() {
+                // Slot by slot, in place; a large vector's size word
+                // carries its mark by now (lisp.h's gc_asize).
+                for child in vector.gc_slots() {
                     self.enqueue(&child);
                 }
             }

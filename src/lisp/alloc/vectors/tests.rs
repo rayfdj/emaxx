@@ -15,11 +15,10 @@ fn vector_allocations_have_word_sized_footprints() {
         .collect();
     println!("vector footprints (slots, bytes): {measured:?}");
     println!(
-        "vector metadata: block={} bitmap={} usable={} large_mark={} free_lists={}",
+        "vector metadata: block={} bitmap={} usable={} free_lists={}",
         VECTOR_BLOCK_SIZE,
         std::mem::size_of::<VectorBlockMarks>(),
         VECTOR_BLOCK_BYTES,
-        LARGE_MARK_BYTES,
         std::mem::size_of_val(&FREE_LISTS),
     );
     for (len, bytes) in measured {
@@ -33,7 +32,7 @@ fn vector_word_offsets_survive_mark_bitmap_boundaries() {
     let mut environment = Env::new();
     let mut roots = crate::lisp::alloc::RootedVec::new();
     // Repeated three-word allocations visit odd word offsets. Larger
-    // vectors exercise split free lists and separate marks.
+    // vectors exercise split free lists and the marks in their headers.
     let lengths = [2, 2, 2, 2, 4, 6, 1, 250, 251, 252, 511];
     let mixed_count = 660;
     // Two roughly half-block objects can leave no object start in the last
@@ -83,15 +82,23 @@ fn vector_word_offsets_survive_mark_bitmap_boundaries() {
                 odd_offsets += usize::from((address / WORD_SIZE) % 2 == 1);
                 bitmap_words.insert(bit / usize::BITS as usize);
             }
-            VectorMarkStorage::Separate(mark) => {
-                assert_eq!(std::ptr::from_ref(mark) as usize, address + bytes);
+            VectorMarkStorage::Header(header) => {
+                // The mark is the header's own ARRAY_MARK_FLAG: a large
+                // vector is made without it, and nothing follows its
+                // last slot.
+                assert_eq!(std::ptr::from_ref(header) as usize, address);
+                assert!(bytes > VBLOCK_BYTES_MAX);
+                assert_eq!(header.size.get(), len);
                 assert_eq!(
                     live_large_vector_holding(address, address + len * WORD_SIZE),
                     Some(vector.0.as_ptr()),
                 );
+                assert_eq!(live_large_vector_holding(address, address + bytes), None);
             }
             VectorMarkStorage::Dump(_) => panic!("a heap vector marked in the dump's bits"),
+            VectorMarkStorage::Pure => panic!("a vector with slots taken for the empty one"),
         }
+        assert!(!vector.mark_bit().is_marked(), "a vector is made unmarked");
         vector.set(0, value);
         roots.push(value);
         if index + 1 >= mixed_count && bitmap_words.len() == VECTOR_MARK_WORDS {
@@ -125,6 +132,193 @@ fn vector_word_offsets_survive_mark_bitmap_boundaries() {
                 );
             }
         }
+    }
+}
+
+/// A table with weak keys, held by the variable NAME: its count tells
+/// which of the objects put in it a collection kept.
+fn weak_witnesses(interpreter: &mut crate::lisp::eval::Interpreter, name: &str) -> Value {
+    let table = crate::lisp::json::make_hash_table(interpreter, "eq", Vec::new());
+    let Kind::HashTable(id) = table.kind() else {
+        panic!("a hash table");
+    };
+    id.set_weakness(1);
+    interpreter.set_global_binding(name, table);
+    table
+}
+
+fn witness(interpreter: &mut crate::lisp::eval::Interpreter, table: &Value, object: Value) {
+    crate::lisp::primitives::call(
+        interpreter,
+        "puthash",
+        &[object, Value::T, *table],
+        &mut Env::new(),
+    )
+    .expect("witness the object");
+}
+
+// The objects a test expects a collection to free are made in frames of
+// their own, which `clobber_stack' then overwrites: no word of the test's
+// own frame names them.
+#[inline(never)]
+fn witnesses_after_collection(
+    interpreter: &mut crate::lisp::eval::Interpreter,
+    table: &Value,
+) -> usize {
+    crate::lisp::alloc::clobber_stack();
+    let Kind::HashTable(id) = table.kind() else {
+        panic!("a hash table");
+    };
+    crate::lisp::primitives::call(interpreter, "garbage-collect", &[], &mut Env::new())
+        .expect("collect");
+    id.count()
+}
+
+/// A vector too large for a vector block.
+const LARGE_SLOTS: usize = VBLOCK_BYTES_MAX / WORD_SIZE + 48;
+
+#[inline(never)]
+fn keep_large_vector(
+    interpreter: &mut crate::lisp::eval::Interpreter,
+    table: &Value,
+    holder: &str,
+) {
+    let vector = Value::vector(std::iter::repeat_n(Value::Integer(7), LARGE_SLOTS));
+    let Kind::Vector(handle) = vector.kind() else {
+        unreachable!("constructed vector")
+    };
+    assert!(matches!(handle.mark_bit().0, VectorMarkStorage::Header(_)));
+    witness(interpreter, table, vector);
+    interpreter.set_global_binding(holder, vector);
+}
+
+#[test]
+fn the_sweep_that_keeps_a_large_vector_clears_its_mark() {
+    // alloc.c:sweep_vectors, of a large vector: `if (XVECTOR_MARKED_P
+    // (vector)) { XUNMARK_VECTOR (vector); ...' -- the vector it keeps
+    // is unmarked again, so the next collection frees it once nothing
+    // holds it, and Lisp reads its length without the flag meanwhile.
+    let _runtime = crate::Runtime::lock();
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let table = weak_witnesses(&mut interpreter, "large-vector-witnesses");
+    keep_large_vector(&mut interpreter, &table, "large-vector-kept");
+    for _ in 0..2 {
+        assert_eq!(
+            witnesses_after_collection(&mut interpreter, &table),
+            1,
+            "the large vector a variable holds is kept"
+        );
+        assert!(
+            crate::lisp::alloc::every_mark_bit_clear(),
+            "the sweep left no large vector marked"
+        );
+        assert_eq!(
+            crate::test_support::eval_lisp(
+                &mut interpreter,
+                &mut Env::new(),
+                "(list (length large-vector-kept) (aref large-vector-kept (1- (length large-vector-kept))))",
+            )
+            .expect("the kept vector")
+            .to_string(),
+            format!("({LARGE_SLOTS} 7)")
+        );
+    }
+    interpreter.set_global_binding("large-vector-kept", Value::Nil);
+    assert_eq!(
+        witnesses_after_collection(&mut interpreter, &table),
+        0,
+        "the large vector nothing holds is freed by the next collection"
+    );
+}
+
+#[inline(never)]
+fn hold_symbol_in_large_vector(
+    interpreter: &mut crate::lisp::eval::Interpreter,
+    table: &Value,
+    holder: &str,
+) {
+    let symbol = crate::lisp::primitives::call(
+        interpreter,
+        "make-symbol",
+        &[Value::String("held".into())],
+        &mut Env::new(),
+    )
+    .expect("make a symbol");
+    witness(interpreter, table, symbol);
+    let vector = Value::vector(std::iter::repeat_n(Value::Nil, LARGE_SLOTS));
+    let Kind::Vector(handle) = vector.kind() else {
+        unreachable!("constructed vector")
+    };
+    handle.set(LARGE_SLOTS - 1, symbol);
+    interpreter.set_global_binding(holder, vector);
+}
+
+#[test]
+fn a_marked_large_vector_s_last_slot_is_traced() {
+    // alloc.c:mark_object reads a vector's size, marks it and pushes its
+    // contents with that size.  The trace here reads the slots of a
+    // vector already marked, whose size word then carries
+    // ARRAY_MARK_FLAG: it reads them by lisp.h's gc_asize, every one,
+    // in each collection.
+    let _runtime = crate::Runtime::lock();
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let table = weak_witnesses(&mut interpreter, "large-vector-slot-witnesses");
+    hold_symbol_in_large_vector(&mut interpreter, &table, "large-vector-holder");
+    for _ in 0..2 {
+        assert_eq!(
+            witnesses_after_collection(&mut interpreter, &table),
+            1,
+            "the symbol only the large vector's last slot holds is kept"
+        );
+    }
+    assert_eq!(
+        crate::test_support::eval_lisp(
+            &mut interpreter,
+            &mut Env::new(),
+            "(symbol-name (aref large-vector-holder (1- (length large-vector-holder))))",
+        )
+        .expect("the held symbol")
+        .to_string(),
+        "\"held\""
+    );
+    interpreter.set_global_binding("large-vector-holder", Value::Nil);
+    assert_eq!(
+        witnesses_after_collection(&mut interpreter, &table),
+        0,
+        "the symbol goes with the vector that held it"
+    );
+}
+
+#[test]
+fn the_empty_vector_is_never_marked_and_always_survives() {
+    // alloc.c's zero_vector is make_pure_vector (0): mark_object returns
+    // at PURE_P before any mark, and survives_gc_p answers true for a
+    // pure object, so a weak table keeps it as a key whether or not
+    // anything else holds it; no collection writes its header.
+    let _runtime = crate::Runtime::lock();
+    let mut interpreter = crate::lisp::eval::Interpreter::new();
+    let table = weak_witnesses(&mut interpreter, "empty-vector-witnesses");
+    let empty = Value::vector([]);
+    let Kind::Vector(vector) = empty.kind() else {
+        unreachable!("constructed vector")
+    };
+    assert!(matches!(vector.mark_bit().0, VectorMarkStorage::Pure));
+    assert!(
+        vector.mark_bit().is_marked(),
+        "survives_gc_p of a pure object"
+    );
+    assert!(
+        !vector.mark_bit().mark(),
+        "mark_object leaves a pure object"
+    );
+    witness(&mut interpreter, &table, empty);
+    for _ in 0..2 {
+        assert_eq!(witnesses_after_collection(&mut interpreter, &table), 1);
+        assert_eq!(vector.len(), 0);
+        let Kind::Vector(again) = Value::vector([]).kind() else {
+            unreachable!("constructed vector")
+        };
+        assert!(again.ptr_eq(&vector), "every empty vector is the one");
     }
 }
 
@@ -186,7 +380,7 @@ fn native_subr_allocation_has_gnu_fields_and_direct_tagged_identity() {
     unsafe {
         assert_eq!((*header).tag(), VectorTag::Subr);
         assert_eq!((*header).nbytes(), 88);
-        assert_eq!((*header).size & PSEUDOVECTOR_SIZE_MASK, 0);
+        assert_eq!((*header).size.get() & PSEUDOVECTOR_SIZE_MASK, 0);
         assert!(subr_is_allocated(header));
         let bytes = header.cast::<u8>();
         assert_eq!(
@@ -311,7 +505,7 @@ fn native_unit_allocation_has_actual_gnu_fields_and_direct_tagged_identity() {
     unsafe {
         assert_eq!((*header).tag(), VectorTag::NativeCompUnit);
         assert_eq!((*header).nbytes(), 88);
-        assert_eq!((*header).size & PSEUDOVECTOR_SIZE_MASK, 7);
+        assert_eq!((*header).size.get() & PSEUDOVECTOR_SIZE_MASK, 7);
         let bytes = header.cast::<u8>();
         for (index, field) in fields.into_iter().enumerate() {
             assert_eq!(
@@ -451,9 +645,12 @@ fn window_object_has_the_pvec_window_header_and_its_slots_inline() {
         assert_eq!((WINDOW_LISP_WORDS, WINDOW_VECTOR_WORDS), (25, 67));
         assert_eq!((*header).nbytes(), 544);
         assert_eq!((*header).nbytes(), (1 + WINDOW_VECTOR_WORDS) * WORD_SIZE);
-        assert_eq!((*header).size & PSEUDOVECTOR_SIZE_MASK, WINDOW_LISP_WORDS);
         assert_eq!(
-            ((*header).size >> PSEUDOVECTOR_SIZE_BITS) & PSEUDOVECTOR_SIZE_MASK,
+            (*header).size.get() & PSEUDOVECTOR_SIZE_MASK,
+            WINDOW_LISP_WORDS
+        );
+        assert_eq!(
+            ((*header).size.get() >> PSEUDOVECTOR_SIZE_BITS) & PSEUDOVECTOR_SIZE_MASK,
             WINDOW_VECTOR_WORDS - WINDOW_LISP_WORDS
         );
         assert!(value_of(header).eq_value(value));

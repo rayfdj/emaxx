@@ -2144,7 +2144,8 @@ pub(crate) fn cons_is_mapped(address: usize) -> bool {
 }
 
 /// For tests: whether every mark bit of the cons, float and vector blocks
-/// is clear, as a collection's sweeps leave them.
+/// is clear and no large vector's header carries ARRAY_MARK_FLAG, as a
+/// collection's sweeps leave them.
 #[cfg(test)]
 pub(crate) fn every_mark_bit_clear() -> bool {
     // The blocks are the runtime's (`live_conses').
@@ -2384,25 +2385,25 @@ fn verify_marking(epoch: u32) {
 /// The mark state of a vectorlike the value names, for the checks.
 fn vectorlike_is_marked(value: &super::types::Value, epoch: u32) -> Option<bool> {
     match value.kind() {
-        Kind::Vector(vector) => Some(vector.mark_bit().is_marked(epoch)),
-        Kind::Closure(lambda) => Some(lambda.mark_bit().is_marked(epoch)),
-        Kind::NativeFunction(function) => Some(function.mark_bit().is_marked(epoch)),
-        Kind::NativeCompUnit(unit) => Some(unit.mark_bit().is_marked(epoch)),
-        Kind::Buffer(buffer) => Some(buffer.mark_bit().is_marked(epoch)),
-        Kind::Marker(marker) => Some(marker.mark_bit().is_marked(epoch)),
-        Kind::Overlay(overlay) => Some(overlay.mark_bit().is_marked(epoch)),
+        Kind::Vector(vector) => Some(vector.mark_bit().is_marked()),
+        Kind::Closure(lambda) => Some(lambda.mark_bit().is_marked()),
+        Kind::NativeFunction(function) => Some(function.mark_bit().is_marked()),
+        Kind::NativeCompUnit(unit) => Some(unit.mark_bit().is_marked()),
+        Kind::Buffer(buffer) => Some(buffer.mark_bit().is_marked()),
+        Kind::Marker(marker) => Some(marker.mark_bit().is_marked()),
+        Kind::Overlay(overlay) => Some(overlay.mark_bit().is_marked()),
         Kind::StringObject(state) => Some(state.mark_bit().is_marked(epoch)),
-        Kind::BigInteger(integer) => Some(integer.mark_bit().is_marked(epoch)),
-        Kind::CharTable(table) => Some(table.mark_bit().is_marked(epoch)),
-        Kind::HashTable(table) => Some(table.mark_bit().is_marked(epoch)),
-        Kind::SubCharTable(table) => Some(table.mark_bit().is_marked(epoch)),
-        Kind::Frame(frame) => Some(frame.mark_bit().is_marked(epoch)),
-        Kind::Terminal(terminal) => Some(terminal.mark_bit().is_marked(epoch)),
-        Kind::Window(window) => Some(window.mark_bit().is_marked(epoch)),
-        Kind::Record(record) => Some(record.mark_bit().is_marked(epoch)),
-        Kind::LispRecord(record) => Some(record.mark_bit().is_marked(epoch)),
-        Kind::Finalizer(finalizer) => Some(finalizer.mark_bit().is_marked(epoch)),
-        Kind::SymbolWithPos(positioned) => Some(positioned.mark_bit().is_marked(epoch)),
+        Kind::BigInteger(integer) => Some(integer.mark_bit().is_marked()),
+        Kind::CharTable(table) => Some(table.mark_bit().is_marked()),
+        Kind::HashTable(table) => Some(table.mark_bit().is_marked()),
+        Kind::SubCharTable(table) => Some(table.mark_bit().is_marked()),
+        Kind::Frame(frame) => Some(frame.mark_bit().is_marked()),
+        Kind::Terminal(terminal) => Some(terminal.mark_bit().is_marked()),
+        Kind::Window(window) => Some(window.mark_bit().is_marked()),
+        Kind::Record(record) => Some(record.mark_bit().is_marked()),
+        Kind::LispRecord(record) => Some(record.mark_bit().is_marked()),
+        Kind::Finalizer(finalizer) => Some(finalizer.mark_bit().is_marked()),
+        Kind::SymbolWithPos(positioned) => Some(positioned.mark_bit().is_marked()),
         _ => None,
     }
 }

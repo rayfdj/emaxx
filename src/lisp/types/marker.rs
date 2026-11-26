@@ -285,8 +285,8 @@ impl BufferRef {
     }
 
     /// alloc.c:sweep_buffers unlinks weak chain entries before sweep_vectors.
-    pub(crate) fn sweep_markers(&self, epoch: u32) {
-        if !self.mark_bit().is_marked(epoch) {
+    pub(crate) fn sweep_markers(&self) {
+        if !self.mark_bit().is_marked() {
             self.detach_markers();
             return;
         }
@@ -296,7 +296,7 @@ impl BufferRef {
         }
         let mut previous: Option<MarkerRef> = None;
         for marker in self.markers() {
-            if marker.mark_bit().is_marked(epoch) {
+            if marker.mark_bit().is_marked() {
                 previous = Some(marker);
             } else {
                 if let Some(previous) = previous {

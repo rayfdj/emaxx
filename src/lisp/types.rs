@@ -100,12 +100,12 @@ pub(crate) fn begin_mark_epoch() -> u32 {
     epoch
 }
 
-/// alloc.c's mark bit, on the object: a string, a symbol or a vector too
-/// large for a vector block is marked when it carries the current
-/// collection's epoch, so the mark phase writes a word into the object
-/// instead of inserting its address into a table, and no pass clears the
-/// bits afterwards.  (A cons, a float and a vector in a block are marked in
-/// their block's bitmap, which the sweep clears.)
+/// alloc.c's mark bit, on the object: a string or a symbol is marked when
+/// it carries the current collection's epoch, so the mark phase writes a
+/// word into the object instead of inserting its address into a table, and
+/// no pass clears the bits afterwards.  (A cons, a float and a vector in a
+/// block are marked in their block's bitmap and a large vector by its
+/// header's ARRAY_MARK_FLAG, which the sweeps clear.)
 #[derive(Debug, Default)]
 pub(crate) struct MarkBit(Cell<u32>);
 

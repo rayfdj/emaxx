@@ -168,7 +168,11 @@ impl HashTableRef {
         unsafe {
             raw.write(LispHashTable {
                 header: VectorHeader {
-                    size: VectorHeader::pseudovector_slots_word(VectorTag::HashTable, bytes, 0),
+                    size: Cell::new(VectorHeader::pseudovector_slots_word(
+                        VectorTag::HashTable,
+                        bytes,
+                        0,
+                    )),
                 },
                 index: Cell::new(std::ptr::addr_of!(EMPTY_INDEX).cast_mut().cast()),
                 hash: Cell::new(std::ptr::null_mut()),

@@ -6607,7 +6607,7 @@ impl NativeHeap {
             before_marks[2],
             "a vector made in a collection"
         );
-        let free_vector_slots = crate::lisp::alloc::sweep_vectors(epoch);
+        let free_vector_slots = crate::lisp::alloc::sweep_vectors();
         crate::lisp::eval::purge_freed_records_in_live_states(interpreter);
         crate::lisp::types::sweep_symbol_cells(epoch);
         let free_strings = crate::lisp::alloc::sweep_strings(epoch);

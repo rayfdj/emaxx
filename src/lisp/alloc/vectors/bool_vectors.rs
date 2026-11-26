@@ -45,8 +45,9 @@ impl BoolVectorRef {
         crate::lisp::native_comp::note_lisp_allocation(nbytes);
         // SAFETY: fresh storage for the header, the length and the words.
         unsafe {
-            (*header).size =
-                PSEUDOVECTOR_FLAG | ((VectorTag::BoolVector as usize) << PSEUDOVECTOR_AREA_BITS);
+            (*header).size = Cell::new(
+                PSEUDOVECTOR_FLAG | ((VectorTag::BoolVector as usize) << PSEUDOVECTOR_AREA_BITS),
+            );
             let body = payload(header).cast::<usize>();
             body.write(nbits);
             std::ptr::write_bytes(body.add(1), 0, bool_vector_words(nbits));
