@@ -5091,6 +5091,10 @@ impl LispReachability {
                 if let Some(base) = buffer.base_buffer() {
                     self.enqueue(&Value::Buffer(base));
                 }
+                // Its ts_parser_list.
+                interp.visit_treesit_buffer_parsers(buffer.id, &mut |parser| {
+                    self.enqueue(parser);
+                });
             }
             Kind::Terminal(terminal) => {
                 terminal.visit_lisp_values(&mut |child| self.enqueue(child));
@@ -5182,12 +5186,17 @@ impl LispReachability {
                         self.enqueue(value);
                     }
                 }
-                // A mutex's and a condition variable's name are theirs too.
+                // A mutex's and a condition variable's name are theirs too,
+                // as a tree-sitter parser's and query's Lisp words are.
                 match record.kind {
                     RecordKind::Mutex => self.enqueue(&interp.mutex_name(record.id)),
                     RecordKind::ConditionVariable => {
                         self.enqueue(&interp.condition_variable_name(record.id));
                     }
+                    RecordKind::TreeSitterParser | RecordKind::TreeSitterCompiledQuery => interp
+                        .visit_treesit_lisp_words(record.kind, record.id, &mut |child| {
+                            self.enqueue(child);
+                        }),
                     _ => {}
                 }
             }

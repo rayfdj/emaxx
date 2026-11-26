@@ -462,7 +462,12 @@ impl Interpreter {
     }
 
     fn create_treesit_node(&mut self, parser_id: u64, node_id: usize, generation: u64) -> Value {
-        let node = self.create_pseudovector(RecordKind::TreeSitterNode, "treesit-node", Vec::new());
+        // treesit.h's Lisp_TS_Node keeps its parser as its one Lisp word,
+        // marked with it: the record's slot, of the record PARSER_ID
+        // names.
+        let parser = self.record_value(parser_id);
+        let node =
+            self.create_pseudovector(RecordKind::TreeSitterNode, "treesit-node", vec![parser]);
         let Kind::Record(record_id) = node.kind() else {
             unreachable!("Tree-sitter nodes use opaque record identities");
         };
@@ -473,6 +478,47 @@ impl Interpreter {
             generation,
         });
         Value::Record(record_id)
+    }
+
+    /// The Lisp words of the tree-sitter parser or query ID, which
+    /// mark_vectorlike traces with it: a parser's language, buffer, tag,
+    /// last set ranges and after-change functions, a query's language and
+    /// source (treesit.h's Lisp_TS_Parser and Lisp_TS_Query).  A node's
+    /// parser is its record's slot.
+    pub(crate) fn visit_treesit_lisp_words(
+        &self,
+        kind: RecordKind,
+        id: u64,
+        visit: &mut impl FnMut(&Value),
+    ) {
+        match kind {
+            RecordKind::TreeSitterParser => {
+                if let Some(parser) = self.treesit_parsers.iter().find(|p| p.record_id == id) {
+                    visit(&parser.language);
+                    visit(&parser.buffer);
+                    visit(&parser.tag);
+                    visit(&parser.included_ranges);
+                    parser.notifiers.iter().for_each(&mut *visit);
+                }
+            }
+            RecordKind::TreeSitterCompiledQuery => {
+                if let Some(query) = self.treesit_queries.iter().find(|q| q.record_id == id) {
+                    visit(&query.language);
+                    visit(&query.source);
+                }
+            }
+            _ => {}
+        }
+    }
+
+    /// buffer.h's ts_parser_list of the buffer ID, which mark_buffer
+    /// traces with it: the parsers made for it and not deleted.
+    pub(crate) fn visit_treesit_buffer_parsers(&self, id: u64, visit: &mut impl FnMut(&Value)) {
+        for parser in &self.treesit_parsers {
+            if !parser.deleted && parser.list_buffer_id == id {
+                visit(&self.record_value(parser.record_id));
+            }
+        }
     }
 
     pub(crate) fn treesit_node_state(&self, value: &Value) -> Option<&TreeSitterNodeState> {
