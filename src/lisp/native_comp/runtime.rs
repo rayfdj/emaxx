@@ -4197,20 +4197,24 @@ fn funcall_function_cell(
 }
 
 /// `invoke_plain_native_funcall' for the words of a native Ffuncall call,
-/// the function first: the call's word, or the error remembered and 0.
-/// None, with nothing changed, for `invoke_native_funcall'.
+/// the function first, and for a byte-code callee, which that leaves,
+/// `invoke_plain_bytecode_funcall' (funcall_general's SUBRP, then its
+/// CLOSUREP): the call's word, or the error remembered and 0.  None,
+/// with nothing changed, for `invoke_native_funcall'.
 #[inline(always)]
 fn plain_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Option<NativeWord> {
     let (&function_word, call_arguments) = arguments.split_first()?;
+    // SAFETY: the caller's live word.
+    let function = unsafe { Value::from_word(function_word) };
     // SAFETY: the activation's pointees outlive this call.
     let result = invoke_plain_native_funcall(
         unsafe { &mut *active.interpreter },
         unsafe { &mut *active.runtime },
         unsafe { &mut *active.environment.get() },
-        // SAFETY: the caller's live word.
-        unsafe { Value::from_word(function_word) },
+        function,
         call_arguments,
-    )?;
+    )
+    .or_else(|| invoke_plain_bytecode_funcall(active, function, call_arguments))?;
     Some(result.unwrap_or_else(|error| {
         remember_helper_error(active, error);
         0
@@ -4335,6 +4339,64 @@ fn invoke_plain_builtin_funcall(
     };
     interpreter.leave_plain_funcall(depth);
     Some(result)
+}
+
+/// eval.c:Ffuncall -> funcall_general -> funcall_lambda -> exec_byte_code
+/// of a byte-code closure (FUNCTION, or the one in its function cell)
+/// under the conditions of `invoke_plain_native_funcall', as
+/// `plain_funcall' runs one for Rust: the frame recorded, the closure's
+/// activation entered in this frame (`funcall_closure_in_place', which
+/// counts the arguments as funcall_lambda does), then Ffuncall's
+/// `backtrace_debug_on_exit (count)' and the frame's pop.  The callee can
+/// run Lisp, which can switch threads, so the interpreter and the
+/// environment are taken from the activation for each step and no
+/// reference to them is kept across the call.  Out of line, as
+/// exec_byte_code is below Ffuncall, so that the native and subr arms
+/// keep the registers they had.  None, with nothing changed, for any
+/// other callee.
+#[inline(never)]
+fn invoke_plain_bytecode_funcall(
+    active: &ActiveCall,
+    function: Value,
+    arguments: &[NativeWord],
+) -> Option<Result<NativeWord, LispError>> {
+    let name = function.symbol_cell();
+    let callee = match name {
+        Some(name) => name.cell().function.get(),
+        None => function,
+    };
+    let closure = callee
+        .closure_ref()
+        .filter(|closure| closure.is_bytecode())?;
+    // SAFETY: the activation's pointees outlive this call.
+    if !unsafe { &*active.interpreter }.plain_bcall_entry(name)
+        || !unsafe { &*active.runtime }.heap.collection_cannot_be_due()
+    {
+        return None;
+    }
+    let depth = unsafe { &mut *active.interpreter }.enter_plain_native_funcall(function, arguments);
+    // SAFETY: Ffuncall's argument vector belongs to the native caller,
+    // which keeps each word live until the call returns.
+    let values = unsafe { live_values(arguments) };
+    let result = crate::lisp::bytecode::vm::funcall_closure_in_place(
+        unsafe { &mut *active.interpreter },
+        closure,
+        values,
+        unsafe { &mut *active.environment.get() },
+    );
+    // As `plain_funcall's closure arm: the activation leaves the call's
+    // record the innermost, which a value not marked for the debugger
+    // takes off at once.
+    if let Ok(value) = result
+        && unsafe { &mut *active.interpreter }.leave_innermost_funcall(depth)
+    {
+        return Some(Ok(value.word()));
+    }
+    // The exit debugger, which a marked record calls, runs Lisp too.
+    let result = unsafe { &mut *active.interpreter }
+        .settle_call_result(depth, result, unsafe { &mut *active.environment.get() });
+    unsafe { &mut *active.interpreter }.leave_plain_funcall(depth);
+    Some(result.map(|value| value.word()))
 }
 
 /// eval.c:Ffuncall's call_debugger with (exit VALUE) before it drops its
