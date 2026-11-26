@@ -5120,9 +5120,13 @@ fn native_proper_list_length(active: &ActiveCall, list: NativeWord) -> Result<Op
         remaining_low = remaining_low.wrapping_sub(1);
         let mut compare_tortoise = remaining_low != 0;
         if !compare_tortoise {
-            runtime_maybe_quit();
-            if native_call_has_pending_error(active) {
-                return Err(());
+            // lisp.h:maybe_quit: probably_quit only for a quit or a
+            // signal pending.
+            if !unsafe { &*active.interpreter }.quit_check_clear() {
+                runtime_maybe_quit();
+                if native_call_has_pending_error(active) {
+                    return Err(());
+                }
             }
             remaining_high = remaining_high.wrapping_sub(1);
             compare_tortoise = remaining_high > 0;
