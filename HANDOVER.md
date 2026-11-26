@@ -241,6 +241,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   that is not its own; C5.3's gate, redone, was passed by the review
   in seven new ways and is held back again, and whether the item
   closes without it is the owner's to decide.
+  Round 401: A2.5's aliasing half begun from a census; no collection
+  runs while a quit is handled, as eval.c; four native helpers keep
+  no local reference across a call into Lisp; the references passed
+  as arguments along the native call path are the next round's.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -21717,6 +21721,94 @@ setup_process_coding_systems's check now refuses). A 13-form
   is folded into another here: the inventory of the native entries,
   which a library test checks, is updated in the commit that gives
   `apply' its entry, so that no landed commit fails that test.
+- **Round 401: no collection while a quit is handled, four native
+  helpers that keep no local reference across a call into Lisp, and a
+  census of what Rust's aliasing rules forbid here (M2, A2.5, the first
+  stages of the plan of aliasing and lifetimes; none closed).**  **The
+  plan**: /home/user/emaxx-work/m2/aliasing-plan.md is the working copy
+  (stages A0 to A7) and /home/user/emaxx-work/m2/aliasing/census-a0.md
+  its census.  GNU's C has no rule that a pointer be the only path to
+  its memory; Rust's references have, in both of its aliasing models,
+  and the census asked where the unsafe code here breaks it.  **Found
+  sound as it stands**: no frame holds a reference into an interpreter's
+  state across a thread's suspension (there is one suspension point, and
+  every such reference is made through the shell and ends at the call);
+  and the collector's views of another interpreter's state are defined
+  in both models, since the owner holds a state by the one pointer its
+  allocation gave, the registry stores that pointer's address, and every
+  reference of the owner or the collector is made from it for a
+  statement.  What no type checks is that the other interpreter runs no
+  Lisp; a collection now asserts, in checked builds, that its thread
+  holds the runtime and that the viewed state is at depth 0.  **A bug
+  the census found**: of 24 Rust structures that hold a slice across
+  something that can collect, one was real.  The regexp matcher reads a
+  string's data in place, and its quit check can enter the debugger;
+  eval.c's probably_quit inhibits the collection around
+  process_quit_flag as around the pending signals, and here only the
+  signals were covered, so a debugger that collected moved the string
+  under the match.  From Lisp: native code that sets `quit-flag' and
+  calls `string-match' got nil for a matching string, 8 times of 8,
+  where GNU answers 0.  It is fixed as in C.  **Lisp sees**, as in GNU:
+  `garbage-collect' called from a debugger, a handler or a kill-emacs
+  hook that a pending quit entered returns nil and collects nothing, and
+  the next allocation after it collects.  **The helpers**: all 62
+  functions of the native runtime that make a reference from the active
+  call's pointers were read.  Four kept a local one across a call that
+  runs Lisp and used it after (the native funcall, `get', the unbinding
+  of several entries, the sanitizer's assertion); each now ends it at
+  the call and makes it again, at no instruction's cost (a native
+  funcall 548.1 before and after).  **What that does not end**: the same
+  helpers, and the plain native funcall's two arms, the nested entry and
+  the unwinding, pass such references as arguments into calls that run
+  Lisp, where they are held for the whole call; and a helper nested
+  under the evaluator makes its references from the outer call's
+  pointer, which is foreign to the evaluator's frames between.  Those
+  are undefined when a thread is suspended underneath (and at once in
+  the stricter model), their fix is a change of how a native call's
+  context is passed, and it is the next round of this plan, which starts
+  from a measured prototype.  The four fixtures of the helpers park a
+  thread under exactly such an argument, and pass before and after: this
+  kind of fault shows only to a checker of the models, which needs a
+  nightly toolchain.  **Also**: the suspend trampoline's symbol is
+  global and hidden, so a library test binary links in the dev profile,
+  which it had not since the trampoline was written (CI builds the
+  gate's profile only); and two programs compared with GNU collect while
+  threads are parked in each of five waits, with native, interpreted and
+  byte-compiled workers, and inside three nested native calls.  **The
+  independent review** (the one question: does the round cheat or break
+  something) found every commit clean.  It compared this build, round
+  397's and GNU with a quit noticed at 19 sites (eval, funcall, the
+  waits, byte-code and native loops, the matchers, sort, mapcar, the
+  reader, format, file and process calls) and in a debugger for a quit,
+  a handler under `with-local-quit', a timer, a process filter, a Lisp
+  thread and `kill-emacs': GNU's answers here, where the build before
+  differed in every one.  It measured the helpers' probes unchanged,
+  found no correct path that trips the new assertion in a process (two
+  ways a test could: a clone copies the depth, and an uncaught nesting
+  error leaves it raised), agreed with the census's account of the
+  collector's views, and found no holder of a slice that the census
+  missed over walkers whose function collects and grows what they walk.
+  It asked for two changes, both made in the round: the first form of
+  the helpers' commit message claimed more than the change does, and the
+  two programs' first form compared a weak table's count that depends on
+  stale stack words and could not catch one of two overlapping scans
+  failing alone.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,694 passed, 0 failed, 2 ignored; cli
+  30, cli_parity 191, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 4 (three more: the helpers' fixtures,
+  the quit under a match, the collections under parked threads and
+  nested calls), package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementer's own run had one
+  failure that is not the round's and is recorded below: a cli case
+  hung once where a SIGTERM arrived before a blocking open, and passed
+  three times of three alone.  The round audit reports no hard
+  finding, 687 changed lines with 3 tests and 2 assertions added, and
+  no other note.  Two commits of the branch are folded into others
+  here: the stop's test landed with round 398, and the review's
+  strengthening of the two stress programs is in their own commit.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -25421,6 +25513,23 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 401 and its review), within the
+  plan's later stages or outside the round.**  One line each: a SIGTERM
+  that arrives before a blocking `open' is lost (the signal is recorded
+  and nothing tests it before the open), where GNU terminates from the
+  handler, and a pending fatal signal's work is run from the quit check
+  outside its inhibition of the collection; in a Lisp thread that is not
+  the main one a quit with `debug-on-quit' enters the debugger, where
+  GNU's does not unless `debug-on-signal' is set and the thread ends
+  with the quit; an uncaught nesting error at a top-level `eval' from
+  Rust leaves the evaluation depth raised by one; a quit's debugger can
+  still store into the subject string of a suspended match, as in C;
+  GNU's own `format' reads a relocated format string when
+  `print-unreadable-function' collects, where Emaxx prints the right
+  text; the leak tests of native code measure resident memory and are
+  sensitive to other tests' memory; the second stress program's first
+  form depended on compiler flags through stale stack words, which any
+  count of a weak table after a collection does.
 - **Found after the scope lock (round 400 and its review), within the
   plan's later stages or outside the round.**  One line each: Fapply
   pads a native-compiled function of more than eight parameters, a SUBRP
