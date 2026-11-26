@@ -20,7 +20,7 @@
 
 use super::types::{ConsCell, Kind, Value};
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
@@ -131,26 +131,35 @@ pub(crate) enum BlockKind {
 const BLOCK_KINDS: usize = 6;
 const _: () = assert!(BlockKind::String as usize == BLOCK_KINDS - 1);
 
+/// Where a registered block's cells come from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BlockOrigin {
+    /// Allocated for the heap.
+    Heap,
+    /// Allocated while an image loaded (see `IMAGE_REGION_OPEN'): its
+    /// objects are the image's rebuilt ones, swept but not counted.
+    Image,
+    /// The image's own bytes where the loader mapped them
+    /// (`adopt_image_cons_blocks', `adopt_image_string_blocks',
+    /// `vectors::adopt_image_vectors', `adopt_image_symbol_blocks'):
+    /// pdumper.c never frees its dump, so their storage is never given
+    /// back.
+    Mapped,
+}
+
 /// The registered blocks.
 struct BlockRegistry {
     /// Every block by start address, with its kind, for `mem_find'
     /// (alloc.c's mem tree, a red-black tree there; the map's lookup is
     /// the same order).
     all: BTreeMap<usize, BlockKind>,
-    /// Each kind's blocks by start address, each with whether an image
-    /// load registered it (see `IMAGE_REGION_OPEN'), for its sweep.
-    by_kind: [BTreeMap<usize, bool>; BLOCK_KINDS],
-    /// The image blocks that are the image's own bytes where the loader
-    /// mapped them (`adopt_image_cons_blocks', `adopt_image_string_blocks',
-    /// `vectors::adopt_image_vectors'): pdumper.c never frees its dump, so
-    /// their storage is never given back.
-    mapped: BTreeSet<usize>,
+    /// Each kind's blocks by start address, each with its origin.
+    by_kind: [BTreeMap<usize, BlockOrigin>; BLOCK_KINDS],
 }
 
 static BLOCKS: Mutex<BlockRegistry> = Mutex::new(BlockRegistry {
     all: BTreeMap::new(),
     by_kind: [const { BTreeMap::new() }; BLOCK_KINDS],
-    mapped: BTreeSet::new(),
 });
 
 /// alloc.c's `min_heap_address' and `max_heap_address': the lowest block
@@ -163,27 +172,22 @@ static HEAP_HIGH: AtomicUsize = AtomicUsize::new(0);
 
 /// alloc.c's `mem_insert' of a block of KIND and BYTES at START.
 fn register_block(start: usize, bytes: usize, kind: BlockKind) {
-    let image = IMAGE_REGION_OPEN.load(Ordering::Relaxed);
-    register_block_of(start, bytes, kind, image, false);
-}
-
-/// `register_block' of an image block (IMAGE), one of the image's own
-/// mapped bytes (MAPPED) or not.
-fn register_block_of(start: usize, bytes: usize, kind: BlockKind, image: bool, mapped: bool) {
+    let origin = if IMAGE_REGION_OPEN.load(Ordering::Relaxed) {
+        BlockOrigin::Image
+    } else {
+        BlockOrigin::Heap
+    };
     let mut blocks = BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     blocks.all.insert(start, kind);
-    blocks.by_kind[kind as usize].insert(start, image);
-    if mapped {
-        blocks.mapped.insert(start);
-    }
+    blocks.by_kind[kind as usize].insert(start, origin);
     drop(blocks);
     HEAP_LOW.fetch_min(start, Ordering::Relaxed);
     HEAP_HIGH.fetch_max(start + bytes, Ordering::Relaxed);
 }
 
-/// `register_block_of' of each of the image's mapped blocks of KIND, a
+/// alloc.c's `mem_insert' of each of the image's mapped blocks of KIND, a
 /// (start, bytes) each, under one lock: the registry's maps take them
 /// built in order, where an insertion each walked them for its place.
 pub(crate) fn register_image_blocks(kind: BlockKind, blocks: &[(usize, usize)]) {
@@ -200,10 +204,11 @@ pub(crate) fn register_image_blocks(kind: BlockKind, blocks: &[(usize, usize)]) 
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut all = blocks.iter().map(|&(start, _)| (start, kind)).collect();
     registry.all.append(&mut all);
-    let mut by_kind = blocks.iter().map(|&(start, _)| (start, true)).collect();
+    let mut by_kind = blocks
+        .iter()
+        .map(|&(start, _)| (start, BlockOrigin::Mapped))
+        .collect();
     registry.by_kind[kind as usize].append(&mut by_kind);
-    let mut mapped = blocks.iter().map(|&(start, _)| start).collect();
-    registry.mapped.append(&mut mapped);
     drop(registry);
     HEAP_LOW.fetch_min(low, Ordering::Relaxed);
     HEAP_HIGH.fetch_max(high, Ordering::Relaxed);
@@ -211,11 +216,12 @@ pub(crate) fn register_image_blocks(kind: BlockKind, blocks: &[(usize, usize)]) 
 
 /// True when the block at START is one of the image's mapped blocks.
 fn is_mapped_block(start: usize) -> bool {
-    BLOCKS
+    let blocks = BLOCKS
         .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .mapped
-        .contains(&start)
+        .unwrap_or_else(|poisoned| poisoned.into_inner());
+    blocks.all.get(&start).is_some_and(|&kind| {
+        blocks.by_kind[kind as usize].get(&start) == Some(&BlockOrigin::Mapped)
+    })
 }
 
 /// alloc.c's `mem_delete'.
@@ -228,7 +234,6 @@ fn unregister_block(start: usize) {
     if let Some(kind) = removed {
         blocks.by_kind[kind as usize].remove(&start);
     }
-    blocks.mapped.remove(&start);
 }
 
 /// pdumper's mapped region, as this loader has it. GNU's sweeps never visit
@@ -2128,7 +2133,7 @@ fn sweep_blocks_of(kind: BlockKind) -> Vec<(usize, bool)> {
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .by_kind[kind as usize]
         .iter()
-        .map(|(&start, &image)| (start, image))
+        .map(|(&start, &origin)| (start, origin != BlockOrigin::Heap))
         .collect()
 }
 
@@ -2437,7 +2442,10 @@ pub(crate) fn block_records() -> Vec<BlockRecord> {
         let blocks = &registry.by_kind[kind as usize];
         (
             blocks.len(),
-            blocks.values().filter(|&&image| image).count(),
+            blocks
+                .values()
+                .filter(|&&origin| origin != BlockOrigin::Heap)
+                .count(),
         )
     };
     [
