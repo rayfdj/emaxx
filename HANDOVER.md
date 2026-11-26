@@ -232,7 +232,11 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   plan's stages: `mapatoms' and the completion functions walk the
   obarray in place as GNU's iterator does, with no snapshot to go
   stale or unmarked, and tree-sitter's nodes, parsers and queries
-  hold the Lisp words GNU's mark, a buffer its listed parsers.
+  hold the Lisp words GNU's mark, a buffer its listed parsers.  Round
+  398: the release of a helper's array stops the process on an entry
+  that is not its own; C5.3's gate, redone, was passed by the review
+  in seven new ways and is held back again, and whether the item
+  closes without it is the owner's to decide.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -21446,6 +21450,88 @@ setup_process_coding_systems's check now refuses). A 13-form
   added; its one note of a changed assertion is the old walk's test,
   which expected the uninterned symbol kept and visited, (1 t), where
   the two tests in its place expect GNU's answers.
+- **Round 398: SAFE_FREE stops on an entry that is not its own, two
+  parity cases are made deterministic, and C5.3's gate is held back a
+  second time (M2, the plan of runtime ownership; none closed).**
+  **SAFE_FREE**: round 396's release of a native helper's array unbinds
+  to its own entry; it ran any entries an unbalanced callee had left
+  above the array, and in a release build returned in silence when no
+  entry recorded it.  GNU asserts both away in a checking build and
+  frees whatever lies there in a plain one.  Here either now stops the
+  process, as emacs_abort does, in every build; the path is the cold one
+  (more than eight arguments or 32 results), and the inline path is
+  unchanged.  A test runs itself again in a child process: with an entry
+  pushed above the array's own, and with the array's entry already
+  popped, the child dies of SIGABRT with the stop's message, and a
+  balanced release returns; with the stop's condition made false both
+  parts fail.  That test was added after the round audit counted an
+  assertion removed and none added (the debug assertion the stop
+  replaces): nothing had tested that the stop fires.  **Two parity
+  cases**, both of which failed in round 396's validation by no fault of
+  the round.  The case of a child locked to another thread waited 0.4 s
+  for the child's end, and under sixteen busy loops GNU gave its other
+  answer in 14 runs of 50.  The child now ends at its input's end, which
+  the main thread sends once the process is set, and the main thread
+  then waits for /proc/PID to go; neither touches the process's status.
+  GNU 50 of 50 and Emaxx 50 of 50, and a build whose walk skips
+  processes locked to another thread fails the case 5 times of 5.
+  (Waiting on /proc alone was not enough, by a race of GNU's own: a
+  child that ends inside the thread's create_process has its SIGCHLD
+  handled by the main thread before the process is marked alive, and is
+  never reaped; 4 runs of 50.)  The gnutls cases' server listened on a
+  fixed port, so two worktrees running them at once refused each other's
+  connections; the port is now the run's own, from the process id, below
+  the ephemeral range and the same on both sides of a comparison.  No
+  other test binds a fixed port.  **The gate, held back again**: the
+  test that every public function able to run Lisp takes `&Runtime' was
+  redone in this round (types read by the file that defines them, every
+  form of re-export, impls wherever they are, 42 mutation cases).  The
+  review confirmed that its eight earlier ways through are closed and
+  found seven new ones: the handle recognized by its spelling (an
+  `Option<&Runtime>', a closure taking one, a generic parameter of that
+  name, a second type of that name), a crate trait implemented for a
+  foreign type, a foreign type with the crate's type as a trait's
+  argument, impls for a box of a public type, a module given by
+  `#[path]', a file its name filter drops, and a function value handed
+  to the caller.  Fifteen ways in two reviews say a reading of the text
+  does not converge, and it is not landed.  What it was to guard is
+  checked by hand instead, twice now by the review: the ten public
+  functions that run Lisp take the handle, and no other public function
+  reaches Lisp.  The property itself does not rest on the convention:
+  the allocator and every scoped entry take the runtime on a thread that
+  does not hold it, a scoped entry's result must be `Send', and no
+  public signature can name a Lisp value.  Whether C5.3 closes on that,
+  or wants a token of the hold passed down to allocation (the compiler's
+  proof, a redesign with no counterpart in GNU), is the owner's to
+  decide.  **The independent review** (the one question: does the round
+  cheat or break something) drove native `apply' of twelve arguments and
+  `mapcar' of forty elements over seventeen kinds of callee (errors,
+  throws, unwind forms, quits, nesting to the depth limit, sorting and
+  hashing that throw), Lisp threads switching inside them, and helpers
+  re-entered: the same output as round 396's build and as GNU, the stop
+  never reached, and it read why (a non-local exit has unwound past the
+  array's entry before the release could run).  It found the rewritten
+  case still a test of the main thread's walk reporting a process locked
+  to another thread, and the port the same on both sides of each
+  comparison.
+  Validation (gate profile, one test thread a process).  On the head
+  before the stop's test, whose commit adds test code only: the grouped
+  gate 3,688 passed, 0 failed, 2 ignored; cli 30, cli_parity 189,
+  ert_runner 3, native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59.  On the final
+  head: the grouped gate again, 3,689 passed, 0 failed, 2 ignored (the
+  new test), with clippy `-D warnings' and rustfmt clean.  In that
+  second run one test of the group a to l failed first, the file
+  notification scenarios, at its check of GNU's own answer against the
+  text it expects (GNU reported four events for two, on a machine
+  running four builds); alone it passed six times of six and the group
+  then passed whole, 513 of 513.  The round audit reports no hard
+  finding, 158 changed lines with 1 test and 10 assertions added; its
+  two notes of a removed assertion are the debug assertion the stop
+  replaces and one that moved with the pop, and its note of a spawned
+  process is the new test's child.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -25062,10 +25148,10 @@ ert-tests as a whole 26,307 ms against 27,211.
   ert-tests (40.7 against 38.9), comp-tests (19.1 against 17.4),
   mule-tests (3.12 against 2.03) and semantic-utest-ia (4.03 against
   3.03).  Both editors passed the eglot test, and GNU's threads test
-  did not abort.  The Rust gate (run 45765728556) passed: 3,695 library tests
-  (eleven more), the eight integration targets (237), the binaries'
-  tests (63) and the doc stage, three doctests passing and three that
-  must fail to compile, none failed.
+  did not abort.  The Rust gate (run 45765728556) passed: 3,695
+  library tests (eleven more), the eight integration targets (237),
+  the binaries' tests (63) and the doc stage, three doctests passing
+  and three that must fail to compile, none failed.
 
 **The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
   25 Nov by running the one test alone.
@@ -25093,6 +25179,21 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 398 and its review), within the
+  plan's later stages or outside the round.**  One line each:
+  `cargo test --lib' in the dev profile does not link
+  (`emaxx_native_suspend_trampoline' undefined), where the gate's
+  profile does (the next thread round's); GNU does not reap a child
+  that ends inside another thread's create_process, before the
+  process is marked alive (GNU's, seen in 4 runs of 50 under load);
+  a gnutls-serv that cannot bind its port neither exits nor dies of
+  the SIGHUP an exiting Emacs sends (it ignores it), so the second
+  server of every port collision stayed as an orphan, after GNU's run
+  as after Emaxx's (nineteen were found and killed; none listened);
+  the three native leak tests measure resident memory and fail beside
+  any memory-heavy test that does not hold the runtime; the gnutls
+  cases' ports can still meet when two runs' process ids are equal
+  modulo 5,000.
 - **Found after the scope lock (round 397 and its reviews), within the
   plan's later stages or outside the round.**  One line each, all
   tree-sitter and all the same before the round: GNU's
