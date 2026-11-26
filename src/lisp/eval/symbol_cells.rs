@@ -71,6 +71,11 @@ impl SymbolCells {
         self.symbols.len()
     }
 
+    /// DOOBARRAY's advance in the initial obarray (`ObarrayIter').
+    pub(crate) fn first_initial_bucket_from(&self, index: usize) -> Option<(usize, SymbolName)> {
+        self.symbols.first_bucket_from(index)
+    }
+
     /// data.c's C variable symbols_with_pos_enabled, this editor's.
     #[inline]
     pub(crate) fn symbols_with_pos_enabled(&self) -> &std::cell::Cell<bool> {

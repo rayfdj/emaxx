@@ -1169,11 +1169,7 @@ impl Interpreter {
         name: Value,
         only: Option<SymbolName>,
     ) -> bool {
-        if self.globals.unintern_name(name, only).is_none() {
-            return false;
-        }
-        self.note_obarray_removal();
-        true
+        self.globals.unintern_name(name, only).is_some()
     }
 
     pub(crate) fn is_standard_obarray_id(&self, id: u64) -> bool {

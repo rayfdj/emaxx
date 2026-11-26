@@ -1148,6 +1148,12 @@ impl SymbolOwner {
         self.0.names.borrow().count() as usize
     }
 
+    /// The initial obarray's first nonempty bucket at or after INDEX, with
+    /// its first symbol: DOOBARRAY's advance, on the buckets as they are.
+    pub(crate) fn first_bucket_from(&self, index: usize) -> Option<(usize, SymbolName)> {
+        self.0.names.borrow().first_from(index)
+    }
+
     pub(crate) fn contains(&self, name: &str) -> bool {
         self.find(name).is_some()
     }

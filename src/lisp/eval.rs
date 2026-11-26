@@ -6,7 +6,6 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 #[cfg(not(unix))]
 use std::process::Child;
-use std::rc::Rc;
 use std::time::SystemTime;
 
 use super::primitives;
@@ -4155,19 +4154,6 @@ type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::types::Identity
 pub(crate) type CodingSystemHash =
     HashMap<SymbolName, usize, crate::lisp::types::IdentityBuildHasher>;
 
-/// A snapshot for callbacks that may intern further symbols while enumerating.
-/// Membership comes only from the owning obarray; field stores cannot invalidate it.
-#[derive(Clone)]
-pub(crate) struct KnownSymbolsCache {
-    pub(crate) key: KnownSymbolsKey,
-    pub(crate) symbols: Rc<Vec<crate::lisp::types::SymbolName>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct KnownSymbolsKey {
-    symbols: usize,
-    epoch: u64,
-}
 type RecordIdsByType = HashMap<String, BTreeSet<u64>, crate::lisp::primitives::FnvBuildHasher>;
 
 #[derive(Clone, Debug, Default)]
@@ -6678,7 +6664,6 @@ impl Interpreter {
         // Identity-keyed caches: the copied cells have fresh identities, so
         // every cached verdict keyed by (or holding) template cells is
         // stale.  All of these repopulate lazily.
-        *clone.known_symbols_cache.get_mut() = None;
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_frames = Default::default();
         clone.bc_handlers = Default::default();
@@ -7002,11 +6987,6 @@ pub struct InterpreterState {
     /// mutating the host `TZ' would leak state between otherwise isolated
     /// Emacs instances.
     pub(crate) local_time_zone_rule: Value,
-    /// The actual obarray snapshot used by callbacks; invalidated only by
-    /// membership changes, never by value/function/plist mutations.
-    known_symbols_cache: RefCell<Option<KnownSymbolsCache>>,
-    /// Membership removal/reinsertion can leave the same symbol count.
-    obarray_epoch: u64,
     /// Runtime record representing GNU's preloaded standard `obarray'.  Its
     /// symbol view is synthesized from the interpreter's canonical namespace
     /// indexes rather than duplicated in the record's storage slot.
@@ -7784,8 +7764,6 @@ impl Interpreter {
             native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
             default_file_modes: initial_default_file_modes(),
             local_time_zone_rule,
-            known_symbols_cache: RefCell::new(None),
-            obarray_epoch: 0,
             standard_obarray_id,
             buffer: crate::lisp::types::BufferRef::new(0, crate::buffer::Buffer::new("*scratch*")),
             current_global_map: None,

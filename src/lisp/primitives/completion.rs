@@ -1,6 +1,6 @@
 use super::*;
-use crate::lisp::types::Kind;
 use crate::lisp::types::obarray::{self, Buckets};
+use crate::lisp::types::{Kind, SymbolName};
 
 pub(crate) const OBARRAY_RECORD_TYPE: &str = "obarray";
 
@@ -43,6 +43,96 @@ pub(crate) fn make_obarray_with_bits(interp: &mut Interpreter, bits: u32) -> Val
 fn private_obarray_slots(record: &crate::lisp::eval::RecordState) -> Option<&[Value]> {
     (record.has_symbol_type(OBARRAY_RECORD_TYPE) && obarray::is_record_slots(&record.slots))
         .then_some(record.slots.as_slice())
+}
+
+/// The obarray a walk reads (lisp.h's obarray_iter_t's `o'): the initial
+/// obarray, a private obarray record, or none (a legacy vector check_obarray
+/// would give a new empty obarray).  The walk reads its buckets as they are
+/// at each advance (`obarray::ObarrayIter').
+#[derive(Clone, Copy)]
+pub(crate) enum WalkedObarray {
+    Initial,
+    Record(Value),
+    Empty,
+}
+
+impl WalkedObarray {
+    /// check_obarray's obarray of OBARRAY, read as `obarray_symbols' reads
+    /// a legacy vector.
+    pub(crate) fn of(interp: &Interpreter, obarray: &Value) -> Result<Self, LispError> {
+        if is_vector_value(obarray) {
+            let slots = vector_items(obarray)?;
+            if let Some(current) = slots.first() {
+                if is_obarray_like_value(interp, current) {
+                    return Self::of(interp, current);
+                }
+                if matches!(current.kind(), Kind::Integer(0)) {
+                    return Ok(Self::Empty);
+                }
+            }
+        }
+        let Kind::Record(id) = obarray.kind() else {
+            return Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray));
+        };
+        if interp.is_standard_obarray_id(id.id) {
+            return Ok(Self::Initial);
+        }
+        match interp.find_record(id).and_then(private_obarray_slots) {
+            Some(_) => Ok(Self::Record(*obarray)),
+            None => Err(LispError::WrongTypeArgument("obarrayp".into(), *obarray)),
+        }
+    }
+
+    /// The slots of a private obarray, as they are now.
+    fn record_slots<'a>(interp: &'a Interpreter, obarray: &Value) -> Option<&'a [Value]> {
+        let Kind::Record(id) = obarray.kind() else {
+            return None;
+        };
+        interp.find_record(id).and_then(private_obarray_slots)
+    }
+
+    /// obarray_iter_at_end of IT over this obarray's buckets now.
+    #[inline]
+    pub(crate) fn at_end(&self, interp: &Interpreter, it: &mut obarray::ObarrayIter) -> bool {
+        it.at_end(|index| match self {
+            Self::Initial => interp.standard_obarray_first_bucket_from(index),
+            Self::Record(obarray) => Self::record_slots(interp, obarray)
+                .and_then(|slots| obarray::RecordBucketsRef(slots).first_from(index)),
+            Self::Empty => None,
+        })
+    }
+
+    /// oblookup of the Lisp string NAME: the symbol of that name, or None.
+    pub(crate) fn lookup(&self, interp: &Interpreter, name: Value) -> Option<SymbolName> {
+        match self {
+            Self::Initial => {
+                crate::lisp::types::SymbolName::lookup_initial(name).and_then(Result::ok)
+            }
+            Self::Record(obarray) => Self::record_slots(interp, obarray)
+                .and_then(|slots| obarray::RecordBucketsRef(slots).lookup_name(name))
+                .and_then(Result::ok),
+            Self::Empty => None,
+        }
+    }
+
+    /// The obarray's count (struct Lisp_Obarray's `count').
+    pub(crate) fn count(&self, interp: &Interpreter) -> usize {
+        match self {
+            Self::Initial => interp.standard_obarray_count(),
+            Self::Record(obarray) => Self::record_slots(interp, obarray)
+                .map_or(0, |slots| obarray::RecordBucketsRef(slots).count()),
+            Self::Empty => 0,
+        }
+    }
+}
+
+/// A symbol of an obarray as Lisp sees it: `nil' and `t' are Qnil and Qt.
+pub(crate) fn obarray_symbol_value(symbol: SymbolName) -> Value {
+    match symbol.as_str() {
+        "nil" => Value::Nil,
+        "t" => Value::T,
+        _ => Value::Symbol(symbol),
+    }
 }
 
 pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result<Value, LispError> {
@@ -96,9 +186,8 @@ pub(crate) fn obarray_symbols(
     };
     if interp.is_standard_obarray_id(id.id) {
         return Ok(interp
-            .known_symbols_shared()
-            .iter()
-            .cloned()
+            .standard_obarray_symbols()
+            .into_iter()
             .map(|symbol| match symbol.as_str() {
                 "nil" => Value::Nil,
                 "t" => Value::T,
@@ -680,11 +769,12 @@ fn call_completion_table(
 /// minibuf.c's walk over a COLLECTION that is not a function: the
 /// elements of a list, the symbols of an obarray, or a hash table's keys
 /// with their values.  What the walk holds is rooted across the
-/// predicate's calls.
+/// predicate's calls; an obarray's walk is its obarray_iter_t, whose
+/// symbol is a word of this frame, as GNU's `obit' is of its.
 struct CompletionElements {
     kind: CompletionElementsKind,
-    /// List: the tail and the tortoise of the cycle check; obarray: its
-    /// symbols; hash table: its keys and values, in pairs.
+    /// List: the tail and the tortoise of the cycle check; hash table: its
+    /// keys and values, in pairs.
     roots: crate::lisp::alloc::RootedVec<Value>,
     index: usize,
     steps: usize,
@@ -693,8 +783,7 @@ struct CompletionElements {
 
 enum CompletionElementsKind {
     List,
-    StandardObarray(std::rc::Rc<Vec<crate::lisp::types::SymbolName>>),
-    Obarray,
+    Obarray(WalkedObarray, obarray::ObarrayIter),
     Hash,
 }
 
@@ -726,16 +815,13 @@ impl CompletionElements {
                 roots.push(value);
             }
             (CompletionElementsKind::Hash, roots)
-        } else if matches!(collection.kind(), Kind::Record(id) if interp.is_standard_obarray_id(id.id))
-        {
-            (
-                CompletionElementsKind::StandardObarray(interp.known_symbols_shared()),
-                Vec::new(),
-            )
         } else if is_vector_value(collection) || is_obarray_like_value(interp, collection) {
             (
-                CompletionElementsKind::Obarray,
-                obarray_symbols(interp, collection)?,
+                CompletionElementsKind::Obarray(
+                    WalkedObarray::of(interp, collection)?,
+                    obarray::ObarrayIter::default(),
+                ),
+                Vec::new(),
             )
         } else {
             (CompletionElementsKind::List, vec![*collection, *collection])
@@ -749,8 +835,8 @@ impl CompletionElements {
         })
     }
 
-    fn next(&mut self) -> Result<Option<CompletionElement>, LispError> {
-        match &self.kind {
+    fn next(&mut self, interp: &Interpreter) -> Result<Option<CompletionElement>, LispError> {
+        match &mut self.kind {
             CompletionElementsKind::List => {
                 let Some((elt, tail)) = self.roots[0].cons_values() else {
                     return Ok(None);
@@ -780,27 +866,14 @@ impl CompletionElements {
                     hash_value: None,
                 }))
             }
-            CompletionElementsKind::StandardObarray(symbols) => {
-                let Some(symbol) = symbols.get(self.index) else {
+            CompletionElementsKind::Obarray(walked, it) => {
+                // The symbol, then the step past it, before the predicate
+                // sees it (minibuf.c).
+                if walked.at_end(interp, it) {
                     return Ok(None);
-                };
-                self.index += 1;
-                let elt = match symbol.as_str() {
-                    "nil" => Value::Nil,
-                    "t" => Value::T,
-                    _ => Value::Symbol(*symbol),
-                };
-                Ok(Some(CompletionElement {
-                    elt,
-                    eltstring: completion_element_name(elt),
-                    hash_value: None,
-                }))
-            }
-            CompletionElementsKind::Obarray => {
-                let Some(&elt) = self.roots.get(self.index) else {
-                    return Ok(None);
-                };
-                self.index += 1;
+                }
+                let elt = obarray_symbol_value(it.symbol());
+                it.step();
                 Ok(Some(CompletionElement {
                     elt,
                     eltstring: completion_element_name(elt),
@@ -916,7 +989,7 @@ pub(crate) fn try_completion(
     let mut best = crate::lisp::alloc::RootedVec::from_vec(vec![Value::Nil]);
     let mut bestmatchsize = 0usize;
     let mut matchcount = 0;
-    while let Some(element) = elements.next()? {
+    while let Some(element) = elements.next(interp)? {
         let eltstring = element.eltstring;
         if !eltstring.is_string()
             || size > string_chars(&eltstring)
@@ -1049,7 +1122,7 @@ pub(crate) fn all_completions(
     let string_starts_with_space = string_first_byte(&string) == Some(b' ');
     let size = string_chars(&string);
     let mut allmatches = crate::lisp::alloc::RootedVec::new();
-    while let Some(element) = elements.next()? {
+    while let Some(element) = elements.next(interp)? {
         let eltstring = element.eltstring;
         if !eltstring.is_string()
             || size > string_chars(&eltstring)
@@ -1148,16 +1221,15 @@ pub(crate) fn test_completion(
             }
         }
     } else if table == CompletionTable::Obarray {
-        // Bypass intern-soft as that loses for nil.
-        let name = string_text(&string)?;
-        let symbols = obarray_symbols(interp, &collection)?;
-        let mut tem = symbols
-            .iter()
-            .copied()
-            .find(|symbol| obarray_symbol_matches(symbol, &name));
+        // Bypass intern-soft as that loses for nil: oblookup, then for a
+        // miss ignoring case DOOBARRAY's walk.
+        let walked = WalkedObarray::of(interp, &collection)?;
+        let mut tem = walked.lookup(interp, string).map(obarray_symbol_value);
         if ignore_case && tem.is_none() {
             let string_size = string_chars(&string);
-            for symbol in symbols {
+            let mut it = obarray::ObarrayIter::default();
+            while !walked.at_end(interp, &mut it) {
+                let symbol = obarray_symbol_value(it.symbol());
                 let symbol_name = completion_element_name(symbol);
                 let name_size = string_chars(&symbol_name);
                 if compare_string_ranges(
@@ -1174,6 +1246,7 @@ pub(crate) fn test_completion(
                     tem = Some(symbol);
                     break;
                 }
+                it.step();
             }
         }
         let Some(tem) = tem else {
@@ -2163,4 +2236,53 @@ fn interactive_form_in_body(body: &[Value]) -> Option<Vec<Value>> {
         break;
     }
     None
+}
+
+#[cfg(test)]
+mod obarray_walk_tests {
+    use crate::lisp::types::Env;
+    use crate::test_support::{eval_lisp, initialized_upstream_batch_interpreter};
+
+    #[test]
+    fn completion_visits_no_symbol_uninterned_before_the_walk_comes_to_it() {
+        // minibuf.c walks an obarray with its iterator, stepping past a
+        // symbol before the predicate sees it.  At the first of eight
+        // symbols, none of which shares a bucket with another, the
+        // predicate uninterns the other seven: the walk then comes to
+        // none of them, in a made obarray and in the initial one, for
+        // all-completions and try-completion alike (GNU's answer).
+        let mut interp = initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        let result = eval_lisp(
+            &mut interp,
+            &mut env,
+            r#"(let (answers)
+                 (dolist (made '(t nil))
+                   (dolist (complete '(all-completions try-completion))
+                     (let* ((ob (if made (obarray-make 1000) obarray))
+                            (prefix (format "later-%s-" complete))
+                            (names (mapcar (lambda (c) (format "%s%c" prefix c))
+                                           "abcdefgh"))
+                            (seen nil))
+                       (dolist (name names) (intern name ob))
+                       ;; No bucket holds two of them.
+                       (dolist (bucket (internal--obarray-buckets ob))
+                         (when (> (seq-count (lambda (s) (member (symbol-name s) names))
+                                             bucket)
+                                  1)
+                           (error "two in one bucket")))
+                       (funcall complete prefix ob
+                                (lambda (symbol)
+                                  (push symbol seen)
+                                  (when (null (cdr seen))
+                                    (dolist (name names)
+                                      (unless (equal name (symbol-name symbol))
+                                        (unintern name ob))))
+                                  t))
+                       (push (length seen) answers))))
+                 answers)"#,
+        )
+        .expect("walk the obarrays");
+        assert_eq!(result.to_string(), "(1 1 1 1)");
+    }
 }

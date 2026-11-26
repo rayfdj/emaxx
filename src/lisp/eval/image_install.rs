@@ -107,9 +107,7 @@ impl Interpreter {
         if image.obarray_size_bits != 0 {
             self.globals
                 .restore_initial_order(image.obarray_size_bits, &image.obarray);
-            self.note_obarray_removal();
         }
-        *self.known_symbols_cache.borrow_mut() = None;
         // The forwarded C variables hold the current buffer's bindings, its
         // own (installed with the buffer, before the symbols' defaults) or
         // the default.
