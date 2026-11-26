@@ -902,12 +902,16 @@ fn sparse_nodes(
     } else {
         Vec::new()
     };
-    let mut descendants = Vec::new();
+    // treesit_build_sparse_tree's lists are locals the stack holds; the
+    // subtrees made so far are rooted across PROCESS-FN's later calls.
+    let mut descendants = crate::lisp::alloc::RootedVec::new();
     for child in children {
-        descendants.extend(sparse_nodes(interp, traversal, child, process, depth - 1)?);
+        for subtree in sparse_nodes(interp, traversal, child, process, depth - 1)? {
+            descendants.push(subtree);
+        }
     }
     if !matched {
-        return Ok(descendants);
+        return Ok(descendants.iter().copied().collect());
     }
     let node = related_flat_node(interp, traversal.source, traversal.tree, Some(index))?;
     let value = if let Some(function) = process {
@@ -915,7 +919,10 @@ fn sparse_nodes(
     } else {
         node
     };
-    Ok(vec![Value::cons(value, Value::list(descendants))])
+    Ok(vec![Value::cons(
+        value,
+        Value::list(descendants.iter().copied()),
+    )])
 }
 
 define_dispatch!(
@@ -1498,3 +1505,43 @@ define_dispatch!(
         }
     }
 );
+
+#[cfg(test)]
+mod sparse_tree_tests {
+    use crate::lisp::types::{Env, Value};
+
+    #[test]
+    fn a_sparse_tree_s_finished_subtrees_live_through_its_process_function() {
+        // treesit.c:treesit_build_sparse_tree conses each subtree onto
+        // its parent's list, locals the stack holds, while PROCESS-FN
+        // runs on the nodes after them; a collection there keeps the
+        // subtrees made, which are then the tree an unhurried walk makes.
+        let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+        *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text(
+            "*json-sparse*",
+            r#"{"a": [1, true, "x"], "b": [2, false, {"c": 3}]}"#,
+        );
+        interp.register_treesit_language_for_test("json", tree_sitter_json::LANGUAGE.into());
+        let program = r#"
+            (let* ((parser (treesit-parser-create 'json))
+                   (root (treesit-parser-root-node parser))
+                   (pred (lambda (node)
+                           (member (treesit-node-type node)
+                                   '("number" "true" "false" "string_content" "pair"))))
+                   (made (lambda (collect)
+                           (treesit-induce-sparse-tree
+                            root pred
+                            (lambda (node)
+                              (when collect (garbage-collect))
+                              (list (treesit-node-type node) (make-string 3 ?x)))))))
+              (equal (funcall made t) (funcall made nil)))"#;
+        let form = crate::lisp::reader::Reader::new(program)
+            .read()
+            .expect("read the program")
+            .expect("a form");
+        let result = interp
+            .eval(&form, &mut Env::new())
+            .expect("induce the sparse trees");
+        assert_eq!(result, Value::T, "the collecting walk made the same tree");
+    }
+}
