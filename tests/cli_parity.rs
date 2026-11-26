@@ -13915,6 +13915,106 @@ fn native_code_calls_byte_code_through_funcall_as_ffuncall_does() {
 }
 
 #[test]
+fn native_code_calls_apply_as_fapply_does() {
+    // Native code's `apply' is Fapply itself (its relocation entry): the
+    // spread list counted by list_length (FOR_EACH_TAIL's cycle test and
+    // its maybe_quit), Ffuncall at once for a list of no element or one,
+    // and for two or more FUN, the first argument, read through its
+    // function cell and indirect_function when that holds a symbol, and
+    // the call of a SUBRP whose maximum exceeds the count and whose
+    // minimum the count meets padded with nil (eval.c:Fapply), which
+    // Ffuncall's frame shows.  The same calls from native code, compared
+    // with GNU's answers: native, dynamic-binding native, byte-code and C
+    // callees, the single argument whose FUN is the list itself, aliases
+    // and fset's refusal of a cycle, the functions apply cannot call, the
+    // spread list's shapes, and a quit pending while the list is counted.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "native-apply.el",
+        r##";;; -*- lexical-binding: t -*-
+;; Native code's apply.
+(defvar zz-n 0)
+(defvar zz-log nil)
+(defmacro zz-probe (&rest body)
+  `(progn (setq zz-n (1+ zz-n))
+          (princ (format "%d: %S\n" zz-n
+                         (condition-case e (progn ,@body) (t (list 'signal e)))))))
+(defun zz-frame (name) (backtrace-frame 0 name))
+;; Native callers.
+(defun zz-nat-apply1 (l) (apply l))
+(defun zz-nat-apply2 (f l) (apply f l))
+(defun zz-nat-apply3 (f x l) (apply f x l))
+(defun zz-nat-apply4 (f x y l) (apply f x y l))
+(defun zz-nat-quit-apply (f l) (setq quit-flag t) (apply f l))
+(dolist (f '(zz-nat-apply1 zz-nat-apply2 zz-nat-apply3 zz-nat-apply4 zz-nat-quit-apply))
+  (native-compile f))
+;; Callees: native, dynamic-binding native, byte code.
+(defun zz-nat-opt (a &optional b c) (list a b c (zz-frame 'zz-nat-opt)))
+(native-compile 'zz-nat-opt)
+(let ((lexical-binding nil))
+  (eval '(defun zz-nat-dyn (a &optional b c) (list a b c (zz-frame 'zz-nat-dyn))) nil))
+(native-compile 'zz-nat-dyn)
+(defun zz-bc-opt (a &optional b c) (list a b c (zz-frame 'zz-bc-opt)))
+(byte-compile 'zz-bc-opt)
+(defun zz-mapconcat-frame (_) (format "%S" (zz-frame 'mapconcat)))
+(zz-probe (list (native-comp-function-p (symbol-function 'zz-nat-dyn))
+                (subr-arity (symbol-function 'zz-nat-dyn))
+                (subr-arity (symbol-function 'zz-nat-opt))
+                (byte-code-function-p (symbol-function 'zz-bc-opt))))
+;; Fapply pads with nil a SUBRP whose maximum exceeds the count and whose
+;; minimum the count meets, when the spread list has two or more
+;; elements; Ffuncall's frame shows the padding.
+(zz-probe (zz-nat-apply2 #'zz-nat-opt '(1 2)))
+(zz-probe (zz-nat-apply2 'zz-nat-opt '(1 2)))
+(zz-probe (zz-nat-apply3 'zz-nat-opt 1 '(2)))
+(zz-probe (zz-nat-apply4 'zz-nat-opt 1 2 nil))
+(zz-probe (zz-nat-apply2 #'zz-nat-dyn '(1 2)))
+(zz-probe (zz-nat-apply2 #'zz-bc-opt '(1 2)))
+(zz-probe (zz-nat-apply2 #'mapconcat (list #'zz-mapconcat-frame '(a))))
+(zz-probe (zz-nat-apply3 #'mapconcat #'zz-mapconcat-frame '((a))))
+(zz-probe (zz-nat-apply2 #'mapconcat (list #'zz-mapconcat-frame '(a) "-")))
+;; With a single argument, Fapply's FUN is the list itself, which no SUBRP
+;; is: the call is not padded.
+(zz-probe (zz-nat-apply1 (list #'mapconcat #'zz-mapconcat-frame '(a))))
+(zz-probe (zz-nat-apply1 (list 'mapconcat #'zz-mapconcat-frame '(a))))
+(zz-probe (zz-nat-apply2 #'aset (list (make-vector 2 0) 1)))
+(zz-probe (zz-nat-apply2 #'substring '("abcd" 1)))
+(zz-probe (zz-nat-apply2 #'list '(1 2 3)))
+(zz-probe (zz-nat-apply4 #'list 1 2 '(3 4)))
+;; The function through aliases; a cycle is refused by fset.
+(defalias 'zz-alias1 'mapconcat)
+(defalias 'zz-alias2 'zz-alias1)
+(defun zz-alias-frame (_) (format "%S" (zz-frame 'zz-alias2)))
+(zz-probe (zz-nat-apply2 'zz-alias2 (list #'zz-alias-frame '(a))))
+(zz-probe (defalias 'zz-alias1 'zz-alias2))
+(zz-probe (zz-nat-apply2 'zz-alias2 (list #'zz-alias-frame '(b))))
+;; Functions apply cannot call.
+(zz-probe (zz-nat-apply2 'when '(t 1)))
+(zz-probe (zz-nat-apply2 'if '(t 1 2)))
+(zz-probe (zz-nat-apply2 'zz-void '(1 2)))
+(zz-probe (zz-nat-apply2 nil '(1 2)))
+;; The spread list's shapes.
+(zz-probe (zz-nat-apply1 nil))
+(zz-probe (zz-nat-apply1 '(list 1 2)))
+(zz-probe (zz-nat-apply2 #'list nil))
+(zz-probe (zz-nat-apply3 #'list 1 '(2 . 3)))
+(zz-probe (let ((l (list 1 2))) (setcdr (cdr l) l)
+            (condition-case e (zz-nat-apply3 #'list 0 l) (error (car e)))))
+;; A quit pending when apply counts the list.
+(zz-probe (let ((zz-log nil))
+            (condition-case nil
+                (zz-nat-quit-apply (lambda (&rest a) (push a zz-log)) '(1 2 3))
+              (quit (list 'quit zz-log)))))
+(zz-probe (let ((zz-log nil))
+            (condition-case nil
+                (zz-nat-quit-apply (lambda (&rest a) (push a zz-log)) '(1))
+              (quit (list 'quit zz-log)))))
+"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
 fn a_dumped_window_is_a_dead_window_of_the_process_that_loads_the_dump() {
     // pdumper.c:dump_vectorlike writes PVEC_WINDOW with
     // dump_nilled_pseudovec: every Lisp field nil and the rest zero.  A
