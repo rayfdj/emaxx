@@ -2522,8 +2522,13 @@ mod mapatoms_root_tests {
     fn a_symbol_uninterned_before_its_turn_is_neither_visited_nor_kept() {
         // lread.c's map_obarray walks the buckets as they are: a symbol
         // the function uninterns before its turn is out of its chain, so
-        // the walk never comes to it and nothing keeps it through a
-        // collection (GNU answers (0 nil)).
+        // the walk never comes to it (GNU 30.2: `visited' nil) and holds
+        // nothing that keeps it.  Whether a collection inside the
+        // function frees it depends on stale words of the stack in GNU
+        // too: its walk program as written answers (1 nil) under -l and
+        // --eval, and (0 nil) once a 200-deep recursion has cleared them
+        // before the collection.  So the freeing is seen here after the
+        // walk, the stack below cleared first, by the weak table.
         let mut interp = initialized_upstream_batch_interpreter();
         let mut env = Env::new();
         lisp(
@@ -2535,22 +2540,30 @@ mod mapatoms_root_tests {
                  nil)"#,
         );
         crate::lisp::alloc::clobber_stack();
-        let result = lisp(
+        let visited = lisp(
             &mut interp,
             &mut env,
-            r#"(let ((first t) (seen nil) (visited nil))
+            r#"(let ((first t) (visited nil))
                  (mapatoms
                   (lambda (symbol)
                     (when first
                       (setq first nil)
                       (unintern "mapatoms-root-probe" obarray)
-                      (garbage-collect)
-                      (setq seen (hash-table-count mapatoms-witness)))
+                      (garbage-collect))
                     (when (equal (symbol-name symbol) "mapatoms-root-probe")
                       (setq visited t))))
-                 (list seen visited))"#,
+                 visited)"#,
         );
-        assert_eq!(result.to_string(), "(0 nil)");
+        crate::lisp::alloc::clobber_stack();
+        let kept = lisp(
+            &mut interp,
+            &mut env,
+            "(progn (garbage-collect) (hash-table-count mapatoms-witness))",
+        );
+        assert_eq!(
+            (visited.to_string(), kept.to_string()),
+            ("nil".into(), "0".into())
+        );
     }
 
     #[test]
