@@ -220,7 +220,12 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   Round 393, outside the plan's stages: Lisp words held in the Rust
   heap that no collection marked (the regexp cache's syntax tables,
   gl_state, the echo area's faces, the tty's waiting events, the
-  symbols `mapatoms' has still to visit) are roots.
+  symbols `mapatoms' has still to visit) are roots.  Round 395: stage
+  7 and stage 8 outside the workflows; storage a native helper keeps
+  across a signal is the specpdl's, the public entry points take a
+  `Runtime' handle whose holds are counted, and the library passes
+  whole at four test threads; the four items of thread safety wait on
+  the CI control (the owner's), a macOS run and C5.3's gate.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -21164,6 +21169,83 @@ setup_process_coding_systems's check now refuses). A 13-form
   comparison's own code changed (src/compat.rs and the harness), which
   is the round's subject and the owner's decision, and one assertion
   changed, a harness test's call that gained an argument.
+- **Round 395: storage kept across a signal is the specpdl's, the
+  public entry points take the runtime their thread holds, and the
+  library's tests pass at four test threads (M2: the unwinding of A2.5
+  for native helpers, stage 7 of the plan of runtime ownership, and
+  stage 8's parts outside the workflows; none closed).**  **Storage**:
+  `apply''s argument vector past eight arguments and `mapcar''s
+  results past 32 were owned by a Rust frame that a callee's signal
+  jumped over, so each such signal leaked the vector: 12.9 MB over
+  100,000 signals through `apply'.  The storage is now a specpdl
+  entry, marked while it is there and freed by the unwinding itself or
+  at the normal return, as SAFE_ALLOCA_LISP's is; short arrays stay on
+  the stack.  The gate of plain frames follows the jumps to a fixed
+  point, so it covers a helper's callers and theirs.  Rust primitives
+  called from native code (`sort', `format', the sequence helpers) get
+  an error back and are not jumped over.  **The handle**:
+  `pub struct Runtime', neither `Send' nor `Sync'; `Runtime::lock()'
+  blocks until its thread holds the runtime, and the public functions
+  that run Lisp take `&Runtime'.  Three `compile_fail' doctests, each
+  beside a passing twin that differs by the offending line, show that
+  a handle or a Lisp value cannot go to another thread; the grouped
+  gate has a doc stage for them.  **The review's break**, fixed in the
+  round: with two handles on one thread, dropping the first inside the
+  callback of a call made with the second released the runtime in the
+  middle of that call, and another OS thread could enter: undefined
+  behaviour from safe code, for an embedder (the binary locks once).
+  Holds are now counted as a recursive lock's are: every live handle
+  and every call entered through one is a hold, and the runtime is
+  given back by the last to go and never while the thread has a
+  tenure.  Tests run the sequence, its reverse and a nested call
+  beside a second thread that must still be waiting after the drop; a
+  forgotten handle keeps the runtime until the process ends, in a test
+  binary of its own.  **Four test threads**: every reader of the
+  heap's counts takes the runtime as an allocator does (19 readers,
+  round 392's free counts among them), and every boot takes the
+  process-test permit, since a process maps one dump.  The whole
+  library passes at four test threads, 3,676 passed and none failed,
+  as at one.  An ordinary `cargo test' runs two test threads again
+  (`.cargo/config.toml'), for the resource's sake and no longer for
+  soundness; the gate and CI stay at one, because the frozen run times
+  the gate and Lisp tests serialize on the runtime in any case.  **The
+  items**: by the implementer's account D43, C5.3, A4.7 and C5.1 are
+  complete in the tree, and none is marked done.  Stage 8's control in
+  CI, one step in compat-runner.yml, awaits the owner (the proposal is
+  written, not applied); D43 lacks a run on the macOS runner; C5.3
+  lacks the gate that a new public entry point takes the handle, which
+  is the next thread round's.  A2.5 is not complete: its audit of
+  aliasing and lifetimes is a plan still to be written.  **Lisp sees
+  nothing change.**  **Counts** (before = round 392's build): a native
+  `apply' 1,044.1 instructions to 915.1 (GNU 545.0), a native `mapcar'
+  665.0 to 656.3 (515.4), a native `funcall' 548.1 (316.0) and an
+  interpreted loop's call of a native function 1,968.0 (1,801.0) as
+  before; the allocation, call and interpreter guards unchanged;
+  startup 128.4 million instructions before and after, with no futex
+  wait in a batch evaluation or `--version'.  The independent review
+  (the one question: does the round cheat or break something) found
+  the break above and the other three commits clean: the entry marked
+  and freed once on every exit, a deep native `apply' and `mapcar'
+  under collections, throws, signals and suspended threads answering
+  as before and as GNU, backtraces included; the permit in tests only;
+  nothing added to an allocation.  A second reading found the fix
+  closes the break for every order of drops it could build, and a
+  third, of what the replay onto the tip changed, found it clean.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,676 passed, 0 failed, 2 ignored (six
+  library tests more); cli 30, cli_parity 187, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 7 (three more) and the new
+  target runtime_forgotten_handle 1; the doctests, three passing and
+  three that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementer's run of the whole
+  library at four test threads: 3,676 passed, 0 failed.  The round
+  audit reports no hard finding, 1,736 changed lines with 10 tests and
+  28 assertions added; its note of new state is the thread's entry
+  record, the same thread-local with the hold count added, and its six
+  notes of test or reporting infrastructure are the two gates' tools
+  (a doc stage, and comments), the cargo configuration, anti_cheat.rs,
+  and two binaries whose calls gained the handle.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24763,6 +24845,31 @@ ert-tests as a whole 26,307 ms against 27,211.
   anything else about it is compared as before (round 394's entry).
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 395 and its reviews), within the
+  plan's later stages or outside the round.**  One line each: a native
+  `apply' costs 915.1 instructions against GNU's 545.0 and a native
+  `funcall' 548.1 against 316.0 (the native-subrs plan's later
+  stages); the gate of plain frames cannot see a path-qualified call
+  (`super::x(' with an owning local live would pass; the generated
+  shims' calls are invisible to it, though their frames own nothing);
+  the gate of releases counts `RUNTIME.release(' by text and does not
+  restrict who calls `let_go'; a poisoned runtime now depends on how
+  it is held (the last handle dropped during an unrelated panic
+  poisons it for the process; a panic through a call that is not a
+  batch call, with an embedder's handle still held, poisons nothing);
+  the test-only lend zeroes the hold count, so a handle made before a
+  lend and dropped inside it would underflow; an exclusive host permit
+  taken under the process permit can deadlock against a shared holder
+  waiting to boot, and a test that holds the process permit and joins
+  a plain thread that boots would hang (no test does either);
+  `memory-use-counts'' reader has no check of its own, its one caller
+  holding the runtime; the lend test does not hold a Lisp object by a
+  thread-local alone; a test binary copied out of its build directory
+  cannot load the fixture image; after startup this round's build has
+  one more live cons and one more live 34-byte string than the one
+  before, dead objects that a stale stack word keeps since the boot's
+  frames moved; `--seccomp=... --version' dies of SIGSYS in Emaxx and
+  in GNU alike.
 - **Found after the scope lock (round 393 and its review), the first
   three for the next round and the rest outside it.**  One line each:
   the completion functions' walk of the standard obarray holds a
@@ -26318,10 +26425,12 @@ ert-tests as a whole 26,307 ms against 27,211.
   it maps (`eassert (nmapped == leni)` is off in release builds and the
   uninitialized tail is concatenated); Emaxx concatenates what was mapped.
   Exclude that case from oracle comparisons.
-- Library tests share one process heap and are not thread-safe (D43):
-  ordinary `cargo test` now runs one test thread (`.cargo/config.toml`), as
-  the gate and CI do; an explicit `--test-threads` above 1 can still crash
-  in string data.
+- Library tests shared one process heap and were not thread-safe (D43):
+  since round 395 the runtime serializes them, the whole library passes
+  at four test threads, and an ordinary `cargo test` runs two
+  (`.cargo/config.toml`); the gate and CI stay at one for timing.  D43
+  is not marked done: the control in CI awaits the owner, and no macOS
+  run has been made.
 - Keeping the interpreter state behind `Option` costs a test and branch per
   field access (about 18 of the 108 instructions `eval_sub` spends per list
   form). Removing the check would make a parked shell's use undefined
