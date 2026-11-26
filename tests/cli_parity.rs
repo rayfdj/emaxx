@@ -22,6 +22,15 @@ fn emaxx() -> &'static Path {
     common::emaxx(true)
 }
 
+/// A TCP port of this run's own for the server a case starts (the gnutls
+/// cases' gnutls-serv), CASE apart for each such case: on a fixed one two
+/// runs at once, from two worktrees, refuse each other's connections.
+/// From the process id, in 20000-29999, below Linux's ephemeral ports
+/// (32768-60999), which a connection's own end therefore never takes.
+fn own_port(case: u32) -> u32 {
+    20_000 + std::process::id() % 5_000 * 2 + case
+}
+
 struct Corpus {
     directory: PathBuf,
 }
@@ -6910,17 +6919,18 @@ fn the_processes_at_exit_are_shut_down_as_shut_down_emacs_does() {
             .to_string(),
         r##"(progn
 (require 'gnutls)
-(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "44392"))
+(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "PORT"))
 (set-process-query-on-exit-flag srv nil)
 (sleep-for 1)
-(let ((c (open-network-stream "t" nil "127.0.0.1" 44392 :type 'plain)))
+(let ((c (open-network-stream "t" nil "127.0.0.1" PORT :type 'plain)))
   (set-process-query-on-exit-flag c nil)
   (set-process-sentinel c (lambda (_p e) (princ (format "sentinel %S\n" e))))
   (princ (format "boot %S\n" (gnutls-boot c 'gnutls-x509pki '(:hostname "localhost" :priority "NORMAL:%NO_SHUFFLE_EXTENSIONS" :loglevel 2)))))
 (add-hook 'kill-emacs-hook (lambda () (princ "hook\n") (signal-process srv 'SIGTERM)))
 (princ "end\n"))"##
             .replace("KEYFILE", &resources.join("key.pem").display().to_string())
-            .replace("CERTFILE", &resources.join("cert.pem").display().to_string()),
+            .replace("CERTFILE", &resources.join("cert.pem").display().to_string())
+            .replace("PORT", &own_port(1).to_string()),
     ] {
         assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
     }
@@ -6941,13 +6951,13 @@ fn gnutls_boot_verifies_and_logs_as_gnutls_c_does() {
     let program = r##"(progn
 (require 'gnutls)
 (defun show (tag form) (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
-(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "44391"))
+(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "PORT"))
 (sleep-for 1)
 (dolist (host '("localhost" "example.org"))
   (dolist (ve '(nil t (:hostname) (:trustfiles)))
     (show (format "%s %S" host ve)
           (lambda ()
-            (let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+            (let ((c (open-network-stream "t" nil "127.0.0.1" PORT :type 'plain)))
               (prog1 (condition-case e
                          (progn (gnutls-negotiate :process c :hostname host :verify-error ve :trustfiles '("CERTFILE"))
                                 (let ((st (gnutls-peer-status c)))
@@ -6962,19 +6972,20 @@ fn gnutls_boot_verifies_and_logs_as_gnutls_c_does() {
                       '(:hostname "localhost" :keylist (("/nonexistent/k" "/nonexistent/c")))
                       '(:hostname "localhost" :verify-error t)
                       '(:hostname "example.org" :verify-error (:hostname) :trustfiles ("CERTFILE"))))
-  (let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+  (let ((c (open-network-stream "t" nil "127.0.0.1" PORT :type 'plain)))
     (princ (format "%S -> %S stage %S\n" params
                    (condition-case e (gnutls-boot c 'gnutls-x509pki params) (error (list 'ERR e)))
                    (gnutls-get-initstage c)))
     (princ (format "   status %S\n" (plist-get (gnutls-peer-status c) :warnings)))
     (delete-process c)))
-(let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+(let ((c (open-network-stream "t" nil "127.0.0.1" PORT :type 'plain)))
   (princ (format "boot1 %S\n" (condition-case e (gnutls-boot c 'gnutls-x509pki (list :hostname "example.org" :trustfiles '("CERTFILE") :loglevel 1 :verify-flags 'bogus)) (error (list 'ERR e)))))
   (princ (format "deinit %S\n" (gnutls-deinit c)))
   (delete-process c))
 (delete-process srv))"##
         .replace("KEYFILE", &resources.join("key.pem").display().to_string())
-        .replace("CERTFILE", &resources.join("cert.pem").display().to_string());
+        .replace("CERTFILE", &resources.join("cert.pem").display().to_string())
+        .replace("PORT", &own_port(0).to_string());
     let corpus = Corpus::new();
     assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
 }
