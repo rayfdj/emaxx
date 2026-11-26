@@ -3799,6 +3799,39 @@ pub(super) unsafe extern "C" fn direct_native_funcall(
     }
 }
 
+/// eval.c:Fapply at the MANY ABI for the subr at INDEX, as native code
+/// calls it through its relocation entry, which passes the index as
+/// `direct_native_nth' is given its own: the handlers brought to the ABI's
+/// state, then `invoke_native_apply', and the subr's own entry for a call
+/// that does not take (a list that is not proper, a call the full
+/// Ffuncall makes), as `invoke_subr's dispatch on apply's kind reached
+/// them.  A count or vector the MANY ABI does not admit is
+/// `invoke_subr_many's.
+///
+/// # Safety
+/// As `invoke_subr_many's: generated code's MANY count and vector.
+#[inline(always)]
+pub(super) unsafe fn direct_native_apply(
+    index: usize,
+    argument_count: isize,
+    arguments: *const NativeWord,
+) -> NativeWord {
+    if argument_count >= 1 && !arguments.is_null() {
+        // SAFETY: generated code supplies the GNU MANY count/pointer pair;
+        // the pointer was checked above.
+        let words = unsafe { std::slice::from_raw_parts(arguments, argument_count as usize) };
+        return with_active(|active| {
+            let Some(subroutine) = entered_subr(active, index) else {
+                return 0;
+            };
+            invoke_native_apply(active, words)
+                .unwrap_or_else(|| invoke_subr_entry(active, subroutine, words))
+        });
+    }
+    // SAFETY: as the caller's.
+    unsafe { invoke_subr_many(index, argument_count, arguments) }
+}
+
 /// alloc.c:Flist at the MANY ABI: the cells consed from the last argument
 /// back.  Every non-positive count is the empty list, as in C.
 pub(super) unsafe extern "C" fn direct_native_list(
@@ -8587,7 +8620,8 @@ mod tests {
     /// their primitives, with the arity of each entry (-2 for MANY's
     /// count and vector).  Each has a contract test of its own.
     const UNCOMPARED_ENTRIES: &[(&str, i32)] = &[
-        // MANY, which the harness does not call, and it calls Lisp.
+        // MANY, which the harness does not call, and they call Lisp.
+        ("apply", -2),
         ("funcall", -2),
         // MANY, and each call makes a new list, so that two answers are
         // never one object.
