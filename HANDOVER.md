@@ -25052,6 +25052,21 @@ ert-tests as a whole 26,307 ms against 27,211.
   cases), the binaries' tests (63) and the doc stage, three doctests
   passing and three that must fail to compile, none failed.
 
+**On `fcbdf60`** (round 397): the frozen run (run 45765731886) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, on a slow runner (GNU's suite took 357 s, 268 s the run
+  before).  Setup 85.9 s against 72.1 s (1.191), test bodies 304.3 s
+  against 284.8 s (1.068), in all 1.093; the earlier runs on such a
+  runner gave 1.094 to 1.121 in all (rounds 378, 381, 391 and 393).
+  The widest body gaps are tramp-tests (23.1 s against 19.7 s),
+  ert-tests (40.7 against 38.9), comp-tests (19.1 against 17.4),
+  mule-tests (3.12 against 2.03) and semantic-utest-ia (4.03 against
+  3.03).  Both editors passed the eglot test, and GNU's threads test
+  did not abort.  The Rust gate (run 45765728556) passed: 3,695 library tests
+  (eleven more), the eight integration targets (237), the binaries'
+  tests (63) and the doc stage, three doctests passing and three that
+  must fail to compile, none failed.
+
 **The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
   25 Nov by running the one test alone.
   `eglot-test-rust-completion-exit-function' connects twice
