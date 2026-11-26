@@ -1645,36 +1645,20 @@ define_dispatch!(
                     .or_else(|| interp.symbol_value_key(cached_symbol!("obarray")))
                     .unwrap_or(Value::Nil);
                 let obarray = coerce_legacy_vector_obarray(interp, &obarray)?;
-                // The standard obarray: walk the shared enumeration in place
-                // (lread.c walks the buckets; a symbol interned during the
-                // walk joins a fresh enumeration, which this snapshot does
-                // not see, as GNU's walk need not) instead of copying every
-                // symbol into a vector first -- a quarter of a walk's cost.
-                // The walk holds the symbols it has still to visit, a
-                // root of the function's collections: one the function
-                // uninterns is visited all the same, and must be live.
-                if let Kind::Record(id) = obarray.kind()
-                    && interp.is_standard_obarray_id(id.id)
-                {
-                    let symbols = interp.known_symbols_shared();
-                    return interp.with_lisp_stack_roots(&*symbols, |interp| {
-                        for symbol in symbols.iter() {
-                            // The shared Value constructor preserves the nil/t ABI.
-                            let symbol = Value::Symbol(*symbol);
-                            call_function_value(interp, &args[0], &[symbol], env)?;
-                        }
-                        Ok(Value::Nil)
-                    });
+                // lread.c:map_obarray: DOOBARRAY over the buckets as they
+                // are, FUNCTION called on each symbol, then the step to the
+                // symbol's `next' as the call left it.  The current symbol
+                // is a word of this frame, as GNU's iterator's is of its.
+                let walked = super::super::completion::WalkedObarray::of(interp, &obarray)?;
+                let mut it = crate::lisp::types::obarray::ObarrayIter::default();
+                while let Some(symbol) = walked.current(interp, &mut it) {
+                    let value = super::super::completion::obarray_symbol_value(symbol);
+                    // Resolve a symbol's current function cell on every
+                    // call, as call1 does.
+                    call_function_value(interp, &args[0], &[value], env)?;
+                    it.step_from(symbol);
                 }
-                let symbols = obarray_symbols(interp, &obarray)?;
-                interp.with_lisp_stack_roots(&symbols, |interp| {
-                    for symbol in &symbols {
-                        // Resolve a symbol's current function cell on every
-                        // call, as call1 does. Empty obarrays never call it.
-                        call_function_value(interp, &args[0], &[*symbol], env)?;
-                    }
-                    Ok(Value::Nil)
-                })
+                Ok(Value::Nil)
             }
         }
     }
@@ -2535,11 +2519,16 @@ mod mapatoms_root_tests {
     }
 
     #[test]
-    fn a_symbol_mapatoms_has_still_to_visit_lives_through_a_collection() {
-        // mapatoms walks an enumeration of the obarray taken as it began
-        // (lread.c walks the buckets), so a symbol the function uninterns
-        // is still visited: the walk holds it, and a collection in the
-        // function keeps it, intact when its turn comes.
+    fn a_symbol_uninterned_before_its_turn_is_neither_visited_nor_kept() {
+        // lread.c's map_obarray walks the buckets as they are: a symbol
+        // the function uninterns before its turn is out of its chain, so
+        // the walk never comes to it (GNU 30.2: `visited' nil) and holds
+        // nothing that keeps it.  Whether a collection inside the
+        // function frees it depends on stale words of the stack in GNU
+        // too: its walk program as written answers (1 nil) under -l and
+        // --eval, and (0 nil) once a 200-deep recursion has cleared them
+        // before the collection.  So the freeing is seen here after the
+        // walk, the stack below cleared first, by the weak table.
         let mut interp = initialized_upstream_batch_interpreter();
         let mut env = Env::new();
         lisp(
@@ -2551,21 +2540,61 @@ mod mapatoms_root_tests {
                  nil)"#,
         );
         crate::lisp::alloc::clobber_stack();
-        let result = lisp(
+        let visited = lisp(
             &mut interp,
             &mut env,
-            r#"(let ((first t) (seen nil) (visited nil))
+            r#"(let ((first t) (visited nil))
                  (mapatoms
                   (lambda (symbol)
                     (when first
                       (setq first nil)
                       (unintern "mapatoms-root-probe" obarray)
-                      (garbage-collect)
-                      (setq seen (hash-table-count mapatoms-witness)))
+                      (garbage-collect))
                     (when (equal (symbol-name symbol) "mapatoms-root-probe")
                       (setq visited t))))
-                 (list seen visited))"#,
+                 visited)"#,
         );
-        assert_eq!(result.to_string(), "(1 t)");
+        crate::lisp::alloc::clobber_stack();
+        let kept = lisp(
+            &mut interp,
+            &mut env,
+            "(progn (garbage-collect) (hash-table-count mapatoms-witness))",
+        );
+        assert_eq!(
+            (visited.to_string(), kept.to_string()),
+            ("nil".into(), "0".into())
+        );
+    }
+
+    #[test]
+    fn mapatoms_visits_no_symbol_uninterned_before_its_turn() {
+        // At its first symbol of eight in a made obarray the function
+        // uninterns the other seven: GNU's walk visits that one alone, as
+        // it does in the initial obarray.
+        let mut interp = initialized_upstream_batch_interpreter();
+        let mut env = Env::new();
+        let result = lisp(
+            &mut interp,
+            &mut env,
+            r#"(let (counts)
+                 (dolist (made '(t nil))
+                   (let* ((ob (if made (obarray-make) obarray))
+                          (names (mapcar (lambda (c) (format "later-walk-%c" c))
+                                         "abcdefgh"))
+                          (seen nil))
+                     (dolist (name names) (intern name ob))
+                     (mapatoms
+                      (lambda (symbol)
+                        (when (member (symbol-name symbol) names)
+                          (push symbol seen)
+                          (when (null (cdr seen))
+                            (dolist (name names)
+                              (unless (equal name (symbol-name symbol))
+                                (unintern name ob))))))
+                      ob)
+                     (push (length seen) counts)))
+                 counts)"#,
+        );
+        assert_eq!(result.to_string(), "(1 1)");
     }
 }

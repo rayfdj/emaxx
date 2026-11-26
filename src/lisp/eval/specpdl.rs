@@ -401,6 +401,21 @@ impl Interpreter {
         self.specpdl.pop()
     }
 
+    /// SAFE_ALLOCA's sa_count for the vector at ARRAY: the depth of the
+    /// innermost entry that records it (record_unwind_protect_array), so
+    /// that SAFE_FREE's unbind_to leaves the stack below it.
+    pub(crate) fn array_entry_depth(&self, array: *const Value) -> Option<usize> {
+        self.specpdl.iter().rposition(|entry| {
+            matches!(
+                entry,
+                SpecpdlEntry::Unwind(UnwindRecord {
+                    action: UnwindAction::Array(held),
+                    ..
+                }) if std::ptr::eq(held.as_mut_ptr().cast_const(), array)
+            )
+        })
+    }
+
     /// do_one_unbind of ENTRY, taken off the stack.  An unwind record's
     /// action runs with the backtrace frames recorded since retired and
     /// at the evaluation depth it was made at.  While the exit after a C

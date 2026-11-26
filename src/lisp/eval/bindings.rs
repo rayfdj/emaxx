@@ -1026,50 +1026,41 @@ impl Interpreter {
     }
 
     pub fn known_symbol_names(&self) -> Vec<String> {
-        self.known_symbols_shared()
+        self.standard_obarray_symbols()
             .iter()
             .map(|symbol| symbol.as_str().to_string())
             .collect()
     }
 
-    /// lread.c:map_obarray enumerates the owning table. Snapshot its symbols
-    /// so a Lisp callback may intern names without borrowing the table across
-    /// evaluation. No field history or id-based deduplication participates.
-    pub(crate) fn known_symbols_shared(&self) -> Rc<Vec<SymbolName>> {
-        let key = super::KnownSymbolsKey {
-            symbols: self.globals.names_len(),
-            epoch: self.obarray_epoch,
-        };
-        let mut cache = self.known_symbols_cache.borrow_mut();
-        if let Some(cached) = cache.as_ref()
-            && cached.key == key
-        {
-            return Rc::clone(&cached.symbols);
-        }
-        let symbols = Rc::new(
-            self.globals
-                .names()
-                .into_iter()
-                .filter(|symbol| {
-                    let name = symbol.as_str();
-                    crate::lisp::types::is_visible_symbol_name(name)
-                })
-                .collect(),
-        );
-        *cache = Some(super::KnownSymbolsCache {
-            key,
-            symbols: Rc::clone(&symbols),
-        });
-        symbols
+    /// The initial obarray's symbols in DOOBARRAY's order, those whose
+    /// names are visible.
+    pub(crate) fn standard_obarray_symbols(&self) -> Vec<SymbolName> {
+        self.globals
+            .names()
+            .into_iter()
+            .filter(|symbol| crate::lisp::types::is_visible_symbol_name(symbol.as_str()))
+            .collect()
+    }
+
+    /// obarray_iter_at_end's scan in the initial obarray past a chain's
+    /// end: the first nonempty bucket at or after START, with its first
+    /// symbol.
+    #[inline(always)]
+    pub(crate) fn standard_obarray_first_from(
+        &self,
+        start: usize,
+    ) -> Option<(usize, crate::lisp::types::SymbolName)> {
+        self.globals.initial_walk_first_from(start)
+    }
+
+    /// The initial obarray's count.
+    pub(crate) fn standard_obarray_count(&self) -> usize {
+        self.globals.names_len()
     }
 
     /// The initial obarray's size_bits, as pdumper.c dumps its vector.
     pub(crate) fn standard_obarray_size_bits(&self) -> u32 {
         self.globals.initial_size_bits()
-    }
-
-    pub(crate) fn note_obarray_removal(&mut self) {
-        self.obarray_epoch = self.obarray_epoch.wrapping_add(1);
     }
 
     pub(crate) fn standard_obarray_contains_symbol(&self, name: &str) -> bool {

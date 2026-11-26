@@ -30,7 +30,7 @@ impl Interpreter {
         let ert_test = Value::symbol("ert-test");
         let property = SymbolName::intern_str("ert--test");
         let mut tests = Vec::new();
-        for symbol in self.known_symbols_shared().iter() {
+        for symbol in self.standard_obarray_symbols().iter() {
             let Some(test) = self.get_symbol_property_of(symbol, &property) else {
                 continue;
             };

@@ -71,6 +71,17 @@ impl SymbolCells {
         self.symbols.len()
     }
 
+    /// obarray_iter_at_end's scan in the initial obarray past a chain's
+    /// end: the first nonempty bucket at or after START, with its first
+    /// symbol.
+    #[inline(always)]
+    pub(crate) fn initial_walk_first_from(
+        &self,
+        start: usize,
+    ) -> Option<(usize, crate::lisp::types::SymbolName)> {
+        self.symbols.first_in_walk(start)
+    }
+
     /// data.c's C variable symbols_with_pos_enabled, this editor's.
     #[inline]
     pub(crate) fn symbols_with_pos_enabled(&self) -> &std::cell::Cell<bool> {

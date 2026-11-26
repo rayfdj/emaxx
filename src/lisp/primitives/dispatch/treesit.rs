@@ -902,12 +902,16 @@ fn sparse_nodes(
     } else {
         Vec::new()
     };
-    let mut descendants = Vec::new();
+    // treesit_build_sparse_tree's lists are locals the stack holds; the
+    // subtrees made so far are rooted across PROCESS-FN's later calls.
+    let mut descendants = crate::lisp::alloc::RootedVec::new();
     for child in children {
-        descendants.extend(sparse_nodes(interp, traversal, child, process, depth - 1)?);
+        for subtree in sparse_nodes(interp, traversal, child, process, depth - 1)? {
+            descendants.push(subtree);
+        }
     }
     if !matched {
-        return Ok(descendants);
+        return Ok(descendants.iter().copied().collect());
     }
     let node = related_flat_node(interp, traversal.source, traversal.tree, Some(index))?;
     let value = if let Some(function) = process {
@@ -915,7 +919,10 @@ fn sparse_nodes(
     } else {
         node
     };
-    Ok(vec![Value::cons(value, Value::list(descendants))])
+    Ok(vec![Value::cons(
+        value,
+        Value::list(descendants.iter().copied()),
+    )])
 }
 
 define_dispatch!(
@@ -1498,3 +1505,249 @@ define_dispatch!(
         }
     }
 );
+
+#[cfg(test)]
+mod sparse_tree_tests {
+    use crate::lisp::types::{Env, Value};
+
+    #[test]
+    fn a_sparse_tree_s_finished_subtrees_live_through_its_process_function() {
+        // treesit.c:treesit_build_sparse_tree conses each subtree onto
+        // its parent's list, locals the stack holds, while PROCESS-FN
+        // runs on the nodes after them; a collection there keeps the
+        // subtrees made, which are then the tree an unhurried walk makes.
+        let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+        *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text(
+            "*json-sparse*",
+            r#"{"a": [1, true, "x"], "b": [2, false, {"c": 3}]}"#,
+        );
+        interp.register_treesit_language_for_test("json", tree_sitter_json::LANGUAGE.into());
+        let program = r#"
+            (let* ((parser (treesit-parser-create 'json))
+                   (root (treesit-parser-root-node parser))
+                   (pred (lambda (node)
+                           (member (treesit-node-type node)
+                                   '("number" "true" "false" "string_content" "pair"))))
+                   (made (lambda (collect)
+                           (treesit-induce-sparse-tree
+                            root pred
+                            (lambda (node)
+                              (when collect (garbage-collect))
+                              (list (treesit-node-type node) (make-string 3 ?x)))))))
+              (equal (funcall made t) (funcall made nil)))"#;
+        let form = crate::lisp::reader::Reader::new(program)
+            .read()
+            .expect("read the program")
+            .expect("a form");
+        let result = interp
+            .eval(&form, &mut Env::new())
+            .expect("induce the sparse trees");
+        assert_eq!(result, Value::T, "the collecting walk made the same tree");
+    }
+}
+
+#[cfg(test)]
+mod ownership_tests {
+    use crate::lisp::eval::Interpreter;
+    use crate::lisp::types::{Env, Value};
+
+    fn json_interpreter(text: &str) -> Interpreter {
+        let mut interp = crate::test_support::initialized_gnu_early_lisp_interpreter();
+        *interp.buffer.borrow_mut() = crate::buffer::Buffer::from_text("*json-owned*", text);
+        interp.register_treesit_language_for_test("json", tree_sitter_json::LANGUAGE.into());
+        interp
+    }
+
+    // Each step in a frame of its own, the stack below cleared between
+    // them, so that no stale word keeps what the step made.
+    #[inline(never)]
+    fn lisp(interp: &mut Interpreter, env: &mut Env, source: &str) -> Value {
+        let form = crate::lisp::reader::Reader::new(source)
+            .read()
+            .expect("read the program")
+            .expect("a form");
+        let value = interp.eval(&form, env).expect("evaluate the program");
+        crate::lisp::alloc::clobber_stack();
+        value
+    }
+
+    const CHURN: &str = "(progn (garbage-collect)
+                                (dotimes (_ 500) (make-list 20 (make-string 5 ?z)))
+                                (garbage-collect))";
+
+    #[test]
+    fn a_node_holds_its_parser_through_a_collection() {
+        // treesit.h's Lisp_TS_Node: its `parser' is marked with it, so a
+        // node outlives the deletion of the parser it came from and the
+        // collections after, as GNU's does.
+        let mut interp = json_interpreter("[1, [2, 3]]");
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            "(setq owned-nodes
+                   (mapcar (lambda (_)
+                             (treesit-parser-root-node (treesit-parser-create 'json nil t)))
+                           (make-list 8 nil)))",
+        );
+        lisp(
+            &mut interp,
+            &mut env,
+            "(mapc #'treesit-parser-delete (treesit-parser-list))",
+        );
+        lisp(&mut interp, &mut env, CHURN);
+        let types = lisp(
+            &mut interp,
+            &mut env,
+            "(mapcar (lambda (node)
+                       (list (treesit-node-type node)
+                             (treesit-parser-p (treesit-node-parser node))))
+                     owned-nodes)",
+        );
+        let each = r#"("document" t)"#;
+        assert_eq!(types.to_string(), format!("({})", [each; 8].join(" ")));
+    }
+
+    #[test]
+    fn a_buffer_holds_the_parsers_made_for_it() {
+        // buffer.h's ts_parser_list: treesit-parser-create conses the
+        // parser onto its buffer's list, which keeps it until
+        // treesit-parser-delete takes it off.
+        let mut interp = json_interpreter("[1]");
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            "(dotimes (_ 3) (treesit-parser-create 'json nil t))",
+        );
+        lisp(&mut interp, &mut env, CHURN);
+        let listed = lisp(&mut interp, &mut env, "(length (treesit-parser-list))");
+        assert_eq!(listed, Value::Integer(3));
+    }
+
+    #[test]
+    fn a_killed_buffer_lists_and_keeps_no_parser() {
+        // buffer.c's Fkill_buffer: reset_buffer_local_variables (b, 1)
+        // puts every slot with a per-buffer index back to its default,
+        // ts_parser_list's among them, so a killed buffer's object keeps
+        // none of its parsers.
+        let mut interp = json_interpreter("[]");
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (setq owned-weak (make-hash-table :test 'eq :weakness 'key)
+                       owned-buffer (generate-new-buffer "owned"))
+                 (with-current-buffer owned-buffer
+                   (insert "[]")
+                   (dotimes (_ 5)
+                     (puthash (treesit-parser-create 'json nil t) t owned-weak)))
+                 (kill-buffer owned-buffer)
+                 nil)"#,
+        );
+        lisp(&mut interp, &mut env, CHURN);
+        let kept = lisp(
+            &mut interp,
+            &mut env,
+            "(list (hash-table-count owned-weak) (buffer-live-p owned-buffer))",
+        );
+        assert_eq!(kept.to_string(), "(0 nil)");
+    }
+
+    #[test]
+    fn a_major_mode_change_unlists_the_parsers_and_deletes_none() {
+        // reset_buffer_local_variables (b, 0): ts_parser_list is not
+        // permanent-local, so kill-all-local-variables, each major mode's
+        // first step, empties it.  The parsers are not deleted: a node of
+        // one answers, and so does its parser (treesit-parser-language
+        // signals treesit-parser-deleted for a deleted one), a new parser
+        // does not reuse one, and the collector takes those nothing holds
+        // (GNU 30.2: (0 t nil "document" t)).
+        let mut interp = json_interpreter("[1, 2]");
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            "(progn
+               (setq owned-weak (make-hash-table :test 'eq :weakness 'key))
+               (dotimes (_ 3) (puthash (treesit-parser-create 'json nil t) t owned-weak))
+               (setq owned-parser (treesit-parser-create 'json nil nil 'owned)
+                     owned-node (treesit-parser-root-node owned-parser))
+               (kill-all-local-variables)
+               nil)",
+        );
+        lisp(&mut interp, &mut env, CHURN);
+        let after = lisp(
+            &mut interp,
+            &mut env,
+            "(let ((fresh (treesit-parser-create 'json nil nil 'owned)))
+               (list (hash-table-count owned-weak)
+                     (equal (treesit-parser-list nil nil t) (list fresh))
+                     (eq fresh owned-parser)
+                     (treesit-node-type owned-node)
+                     (eq (treesit-parser-language (treesit-node-parser owned-node))
+                         'json)))",
+        );
+        assert_eq!(after.to_string(), r#"(0 t nil "document" t)"#);
+    }
+
+    #[test]
+    fn a_parser_holds_its_tag_ranges_and_notifiers() {
+        // treesit.h's Lisp_TS_Parser: tag, last_set_ranges and
+        // after_change_functions are its Lisp words, marked with it.
+        let mut interp = json_interpreter("[1, [2, 3], 4]");
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (setq owned-parser
+                       (treesit-parser-create 'json nil t (make-symbol "owned-tag")))
+                 (treesit-parser-set-included-ranges
+                  owned-parser (list (cons 1 4) (cons 6 10)))
+                 (treesit-parser-add-notifier
+                  owned-parser
+                  (let ((f (make-symbol "owned-notifier")) (n (make-string 2 ?n)))
+                    (fset f (lambda (_r _p) n))
+                    f))
+                 nil)"#,
+        );
+        lisp(&mut interp, &mut env, CHURN);
+        let held = lisp(
+            &mut interp,
+            &mut env,
+            "(list (symbol-name (treesit-parser-tag owned-parser))
+                   (treesit-parser-included-ranges owned-parser)
+                   (funcall (car (treesit-parser-notifiers owned-parser)) nil nil))",
+        );
+        assert_eq!(held.to_string(), r#"("owned-tag" ((1 . 4) (6 . 10)) "nn")"#);
+    }
+
+    #[test]
+    fn a_query_holds_its_source_until_it_is_compiled() {
+        // treesit.h's Lisp_TS_Query: its language and source are Lisp
+        // words, and a query compiled lazily reads its source at its
+        // first use.
+        let mut interp = json_interpreter("[1, [2, 3]]");
+        let mut env = Env::new();
+        lisp(
+            &mut interp,
+            &mut env,
+            r#"(progn
+                 (setq owned-query
+                       (treesit-query-compile 'json (list (list 'number) (intern "@n"))))
+                 nil)"#,
+        );
+        lisp(&mut interp, &mut env, CHURN);
+        let starts = lisp(
+            &mut interp,
+            &mut env,
+            "(mapcar (lambda (capture) (treesit-node-start (cdr capture)))
+                     (treesit-query-capture
+                      (treesit-parser-root-node (treesit-parser-create 'json))
+                      owned-query))",
+        );
+        assert_eq!(starts.to_string(), "(2 6 9)");
+    }
+}

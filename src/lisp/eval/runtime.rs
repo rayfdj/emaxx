@@ -2737,6 +2737,7 @@ impl Interpreter {
         }
         self.reset_buffer_syntax_table(id);
         self.reset_buffer_category_table(id);
+        self.reset_treesit_parser_list(id);
         self.labeled_restrictions
             .retain(|restriction| restriction.buffer_id != id);
         if let Some(mut buffer) = self.get_buffer_by_id_mut(id) {

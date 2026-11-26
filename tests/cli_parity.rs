@@ -6244,6 +6244,166 @@ fn process_spawn_waits_and_ends_are_gnu_s() {
 }
 
 #[test]
+fn deleted_children_are_reaped_as_handle_child_signal_reaps_them() {
+    // process.c's deleted_pid_list, which handle_child_signal walks: a
+    // child delete-process killed, alive, ended unreported or stopped; a
+    // child call-process and call-process-region do not wait for (BUFFER
+    // 0), its input file removed at its end; the synchronous waits; a
+    // child stopped and continued (WUNTRACED | WCONTINUED); make-process's
+    // :stop; an end that comes while the Lisp thread waits in another
+    // child's waitpid or runs native code; and a pid a deleted child had,
+    // reused by the next process when /proc/sys/kernel/ns_last_pid can be
+    // written.  Each answer and its sentinels' order, and the number of
+    // the editor's threads, are GNU's.
+    let corpus = Corpus::new();
+    assert_same(
+        &corpus,
+        &[
+            "--batch",
+            "-Q",
+            "--eval",
+            r##"(progn
+(defun show (tag form)
+  (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
+(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
+(defun state (pid)
+  (let* ((st (ignore-errors (with-temp-buffer (insert-file-contents (format "/proc/%d/stat" pid)) (buffer-string))))
+         (f (and st (split-string (substring st (1+ (string-search ")" st)))))))
+    (cond ((or (null f) (/= (string-to-number (nth 1 f)) (emacs-pid))) 'gone)
+          ((equal (car f) "Z") 'zombie)
+          (t 'alive))))
+(defun settle (pid)
+  (let ((n 0)) (while (and (< n 100) (not (eq (state pid) 'gone))) (sleep-for 0.02) (setq n (1+ n))))
+  (state pid))
+(defun tasks () (length (directory-files "/proc/self/task" nil "^[0-9]")))
+(defun pid-in (file)
+  (let ((n 0) (pid nil))
+    (while (and (< n 250) (null pid))
+      (setq pid (ignore-errors (with-temp-buffer (insert-file-contents file) (and (> (buffer-size) 1) (string-to-number (buffer-string))))))
+      (unless pid (sleep-for 0.02)) (setq n (1+ n)))
+    pid))
+(defvar dir (make-temp-file "emaxx-reap" t))
+(show "delete-live" (lambda () (let* ((log nil)
+       (p (make-process :name "dl" :command '("sleep" "30") :noquery t :sentinel (lambda (_ e) (push e log))))
+       (pid (process-id p)))
+  (delete-process p)
+  (list (process-status p) (process-exit-status p) (reverse log) (tasks) (settle pid) (tasks)))))
+(show "delete-ended" (lambda () (let* ((log nil)
+       (p (make-process :name "de" :command '("sh" "-c" "exit 3") :noquery t :sentinel (lambda (_ e) (push e log))))
+       (pid (process-id p)))
+  (busy 0.3)
+  (delete-process p)
+  (list (process-status p) (process-exit-status p) (reverse log) (settle pid)))))
+(show "delete-stopped" (lambda () (let* ((log nil)
+       (p (make-process :name "ds" :command '("sleep" "30") :noquery t :sentinel (lambda (_ e) (push e log))))
+       (pid (process-id p)))
+  (signal-process p 'STOP)
+  (busy 0.2)
+  (delete-process p)
+  (list (process-status p) (reverse log) (settle pid)))))
+(show "call-process-0" (lambda () (let* ((f (expand-file-name "a" dir))
+       (v (call-process "sh" nil 0 nil "-c" (format "echo $$ > %s; sleep 0.3" f)))
+       (pid (pid-in f)))
+  (list v (tasks) (state pid) (settle pid) (tasks)))))
+(show "call-process-region-0" (lambda () (let* ((f (expand-file-name "b" dir)) (td (file-name-as-directory (make-temp-file "emaxx-in" t)))
+       (v (let ((temporary-file-directory td)) (call-process-region "abc" nil "sh" nil 0 nil "-c" (format "cat > /dev/null; echo $$ > %s; sleep 0.3" f))))
+       (pid (pid-in f))
+       (during (length (directory-files td nil "^emacs"))))
+  (list v during (settle pid) (length (directory-files td nil "^emacs")) (tasks)))))
+(show "call-process-sync" (lambda ()
+  (list (call-process "sh" nil nil nil "-c" "exit 3")
+        (call-process "sh" nil nil nil "-c" "kill -TERM $$")
+        (call-process-region "x" nil "sh" nil nil nil "-c" "cat > /dev/null; exit 4")
+        (with-temp-buffer (list (call-process-region "abc" nil "sh" nil t nil "-c" "cat; exit 5") (buffer-string)))
+        (tasks))))
+(show "stop-continue" (lambda () (let* ((log nil)
+       (p (make-process :name "sc" :command '("sleep" "30") :noquery t :sentinel (lambda (_ e) (push e log)))))
+  (signal-process p 'STOP) (busy 0.2) (accept-process-output nil 0.1)
+  (let ((stopped (list (process-status p) (reverse log))))
+    (signal-process p 'CONT) (busy 0.2) (accept-process-output nil 0.1)
+    (prog1 (list stopped (process-status p) (reverse log)) (delete-process p))))))
+(show "stop-flag" (lambda () (let* ((log nil)
+       (p (make-process :name "sf" :command '("sh" "-c" "echo hi; sleep 0.2") :noquery t :stop t
+                        :filter (lambda (_ s) (push (list 'out s) log)) :sentinel (lambda (_ e) (push (list 'sen e) log)))))
+  (busy 0.4) (accept-process-output nil 0.1)
+  (let ((before (list (process-status p) (reverse log))))
+    (continue-process p)
+    (let ((n 0)) (while (and (< n 40) (not (assq 'sen log))) (accept-process-output nil 0.05) (setq n (1+ n))))
+    (list before (process-status p) (reverse log))))))
+(show "blocking-syscall" (lambda () (let* ((log nil)
+       (p (make-process :name "bs" :command '("sh" "-c" "exit 2") :noquery t :sentinel (lambda (_ e) (push e log)))))
+  (call-process "sleep" nil nil nil "0.4")
+  (let ((during (list (process-status p) (reverse log))))
+    (accept-process-output nil 0.1)
+    (list during (process-status p) (process-exit-status p) (reverse log))))))
+(show "native-code" (lambda () (let* ((log nil)
+       (p (make-process :name "nc" :command '("sh" "-c" "exit 6") :noquery t :sentinel (lambda (_ e) (push e log)))))
+  (let ((n 0)) (while (< n 3) (length (number-sequence 1 1000000)) (setq n (1+ n))))
+  (let ((during (list (process-status p) (reverse log))))
+    (accept-process-output nil 0.1)
+    (list during (process-status p) (process-exit-status p) (reverse log))))))
+(show "reuse" (lambda () (let* ((p (make-process :name "old" :command '("sleep" "30") :noquery t))
+       (pid (process-id p)) (tries 0) (q nil) (log nil) (denied nil))
+  (delete-process p)
+  (settle pid)
+  (while (and (< tries 30) (not denied) (not (and q (= (process-id q) pid))))
+    (when q (delete-process q) (settle (process-id q)))
+    (setq tries (1+ tries))
+    (condition-case nil (write-region (number-to-string (1- pid)) nil "/proc/sys/kernel/ns_last_pid" nil 'silent)
+      (error (setq denied t)))
+    (setq q (make-process :name "new" :command '("sh" "-c" "sleep 0.2; exit 7") :noquery t :sentinel (lambda (_ e) (push e log)))))
+  (let ((n 0)) (while (and (< n 60) (null log)) (accept-process-output nil 0.05) (setq n (1+ n))))
+  (list (if denied 'denied (= (process-id q) pid)) (process-status q) (process-exit-status q) log (settle (process-id q))))))
+(delete-directory dir t))"##,
+        ],
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn children_alive_at_kill_emacs_are_left_as_gnu_leaves_them() {
+    // shut_down_emacs's kill_buffer_processes: SIGHUP to each child's
+    // group and no wait, so a child that ignores it outlives the editor.
+    let corpus = Corpus::new();
+    let mut answers = Vec::new();
+    for binary in [oracle(), emaxx().to_path_buf()] {
+        let file = corpus.directory.join("survived");
+        let _ = std::fs::remove_file(&file);
+        let program = format!(
+            r##"(let ((a (make-process :name "a" :command '("sleep" "30") :noquery t))
+      (b (make-process :name "b" :noquery t
+                       :command (list "sh" "-c" "trap '' HUP; sleep 0.5; echo survived > {}"))))
+  (sleep-for 0.2)
+  (princ (format "%d\n" (process-id a)))
+  (kill-emacs 0))"##,
+            file.display()
+        );
+        let (out, err, status) = corpus.run(&binary, &["--batch", "-Q", "--eval", &program]);
+        let pid: libc::pid_t = out.trim().parse().unwrap_or_else(|_| panic!("{out}{err}"));
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while !file.exists() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        // SAFETY: a null signal only asks whether PID exists.
+        let alive = || unsafe { libc::kill(pid, 0) } == 0;
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(10);
+        while alive() && std::time::Instant::now() < deadline {
+            std::thread::sleep(std::time::Duration::from_millis(20));
+        }
+        answers.push((
+            status,
+            err,
+            alive(),
+            std::fs::read_to_string(&file).unwrap_or_default(),
+        ));
+    }
+    assert_eq!(
+        answers[1], answers[0],
+        "Emaxx (left) and GNU (right) differ"
+    );
+}
+
+#[test]
 fn status_notify_walks_the_processes_as_gnu_s() {
     // process.c:status_notify's walk: no read for a filter of t, reads
     // until one finds nothing, the changes handle_child_signal recorded

@@ -881,6 +881,17 @@ impl Drop for CallProcessTempFile {
     }
 }
 
+impl CallProcessTempFile {
+    /// The file's name for handle_child_signal to unlink (the FILENAME of
+    /// record_deleted_pid), which removes it from then on.
+    #[cfg(unix)]
+    fn into_deleted_file_name(self) -> Option<std::ffi::CString> {
+        use std::os::unix::ffi::OsStrExt;
+        let file = std::mem::ManuallyDrop::new(self);
+        std::ffi::CString::new(file.0.as_os_str().as_bytes()).ok()
+    }
+}
+
 /// callproc.c create_temp_file's file: Vtemp_file_name_pattern
 /// ("emacsXXXXXX") expanded in `temporary-file-directory' (else $TMPDIR,
 /// else "/tmp/"), a copy of its ENCODE_FILE given to mkostemp
@@ -1126,7 +1137,7 @@ pub(crate) fn call_process(
     if no_wait {
         // record_deleted_pid: handle_child_signal reaps it, and removes
         // the input file, when it exits.
-        reap_deleted_child(child, tempfile);
+        record_deleted_pid(child, tempfile);
         return Ok(Value::Nil);
     }
     // wait_for_termination (pid, &status, fd0 < 0).
@@ -1154,9 +1165,16 @@ pub(crate) fn call_process(
     }
 }
 
-/// record_deleted_pid: CHILD, which nothing waits for, reaped whenever it
-/// exits, and TEMPFILE removed then.
-fn reap_deleted_child(mut child: SpawnedChild, tempfile: Option<CallProcessTempFile>) {
+/// record_deleted_pid: CHILD, which nothing waits for, reaped by
+/// handle_child_signal whenever it exits, and TEMPFILE removed then.
+#[cfg(unix)]
+fn record_deleted_pid(mut child: SpawnedChild, tempfile: Option<CallProcessTempFile>) {
+    child.record_deleted_pid(tempfile.and_then(CallProcessTempFile::into_deleted_file_name));
+}
+
+/// record_deleted_pid, where a child's handle is its own to wait on.
+#[cfg(not(unix))]
+fn record_deleted_pid(mut child: SpawnedChild, tempfile: Option<CallProcessTempFile>) {
     let _ = spawn_helper_thread("process-reaper", move || {
         let _ = child.wait();
         drop(tempfile);
@@ -1224,14 +1242,17 @@ fn call_process_cleanup(
         Err(error) => {
             // A quit leaves call_process_kill to record_kill_process;
             // Fkill_emacs unwinds nothing.
+            #[cfg(unix)]
             if !matches!(error.kind(), LispErrorKind::Terminate(_)) {
-                #[cfg(unix)]
-                // SAFETY: as above.
-                unsafe {
-                    libc::kill(-(child.id() as libc::pid_t), libc::SIGKILL);
-                }
+                child.record_kill_process(None);
             }
-            reap_deleted_child(child, None);
+            #[cfg(not(unix))]
+            {
+                if !matches!(error.kind(), LispErrorKind::Terminate(_)) {
+                    let _ = child.kill();
+                }
+                record_deleted_pid(child, None);
+            }
             return Err(error);
         }
     };

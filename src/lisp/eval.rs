@@ -6,7 +6,6 @@ use std::io::{ErrorKind, Read, Write};
 use std::path::PathBuf;
 #[cfg(not(unix))]
 use std::process::Child;
-use std::rc::Rc;
 use std::time::SystemTime;
 
 use super::primitives;
@@ -1516,6 +1515,11 @@ pub(crate) struct TreeSitterParserState {
     pub(crate) list_buffer_id: u64,
     pub(crate) tag: Value,
     pub(crate) deleted: bool,
+    /// Whether the parser is on its list buffer's ts_parser_list, the
+    /// per-buffer slot treesit-parser-create conses it onto, which
+    /// treesit-parser-delete, kill-buffer and kill-all-local-variables
+    /// take it off (reset_buffer_local_variables resets the slot).
+    pub(crate) listed: bool,
     pub(crate) included_ranges: Value,
     pub(crate) notifiers: Vec<Value>,
     pub(crate) parsed_tick: Option<crate::buffer::ModCount>,
@@ -2414,22 +2418,34 @@ impl std::fmt::Debug for SerialRuntime {
     }
 }
 
-/// handle_child_signal's record of one asynchronous child: the pid the
-/// SIGCHLD handler asks waitpid about while the child is alive
-/// (p->alive), its negation once the handler has reaped it, 0 for a slot
-/// no child holds; and the newest status it found that the interpreter
-/// has not taken (p->raw_status with p->raw_status_new), as PID << 32 |
-/// the raw status, 0 for none.  Slots are never freed, only reused, so
-/// the handler walks them without taking a lock.
+/// handle_child_signal's record of one child: the pid the SIGCHLD handler
+/// asks waitpid about while the child is alive (p->alive), its negation
+/// once the handler has reaped it, 0 for a slot no child holds; and the
+/// newest status it found that the interpreter has not taken
+/// (p->raw_status with p->raw_status_new), as PID << 32 | the raw status,
+/// 0 for none.  A slot is an asynchronous process's child (the walk of
+/// Vprocess_alist) or a deleted one (deleted_pid_list's entry, `deleted'),
+/// which nothing observes: the handler reaps it and unlinks its file.
+/// Slots are never freed, only reused, so the handler walks them without
+/// taking a lock.
 #[cfg(unix)]
 pub(crate) struct ChildSlot {
     pid: std::sync::atomic::AtomicI32,
     record: std::sync::atomic::AtomicU64,
     /// One poller at a time: the handler, or a thread that polls for a
-    /// signal it cannot count on.  A poll that finds another under way
-    /// leaves `again' for it to poll once more.
+    /// signal it cannot count on, or the Lisp thread changing the slot
+    /// (`hold'), as GNU's block_child_signal holds the handler off.  A
+    /// poll that finds another under way leaves `again' for it to poll
+    /// once more.
     busy: std::sync::atomic::AtomicBool,
     again: std::sync::atomic::AtomicBool,
+    /// deleted_pid_list's (PID . FILENAME): a child asked for its end
+    /// alone (child_status_changed (PID, 0, 0)).
+    deleted: std::sync::atomic::AtomicBool,
+    /// FILENAME: the NUL-terminated name the handler unlinks at a deleted
+    /// child's end, or null.  The Lisp thread made it, and frees it when
+    /// it sweeps the reaped slot (record_deleted_pid's Fdelq (Qnil, ...)).
+    file: std::sync::atomic::AtomicPtr<libc::c_char>,
     next: std::sync::atomic::AtomicPtr<ChildSlot>,
 }
 
@@ -2481,17 +2497,36 @@ impl ChildSlot {
             }
             let pid = self.pid.load(Ordering::Acquire);
             if pid > 0 {
+                // A deleted child's stops are nobody's: only its end.
+                let deleted = self.deleted.load(Ordering::Acquire);
+                let options = if deleted {
+                    libc::WNOHANG
+                } else {
+                    libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED
+                };
                 loop {
                     let mut status = 0;
                     // SAFETY: waitpid is async-signal-safe; PID is this slot's
                     // unreaped child and STATUS writable storage.
-                    let result = unsafe {
-                        libc::waitpid(
-                            pid,
-                            &mut status,
-                            libc::WNOHANG | libc::WUNTRACED | libc::WCONTINUED,
-                        )
-                    };
+                    let result = unsafe { libc::waitpid(pid, &mut status, options) };
+                    // SAFETY: this thread's errno.
+                    if result < 0 && unsafe { *errno_location() } == libc::EINTR {
+                        continue;
+                    }
+                    // A deleted child's entry goes at any answer but "no
+                    // change": child_status_changed's -1 (ECHILD, the child
+                    // not this process's to wait for) counts as one.
+                    if deleted && result != 0 {
+                        // unlink (SSDATA (XCDR (head))); XSETCAR (tail, Qnil).
+                        let file = self.file.load(Ordering::Acquire);
+                        if !file.is_null() {
+                            // SAFETY: unlink is async-signal-safe; FILE is the
+                            // NUL-terminated name the slot owns until swept.
+                            unsafe { libc::unlink(file) };
+                        }
+                        self.pid.store(-pid, Ordering::Release);
+                        break;
+                    }
                     if result == pid {
                         self.record.store(
                             (u64::from(pid as u32) << 32) | u64::from(status as u32),
@@ -2509,10 +2544,6 @@ impl ChildSlot {
                             );
                         }
                         break;
-                    }
-                    // SAFETY: this thread's errno.
-                    if result < 0 && unsafe { *errno_location() } == libc::EINTR {
-                        continue;
                     }
                     // No change, or ECHILD: "the status is lost".
                     break;
@@ -2607,44 +2638,114 @@ impl Drop for ChildSignalGuard {
 /// the SIGCHLD the blocked mask held back would be delivered then.
 #[cfg(unix)]
 fn watch_child(pid: i32) -> &'static ChildSlot {
+    let slot = claim_child_slot(pid);
+    slot.let_go();
+    slot
+}
+
+/// A slot for PID, held (`ChildSlot::hold'): a free one, the deleted
+/// children the handler has reaped swept first (record_deleted_pid's
+/// Fdelq (Qnil, deleted_pid_list)), else a new one.
+#[cfg(unix)]
+fn claim_child_slot(pid: i32) -> &'static ChildSlot {
     use std::sync::atomic::Ordering;
+    let free = |slot: &ChildSlot| {
+        slot.pid.load(Ordering::Acquire) == 0 && slot.record.load(Ordering::Acquire) == 0
+    };
     let mut slot = CHILD_SLOTS.load(Ordering::Acquire);
-    let mut found = None;
     while !slot.is_null() {
         // SAFETY: slots are leaked once made and never freed.
         let current: &'static ChildSlot = unsafe { &*slot };
-        if current.record.load(Ordering::Acquire) == 0
+        current.sweep();
+        if free(current)
             && current
-                .pid
-                .compare_exchange(0, pid, Ordering::AcqRel, Ordering::Acquire)
+                .busy
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
                 .is_ok()
         {
-            found = Some(current);
-            break;
+            if free(current) {
+                current.pid.store(pid, Ordering::Release);
+                return current;
+            }
+            current.busy.store(false, Ordering::Release);
         }
         slot = current.next.load(Ordering::Acquire);
     }
-    let slot = found.unwrap_or_else(|| {
-        let slot: &'static ChildSlot = Box::leak(Box::new(ChildSlot {
-            pid: std::sync::atomic::AtomicI32::new(pid),
-            record: std::sync::atomic::AtomicU64::new(0),
-            busy: std::sync::atomic::AtomicBool::new(false),
-            again: std::sync::atomic::AtomicBool::new(false),
-            next: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
-        }));
-        let pointer = std::ptr::from_ref(slot).cast_mut();
-        let mut head = CHILD_SLOTS.load(Ordering::Acquire);
-        loop {
-            slot.next.store(head, Ordering::Release);
-            match CHILD_SLOTS.compare_exchange(head, pointer, Ordering::AcqRel, Ordering::Acquire) {
-                Ok(_) => break,
-                Err(current) => head = current,
-            }
+    let slot: &'static ChildSlot = Box::leak(Box::new(ChildSlot {
+        pid: std::sync::atomic::AtomicI32::new(pid),
+        record: std::sync::atomic::AtomicU64::new(0),
+        busy: std::sync::atomic::AtomicBool::new(true),
+        again: std::sync::atomic::AtomicBool::new(false),
+        deleted: std::sync::atomic::AtomicBool::new(false),
+        file: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+        next: std::sync::atomic::AtomicPtr::new(std::ptr::null_mut()),
+    }));
+    let pointer = std::ptr::from_ref(slot).cast_mut();
+    let mut head = CHILD_SLOTS.load(Ordering::Acquire);
+    loop {
+        slot.next.store(head, Ordering::Release);
+        match CHILD_SLOTS.compare_exchange(head, pointer, Ordering::AcqRel, Ordering::Acquire) {
+            Ok(_) => break,
+            Err(current) => head = current,
         }
-        slot
-    });
-    slot.poll();
+    }
     slot
+}
+
+#[cfg(unix)]
+impl ChildSlot {
+    /// block_child_signal, for this slot: the handler, on any thread, finds
+    /// it busy and leaves it to `let_go'.  The handler never waits, so
+    /// the hold waits only for a poll under way on another thread.
+    fn hold(&self) {
+        use std::sync::atomic::Ordering;
+        while self
+            .busy
+            .compare_exchange_weak(false, true, Ordering::AcqRel, Ordering::Acquire)
+            .is_err()
+        {
+            std::hint::spin_loop();
+        }
+    }
+
+    /// unblock_child_signal: the slot let go and asked waitpid at once, as
+    /// the SIGCHLD the hold kept back would be handled then.
+    fn let_go(&self) {
+        self.busy.store(false, std::sync::atomic::Ordering::Release);
+        self.poll();
+    }
+
+    /// A deleted child the handler reaped, its entry dropped: its file's
+    /// name freed and the slot free again.  A slot busy now waits for the
+    /// next sweep.
+    fn sweep(&self) {
+        use std::sync::atomic::Ordering;
+        if !self.deleted.load(Ordering::Acquire)
+            || self.pid.load(Ordering::Acquire) >= 0
+            || self
+                .busy
+                .compare_exchange(false, true, Ordering::AcqRel, Ordering::Acquire)
+                .is_err()
+        {
+            return;
+        }
+        if self.deleted.load(Ordering::Acquire) && self.pid.load(Ordering::Acquire) < 0 {
+            free_child_file(self.file.swap(std::ptr::null_mut(), Ordering::AcqRel));
+            self.deleted.store(false, Ordering::Release);
+            self.release();
+        }
+        self.busy.store(false, Ordering::Release);
+    }
+}
+
+/// A deleted child's file name, made by `CString::into_raw', freed.
+#[cfg(unix)]
+fn free_child_file(file: *mut libc::c_char) {
+    if !file.is_null() {
+        // SAFETY: FILE came from CString::into_raw and nothing else holds
+        // it: the handler reads it only while the child is unreaped.
+        drop(unsafe { std::ffi::CString::from_raw(file) });
+    }
 }
 
 /// A subprocess callproc.c:emacs_spawn started: its pid, the parent's ends
@@ -2659,6 +2760,9 @@ pub(crate) struct SpawnedChild {
     slot: Option<&'static ChildSlot>,
     /// Whether status_change has given the end.
     end_reported: bool,
+    /// Given to deleted_pid_list (`record_deleted_pid'): no longer this
+    /// owner's to wait for or to signal.
+    deleted: bool,
     pub(crate) stdin: Option<fs::File>,
     pub(crate) stdout: Option<fs::File>,
     pub(crate) stderr: Option<fs::File>,
@@ -2680,6 +2784,7 @@ impl SpawnedChild {
             status: None,
             slot: None,
             end_reported: false,
+            deleted: false,
             stdin,
             stdout,
             stderr,
@@ -2704,6 +2809,9 @@ impl SpawnedChild {
     /// waitpid's answer now; an end, once, which is kept.
     pub(crate) fn status_change(&mut self) -> std::io::Result<Option<i32>> {
         use std::os::unix::process::ExitStatusExt;
+        if self.deleted {
+            return Ok(None);
+        }
         if let Some(status) = self.status {
             // An end try_wait or wait reaped.
             if self.end_reported {
@@ -2765,7 +2873,65 @@ impl SpawnedChild {
     /// Whether the pid is still this child's: not reaped, by this owner or
     /// by handle_child_signal.
     fn unreaped(&self) -> bool {
-        self.status.is_none() && !self.slot.is_some_and(ChildSlot::reaped)
+        !self.deleted && self.status.is_none() && !self.slot.is_some_and(ChildSlot::reaped)
+    }
+
+    /// process.c:record_deleted_pid (PID, FILE): the child put on
+    /// deleted_pid_list, which handle_child_signal walks: it reaps the child
+    /// at its end and unlinks FILE then.  Nothing here waits for it.
+    pub(crate) fn record_deleted_pid(&mut self, file: Option<std::ffi::CString>) {
+        self.give_to_deleted_list(file, false);
+    }
+
+    /// process.c:record_kill_process (P, FILE): while the child is alive
+    /// (p->alive), record_deleted_pid and SIGKILL to the process group it
+    /// leads, with the handler held off its slot meanwhile, as GNU blocks
+    /// SIGCHLD, so the group signalled is still this child's.
+    pub(crate) fn record_kill_process(&mut self, file: Option<std::ffi::CString>) {
+        self.give_to_deleted_list(file, true);
+    }
+
+    fn give_to_deleted_list(&mut self, file: Option<std::ffi::CString>, kill: bool) {
+        use std::sync::atomic::Ordering;
+        let pid = self.pid as i32;
+        let alive = self.unreaped();
+        self.deleted = true;
+        let slot = match self.slot.take() {
+            Some(slot) => {
+                slot.hold();
+                slot
+            }
+            None if alive => claim_child_slot(pid),
+            None => {
+                // Reaped already: its end has come, and its file can go.
+                if let Some(file) = file {
+                    // SAFETY: FILE is a NUL-terminated name.
+                    unsafe { libc::unlink(file.as_ptr()) };
+                }
+                return;
+            }
+        };
+        if slot.pid.load(Ordering::Acquire) == pid {
+            slot.file.store(
+                file.map_or(std::ptr::null_mut(), std::ffi::CString::into_raw),
+                Ordering::Release,
+            );
+            slot.deleted.store(true, Ordering::Release);
+            if kill {
+                // SAFETY: a signal to the group of this child, unreaped
+                // while its slot is held.
+                unsafe { libc::kill(-pid, libc::SIGKILL) };
+            }
+        } else {
+            // The handler reaped it before the hold: p->alive is 0, and
+            // the status it recorded is nobody's now.
+            slot.release();
+            if let Some(file) = file {
+                // SAFETY: as above.
+                unsafe { libc::unlink(file.as_ptr()) };
+            }
+        }
+        slot.let_go();
     }
 
     /// A child std's `Command' started, reaped from here on by pid.
@@ -2795,6 +2961,10 @@ impl SpawnedChild {
         use std::os::unix::process::ExitStatusExt;
         if let Some(status) = self.status {
             return Ok(Some(status));
+        }
+        if self.deleted {
+            // handle_child_signal's to reap: "not a child" of this owner.
+            return Err(std::io::Error::from_raw_os_error(libc::ECHILD));
         }
         if let Some(slot) = self.slot {
             // handle_child_signal alone reaps a watched child; a blocking
@@ -2877,19 +3047,6 @@ impl SpawnedChild {
             return Err(std::io::Error::last_os_error());
         }
         Ok(())
-    }
-
-    /// record_kill_process's kill (- p->pid, SIGKILL) while p->alive: the
-    /// process group the child leads (emacs_spawn's setsid), unless the
-    /// child has been reaped (its pid may be reused).
-    pub(crate) fn kill_group(&mut self) {
-        if self.unreaped() {
-            // SAFETY: a signal to the group of this unreaped child, which
-            // leads it.
-            unsafe {
-                libc::kill(-(self.pid as libc::pid_t), libc::SIGKILL);
-            }
-        }
     }
 }
 
@@ -4002,19 +4159,6 @@ type BufferLocalBindings = HashMap<u64, LocalCells, crate::lisp::types::Identity
 pub(crate) type CodingSystemHash =
     HashMap<SymbolName, usize, crate::lisp::types::IdentityBuildHasher>;
 
-/// A snapshot for callbacks that may intern further symbols while enumerating.
-/// Membership comes only from the owning obarray; field stores cannot invalidate it.
-#[derive(Clone)]
-pub(crate) struct KnownSymbolsCache {
-    pub(crate) key: KnownSymbolsKey,
-    pub(crate) symbols: Rc<Vec<crate::lisp::types::SymbolName>>,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) struct KnownSymbolsKey {
-    symbols: usize,
-    epoch: u64,
-}
 type RecordIdsByType = HashMap<String, BTreeSet<u64>, crate::lisp::primitives::FnvBuildHasher>;
 
 #[derive(Clone, Debug, Default)]
@@ -4952,6 +5096,10 @@ impl LispReachability {
                 if let Some(base) = buffer.base_buffer() {
                     self.enqueue(&Value::Buffer(base));
                 }
+                // Its ts_parser_list.
+                interp.visit_treesit_buffer_parsers(buffer.id, &mut |parser| {
+                    self.enqueue(parser);
+                });
             }
             Kind::Terminal(terminal) => {
                 terminal.visit_lisp_values(&mut |child| self.enqueue(child));
@@ -5043,12 +5191,17 @@ impl LispReachability {
                         self.enqueue(value);
                     }
                 }
-                // A mutex's and a condition variable's name are theirs too.
+                // A mutex's and a condition variable's name are theirs too,
+                // as a tree-sitter parser's and query's Lisp words are.
                 match record.kind {
                     RecordKind::Mutex => self.enqueue(&interp.mutex_name(record.id)),
                     RecordKind::ConditionVariable => {
                         self.enqueue(&interp.condition_variable_name(record.id));
                     }
+                    RecordKind::TreeSitterParser | RecordKind::TreeSitterCompiledQuery => interp
+                        .visit_treesit_lisp_words(record.kind, record.id, &mut |child| {
+                            self.enqueue(child);
+                        }),
                     _ => {}
                 }
             }
@@ -6525,7 +6678,6 @@ impl Interpreter {
         // Identity-keyed caches: the copied cells have fresh identities, so
         // every cached verdict keyed by (or holding) template cells is
         // stale.  All of these repopulate lazily.
-        *clone.known_symbols_cache.get_mut() = None;
         clone.bc_stack = crate::lisp::bytecode::vm::BcStack::new();
         clone.bc_frames = Default::default();
         clone.bc_handlers = Default::default();
@@ -6849,11 +7001,6 @@ pub struct InterpreterState {
     /// mutating the host `TZ' would leak state between otherwise isolated
     /// Emacs instances.
     pub(crate) local_time_zone_rule: Value,
-    /// The actual obarray snapshot used by callbacks; invalidated only by
-    /// membership changes, never by value/function/plist mutations.
-    known_symbols_cache: RefCell<Option<KnownSymbolsCache>>,
-    /// Membership removal/reinsertion can leave the same symbol count.
-    obarray_epoch: u64,
     /// Runtime record representing GNU's preloaded standard `obarray'.  Its
     /// symbol view is synthesized from the interpreter's canonical namespace
     /// indexes rather than duplicated in the record's storage slot.
@@ -7631,8 +7778,6 @@ impl Interpreter {
             native_compiler: crate::lisp::native_comp::NativeCompilerState::default(),
             default_file_modes: initial_default_file_modes(),
             local_time_zone_rule,
-            known_symbols_cache: RefCell::new(None),
-            obarray_epoch: 0,
             standard_obarray_id,
             buffer: crate::lisp::types::BufferRef::new(0, crate::buffer::Buffer::new("*scratch*")),
             current_global_map: None,

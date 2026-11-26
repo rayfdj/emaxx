@@ -360,6 +360,9 @@ pub(crate) fn record_prin1_fields(interp: &Interpreter, id: u64) -> Option<Vec<V
         | crate::lisp::eval::RecordKind::ConditionVariable
         | crate::lisp::eval::RecordKind::Process
         | crate::lisp::eval::RecordKind::Obarray => None,
+        // A node's slot is its parser (treesit.h's `parser'), which
+        // print.c does not print.
+        crate::lisp::eval::RecordKind::TreeSitterNode => Some(vec![record.type_tag]),
         _ => Some(
             std::iter::once(record.type_tag)
                 .chain(record.slots.iter().cloned())

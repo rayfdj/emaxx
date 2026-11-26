@@ -4626,23 +4626,27 @@ impl NativeWords {
     #[inline(always)]
     fn release(self, active: &ActiveCall) {
         if self.in_specpdl {
-            Self::release_specpdl(active);
+            Self::release_specpdl(active, self.address);
         } else {
             unsafe { &mut *active.runtime }.pop_ephemeral_root_range(self.count);
         }
     }
 
-    /// SAFE_FREE's unbind_to of the vector's entry, the innermost.
+    /// SAFE_FREE's unbind_to (sa_count): the stack cut back to below the
+    /// entry that records the vector at ADDRESS, which is the innermost
+    /// whenever the calls it was taken for left the stack balanced.
     #[cold]
     #[inline(never)]
-    fn release_specpdl(active: &ActiveCall) {
+    fn release_specpdl(active: &ActiveCall, address: *mut NativeWord) {
         let interpreter = unsafe { &mut *active.interpreter };
-        if let Some(entry) = interpreter.pop_specpdl_entry() {
-            // The vector's entry runs nothing but its free.
-            let undone =
-                interpreter.undo_specpdl_entry(entry, unsafe { &mut *active.environment.get() });
-            debug_assert!(undone.is_ok());
-        }
+        let Some(depth) = interpreter.array_entry_depth(address.cast::<Value>().cast_const())
+        else {
+            debug_assert!(false, "SAFE_FREE of a vector no entry records");
+            return;
+        };
+        // The vector's entry runs nothing but its free.
+        let undone = interpreter.unbind_to(depth, unsafe { &mut *active.environment.get() });
+        debug_assert!(undone.is_ok());
     }
 }
 

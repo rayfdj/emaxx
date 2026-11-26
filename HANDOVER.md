@@ -225,7 +225,14 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   across a signal is the specpdl's, the public entry points take a
   `Runtime' handle whose holds are counted, and the library passes
   whole at four test threads; the four items of thread safety wait on
-  the CI control (the owner's), a macOS run and C5.3's gate.
+  the CI control (the owner's), a macOS run and C5.3's gate.  Round
+  396: the two reaper threads are gone, GNU's deleted list in the
+  SIGCHLD handler in their place; C5.3's gate was written, passed by
+  the review in eight ways, and held back.  Round 397, outside the
+  plan's stages: `mapatoms' and the completion functions walk the
+  obarray in place as GNU's iterator does, with no snapshot to go
+  stale or unmarked, and tree-sitter's nodes, parsers and queries
+  hold the Lisp words GNU's mark, a buffer its listed parsers.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -21246,6 +21253,199 @@ setup_process_coding_systems's check now refuses). A 13-form
   notes of test or reporting infrastructure are the two gates' tools
   (a doc stage, and comments), the cargo configuration, anti_cheat.rs,
   and two binaries whose calls gained the handle.
+- **Round 396: the SIGCHLD handler reaps deleted children, and no
+  thread waits on one (M2: the reaper threads, an open question of the
+  plan of runtime ownership, by the owner's rule; none closed).**
+  **The threads**: a process deleted before its child had exited, and
+  a `call-process' with buffer 0, each left a helper thread waiting on
+  the child.  GNU has no such thread: `delete-process' puts the
+  child's pid on deleted_pid_list, and handle_child_signal reaps it
+  there (process.c).  Now a child's slot belongs either to a live
+  process or to the deleted list; the handler asks a deleted child
+  with WNOHANG alone, as child_status_changed (pid, 0, 0) does, and at
+  its end, or at ECHILD, removes the child's temporary file and frees
+  the slot.  A batch run with a live child, a deleted child or a
+  buffer-0 `call-process' child shows one task in /proc, as GNU's
+  does, where it showed two.  (On Unix; elsewhere a thread a child
+  stays, as w32proc.c has one.)  **A race removed**: the kill of a
+  child checked that it was unreaped and then signalled its group, and
+  a child that exited between the two, its pid given to a new fork,
+  had the signal sent to the wrong group.  The kill now holds the
+  slot across the check and the signal, as GNU's block_child_signal
+  makes the two one; the handler finds the slot busy and leaves it,
+  and the poll after the release reaps the child.
+  `process-send-signal' still tests and signals without the hold, as
+  GNU's does.  **SAFE_FREE**: the release of a native helper's array
+  on the specpdl unbinds to its own entry's depth, as
+  unbind_to (sa_count) does, where it popped whatever entry was
+  innermost.  **A test by identity**: the test that another thread's
+  sweep frees its creator's uninterned symbols read a global count in
+  two holds, which is true only while no other test runs, and failed
+  once at four test threads.  It now looks for each of the creator's
+  64 symbols at its address by its own unique name, in the collecting
+  thread's hold: 64 of 64 kept when the sweep is broken, none
+  otherwise, and twenty runs of its group at four test threads pass
+  it.  **Held back**: the gate that every public function able to run
+  Lisp takes `&Runtime' (C5.3's) was written in this round, and the
+  review passed it eight ways (a type alias, a conversion's
+  constructor, a deref, an impl in another file, three forms of
+  re-export, an import alias, a trait's default method, a `;' in a
+  return type).  Nothing in the tree gets through any of them, but the
+  gate does not do what it says, so it is not landed and goes on in
+  the next thread round.  **Lisp sees nothing change**, and when
+  Emaxx notices a child's exit is as before and as GNU, quiet and
+  under six busy loops, over 50 runs a case: the exited pty child's
+  window size t in 26 of 50 for GNU under load and 28 of 50 before and
+  after; a child's end waiting for its notification the same in all
+  three; a pty child's last output lost without the drain in 3, 2 and
+  4 of 30 and never with it.  **Counts**: every probe equal to round
+  395's build, the process probes among them (`process-name' 392.6
+  instructions against GNU's 371.0, not looked into).  The
+  independent review (the one question: does the round cheat or break
+  something) compared the build before, this one and GNU on
+  `delete-process' of live, ended and stopped children, `kill-emacs'
+  with children alive, two threads each waiting on a process, a
+  SIGCHLD during native code, a collection and a background thread,
+  and a deep native `apply' and `mapcar' under throws, errors and
+  quits: the same answers, no zombie on any build; it read the slot's
+  protocol for a lost wakeup and the handler for what a signal handler
+  may do, and found no cheat and nothing broken.  A reading of the
+  rewritten test found it stronger than the one it replaces (each of
+  the 64 cells must be gone, where a count could be made up by other
+  symbols) and safe in what it reads.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,677 passed, 0 failed, 2 ignored (one
+  library test more); cli 30, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 1, package_lifecycle 5,
+  runtime_ownership 7 and runtime_forgotten_handle 1; the doctests,
+  three passing and three that must fail to compile; the harness's
+  own tests 59; clippy `-D warnings' and rustfmt clean.  cli_parity
+  gave 187 of its 189 cases (two are new), and neither failure is the
+  round's; each case then passed six times of six alone on the same
+  build.  In the gnutls case every connection of Emaxx's side was
+  refused: the case starts its server on a fixed port, another
+  worktree was running the same case, and two overlapping runs of the
+  program give that answer whichever of GNU, round 395's build and
+  this one is the second (measured at four offsets), while under
+  sixteen busy loops all three give the usual answer eight times of
+  eight.  In a child's end waiting for its notification it was GNU
+  that gave its other answer, as in round 392's validation: under
+  sixteen busy loops GNU gives it in 1 run of 10, round 395's build
+  and this one in none.  The round audit reports no hard finding, 732
+  changed lines with 3 tests and 14 assertions added; its three notes
+  of a dropped result are outside Unix (the thread a child keeps
+  there, and a kill before it), and its note of a changed assertion is
+  SAFE_FREE's, the same assertion on the unbind to the entry's depth.
+- **Round 397: the obarray walks are GNU's, in place, and tree-sitter's
+  objects hold what GNU's mark (M2, the lifetimes of A2.5; none
+  closed).**  **The walks**: `mapatoms' and the completion functions
+  walked a copy of the obarray's symbols taken as they began, the
+  standard obarray's shared snapshot or another obarray's vector.  GNU
+  has no copy: map_obarray and minibuf.c walk the buckets with
+  obarray_iter_t.  So a symbol uninterned before its turn was still
+  visited here, one interned during the walk was not, and the
+  snapshot, unmarked across the predicate's calls, handed completion's
+  predicate a symbol a collection had freed (reproduced from Lisp on
+  the build before).  Now the walk is GNU's iterator: it reads the
+  buckets as they are and steps from the current symbol's next as it
+  is.  `try-completion' and `all-completions' take the symbol and step
+  past it before the predicate, as minibuf.c; `test-completion' looks
+  the string up and walks only to ignore case; `mapatoms' calls the
+  function, then steps.  The snapshot, its key and the obarray's epoch
+  are gone, and the dump's and ERT's listings read the obarray afresh.
+  A table of mutations (the function uninterning the current, a later
+  or an earlier symbol, interning twenty, signaling, re-entering,
+  collecting; for each of the three walks) prints what GNU prints.
+  **Cost**: the first in-place walk was dearer than the snapshot (a
+  byte-compiled `mapatoms' 341.1 instructions a symbol to 420.5), and
+  three commits took that back: the buckets read in line, the
+  iterator two words kept in registers, completion's walk inlined
+  with a symbol offering its name and becoming a Lisp word only when
+  the predicate is called, and `compare-strings' holding its two
+  strings once a scan where it borrowed each twice a character (a
+  candidate's comparison 201 instructions to 158; GNU's 191 to 203).
+  **Counts** (before = round 395's build): `try-completion' over the
+  obarray 3,074,223 instructions to 2,347,035 (GNU 2,790,974),
+  `all-completions' 5,604,947 to 4,337,902 (GNU 5,282,880), and a
+  byte-compiled `mapatoms' 341.1 a symbol to 352.4 (GNU 298.9).  That
+  last one is dearer than before: the walk's own loop is 35.3
+  instructions against GNU's 38.8, the bucket scan GNU makes too is
+  what the snapshot made once, and the rest of the distance to GNU is
+  the call into the function, D17's.  **Tree-sitter**: treesit.h's
+  node keeps its parser as a Lisp field, the parser marks its
+  language, buffer, tag, last set ranges and after-change functions,
+  a query its language and source, and the buffer's ts_parser_list
+  holds the parsers made for it.  Here a node knew its parser by id
+  and the collector traced none of those words: from Lisp, a node
+  outlived its parser and panicked at its next use, a parser's ranges
+  were read back from freed conses, a lazily compiled query read a
+  freed source, and an undeleted parser left its buffer's list at the
+  next collection.  Now the node's record has its parser as a slot
+  (not printed, as print.c prints none of it), the record's trace
+  marks a parser's and a query's words, and a buffer's trace marks
+  its listed parsers.  The list is reset as GNU's per-buffer slot is,
+  at `kill-buffer' and at `kill-all-local-variables': the parsers are
+  not deleted, they leave the list, are not reused by
+  `treesit-parser-create', and their nodes go on answering.  Before,
+  a mode change listed and reused the old parsers, which Lisp could
+  see ((3 nil t "document" t) for GNU's (0 t nil "document" t)).  An
+  explicit collection costs 21,243 instructions more (0.08%), the
+  buffer's trace looking for its parsers; that grows with buffers and
+  parsers until these are GNU's pseudovectors with the fields inline
+  (the plan's R9).  **Two vectors**: of the eleven places listed in
+  round 393 where a vector of Lisp words outlives a call into Lisp,
+  two were real and now hold their words as GNU's lists on the stack
+  do: `get-load-suffixes' (a quit in its walk runs the debugger, and
+  a collection there freed the suffixes made so far) and
+  `treesit-induce-sparse-tree' (a collection in PROCESS-FN freed the
+  subtrees made before it); each has a test that failed first.  The
+  other nine were read and hold no hazard: no Lisp runs between the
+  making and the use (`replace-match''s pieces,
+  `define-charset-internal''s members, two font lists, a notification
+  event, the plist of a printed hash table), or the words are held
+  elsewhere (the specpdl's old values, a call's own arguments), or
+  they are no Lisp words (socket addresses).  A second terminal's
+  waiting events, listed there too, are no hazard either: the
+  deletion of a hung-up terminal runs no Lisp, as GNU's with FORCE
+  `noelisp', and a test over two ptys fails if it ever comes to.
+  **A test converted**: the test of a symbol uninterned before
+  `mapatoms' comes to it counted a weak table's entries after a
+  collection inside the function.  GNU answers that program (1 nil),
+  and (0 nil) only once a deep recursion has cleared stale stack
+  words: the count is the conservative scan's in GNU too.  The test
+  now collects after the walk with the stack cleared, and says so;
+  what it is for is that the walk neither visits the symbol nor holds
+  it.  **The independent review** (the one question: does the round
+  cheat or break something) ran the build against GNU on thirty walk
+  cases and a dump and load round trip, the same; found the first
+  five commits and three of the next four clean; and found one break
+  in the tree-sitter commit: a killed buffer kept its undeleted
+  parsers alive (a weak table showed 5 for GNU's 0).  The list's
+  reset above is its fix, made in this round, and the review of it
+  was clean: a parser made after a mode change, an unlisted parser's
+  node and the parser itself, its deletion, an edit, the
+  permanent-local cases, and an indirect buffer and its base all
+  answer as GNU.  The test of that reset ended in the node's `live'
+  check, whose primitive has the name of a GNU ERT test, which the
+  round audit does not let a runtime file name; a rewording made to
+  clear that (the node's start) no longer failed when the reset
+  deleted the parsers, the review caught it, and the element now asks
+  the node's parser its language, which signals for a deleted parser
+  in GNU and here and fails the test under that mutation.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,688 passed, 0 failed, 2 ignored (eleven
+  library tests more); cli 30, cli_parity 189, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementer's run of the whole
+  library at four test threads: 3,689 passed, 0 failed, on its branch,
+  which also carried the held-back gate.  The round audit reports no
+  hard finding, 1,149 changed lines with 11 tests and 15 assertions
+  added; its one note of a changed assertion is the old walk's test,
+  which expected the uninterned symbol kept and visited, (1 t), where
+  the two tests in its place expect GNU's answers.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -24835,6 +25035,38 @@ ert-tests as a whole 26,307 ms against 27,211.
   binaries' tests (63) and the gate's new doc stage, three doctests
   passing and three that must fail to compile, none failed.
 
+**On `a874999`** (round 396): the frozen run (run 45756167402) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, and round 394's rule was exercised for the first time:
+  `eglot-test-rust-completion-exit-function' failed for GNU with
+  `jsonrpc-error' "Timed out" (request 2, after 10.9 s) and passed for
+  Emaxx, the acceptance was reported in the file's line and after the
+  totals, and the file's 52 outcomes count as matching.  Setup 51.8 s
+  against 45.0 s (1.151), test bodies 227.7 s against 223.1 s (1.021),
+  in all 1.043 (GNU's suite took 268 s).  The widest body gaps are
+  tramp-tests (15.1 s against 13.3 s), comp-tests (10.5 against 9.2),
+  semantic-utest-ia (2.60 against 1.87), process-tests (2.17 against
+  1.43) and mule-tests (1.87 against 1.28).  GNU's threads test did
+  not abort.  The Rust gate (run 45756164482) passed: 3,684 library
+  tests, the eight integration targets (237; the two new parity
+  cases), the binaries' tests (63) and the doc stage, three doctests
+  passing and three that must fail to compile, none failed.
+
+**On `fcbdf60`** (round 397): the frozen run (run 45765731886) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, on a slow runner (GNU's suite took 357 s, 268 s the run
+  before).  Setup 85.9 s against 72.1 s (1.191), test bodies 304.3 s
+  against 284.8 s (1.068), in all 1.093; the earlier runs on such a
+  runner gave 1.094 to 1.121 in all (rounds 378, 381, 391 and 393).
+  The widest body gaps are tramp-tests (23.1 s against 19.7 s),
+  ert-tests (40.7 against 38.9), comp-tests (19.1 against 17.4),
+  mule-tests (3.12 against 2.03) and semantic-utest-ia (4.03 against
+  3.03).  Both editors passed the eglot test, and GNU's threads test
+  did not abort.  The Rust gate (run 45765728556) passed: 3,695 library tests
+  (eleven more), the eight integration targets (237), the binaries'
+  tests (63) and the doc stage, three doctests passing and three that
+  must fail to compile, none failed.
+
 **The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
   25 Nov by running the one test alone.
   `eglot-test-rust-completion-exit-function' connects twice
@@ -24858,8 +25090,45 @@ ert-tests as a whole 26,307 ms against 27,211.
   owner's decision of the same day, and reports each acceptance with
   the side that failed; the test still runs on both sides, and
   anything else about it is compared as before (round 394's entry).
+  The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 397 and its reviews), within the
+  plan's later stages or outside the round.**  One line each, all
+  tree-sitter and all the same before the round: GNU's
+  `treesit-parser-delete' takes a parser off its own buffer's list
+  (treesit.c:1636), so a parser made in an indirect buffer, which is
+  on the base's list, stays listed after its deletion, and here it
+  leaves ((2 2 2 3 3 3 0) in GNU, (2 2 2 3 2 2 0) here);
+  `treesit-parser-create' on a killed buffer makes and lists the
+  parser in GNU and signals here; a parser's notifiers are stored and
+  marked but never called here, where GNU calls them at a reparse; a
+  parser prints as `#s(treesit-parser)' for GNU's
+  `#<treesit-parser for json>', as recorded; and the buffer's trace
+  of its parsers costs more with every buffer and parser until the
+  plan's R9.
+- **Found after the scope lock (round 396 and its review), within the
+  plan's later stages or outside the round.**  One line each: the
+  release of a helper's array would run, not only pop, entries an
+  unbalanced callee left above it, and in a release build returns in
+  silence when no entry records the array, where GNU asserts in a
+  checking build (an always-on stop on that cold path is the next
+  thread round's); `process-name' costs 392.6 instructions against
+  GNU's 371.0; the performance runner requires each `benchmark-run'
+  sample to be above 0, and GNU itself gives a negative elapsed time
+  in 111 of 20,000 runs of a short form, so that check fails by
+  chance (once in twenty four-thread runs here); a template-clone
+  test reads a process-wide counter outside any hold, harmless while
+  this build never clones a template; a slot's sweep releases it
+  without rechecking, which only reaped slots reach; `Runtime::lock'
+  is not a seed of the held-back gate, since it takes the lock
+  directly; the gnutls parity case starts its server on a fixed port,
+  so two worktrees running that case at once refuse each other's
+  connections (this round's validation met it); and a child's end
+  waiting for its notification is a parity case whose GNU answer
+  changes under load (1 run in 10 under sixteen busy loops, and in the
+  validations of rounds 392 and 396), which wants the deterministic
+  form the other timing cases were given.
 - **Found after the scope lock (round 395 and its reviews), within the
   plan's later stages or outside the round.**  One line each: a native
   `apply' costs 915.1 instructions against GNU's 545.0 and a native

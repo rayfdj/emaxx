@@ -330,14 +330,6 @@ pub(crate) const FIELDS_NOT_CARRIED: &[(&str, &str)] = &[
     ("record_ids_by_type_index", "the index install_record keeps"),
     ("gc_elapsed_total", "alloc.c's private gc_elapsed total"),
     (
-        "known_symbols_cache",
-        "the obarray enumeration, derived from the tables it reads",
-    ),
-    (
-        "obarray_epoch",
-        "a removal counter the enumeration cache keys on",
-    ),
-    (
         "sqlite_handles",
         "sqlite objects are refused by the writer (OS handles)",
     ),

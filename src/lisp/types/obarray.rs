@@ -137,6 +137,49 @@ pub(crate) fn text_key(text: &str) -> (&[u8], usize) {
     (bytes, chars)
 }
 
+/// lisp.h's obarray_iter_t: the bucket a walk is at and its current
+/// symbol, the next of whose chain it steps to.  It holds no copy of the
+/// obarray: each advance past a chain's end reads the buckets as they are
+/// then (obarray_iter_at_end), so a walk sees what DOOBARRAY sees of the
+/// symbols interned, uninterned or rehashed while it runs.
+#[derive(Clone, Copy, Default)]
+pub(crate) struct ObarrayIter {
+    /// The bucket obarray_iter_at_end reads next, idx + 1.
+    next_bucket: usize,
+    /// The current symbol; None at the end of a chain.
+    symbol: Option<SymbolName>,
+}
+
+impl ObarrayIter {
+    /// obarray_iter_at_end, then obarray_iter_symbol: the walk's current
+    /// symbol, or None at its end.  Within a chain it answers at once;
+    /// past a chain's end FIRST_FROM gives the first nonempty bucket at or
+    /// after an index of the obarray as it is now, with its first symbol.
+    #[inline(always)]
+    pub(crate) fn current(
+        &mut self,
+        first_from: impl FnOnce(usize) -> Option<(usize, SymbolName)>,
+    ) -> Option<SymbolName> {
+        if let Some(symbol) = self.symbol {
+            return Some(symbol);
+        }
+        let Some((index, symbol)) = first_from(self.next_bucket) else {
+            self.next_bucket = usize::MAX;
+            return None;
+        };
+        self.next_bucket = index + 1;
+        self.symbol = Some(symbol);
+        Some(symbol)
+    }
+
+    /// obarray_iter_step from SYMBOL, the current symbol: its `next', as
+    /// it is now.
+    #[inline(always)]
+    pub(crate) fn step_from(&mut self, symbol: SymbolName) {
+        self.symbol = symbol.cell().next.get();
+    }
+}
+
 /// The storage of an obarray's buckets.
 pub(crate) trait Buckets {
     fn size_bits(&self) -> u32;
@@ -315,6 +358,24 @@ impl Default for StandardBuckets {
     }
 }
 
+impl StandardBuckets {
+    /// obarray_iter_at_end's scan past a chain's end, over the buckets as
+    /// they are: the first nonempty bucket at or after START, with its
+    /// first symbol.
+    #[inline(always)]
+    pub(crate) fn first_from(&self, start: usize) -> Option<(usize, SymbolName)> {
+        let buckets = self.buckets.as_slice();
+        let mut index = start;
+        while index < buckets.len() {
+            if let Some(symbol) = buckets[index] {
+                return Some((index, symbol));
+            }
+            index += 1;
+        }
+        None
+    }
+}
+
 impl Buckets for StandardBuckets {
     #[inline(always)]
     fn size_bits(&self) -> u32 {
@@ -437,6 +498,23 @@ impl RecordBucketsRef<'_> {
     /// oblookup of the name of a Lisp string NAME; None for no string.
     pub(crate) fn lookup_name(&self, name: Value) -> Option<Result<SymbolName, usize>> {
         with_name_key(name, |bytes, chars| self.lookup(bytes, chars))
+    }
+
+    /// The first nonempty bucket at or after INDEX, with its first symbol.
+    pub(crate) fn first_from(&self, index: usize) -> Option<(usize, SymbolName)> {
+        let buckets = self.0.get(2..)?;
+        buckets
+            .get(index..)?
+            .iter()
+            .enumerate()
+            .find_map(|(offset, bucket)| {
+                bucket_symbol(bucket).map(|symbol| (index + offset, symbol))
+            })
+    }
+
+    /// The obarray's count.
+    pub(crate) fn count(&self) -> usize {
+        self.0[1].as_integer().unwrap_or(0) as usize
     }
 
     /// DOOBARRAY's walk.

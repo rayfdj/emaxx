@@ -587,6 +587,7 @@ impl Interpreter {
         self.reset_buffer_syntax_table(buffer_id);
         self.reset_buffer_category_table(buffer_id);
         self.reset_buffer_keymap(buffer_id);
+        self.reset_treesit_parser_list(buffer_id);
     }
 
     /// reset_buffer_local_variables's bset_keymap (b, Qnil).
@@ -639,6 +640,8 @@ impl Interpreter {
         self.reset_buffer_syntax_table(buffer_id);
         self.reset_buffer_category_table(buffer_id);
         self.reset_buffer_keymap(buffer_id);
+        // So is ts_parser_list's.
+        self.reset_treesit_parser_list(buffer_id);
     }
 
     pub fn clone_buffer_local_state(&mut self, from_buffer_id: u64, to_buffer_id: u64) {
@@ -1169,11 +1172,7 @@ impl Interpreter {
         name: Value,
         only: Option<SymbolName>,
     ) -> bool {
-        if self.globals.unintern_name(name, only).is_none() {
-            return false;
-        }
-        self.note_obarray_removal();
-        true
+        self.globals.unintern_name(name, only).is_some()
     }
 
     pub(crate) fn is_standard_obarray_id(&self, id: u64) -> bool {

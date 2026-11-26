@@ -692,3 +692,48 @@ fn load_search_newer_stays_in_first_directory_and_preserves_suffix_ties() {
     );
     fs::remove_dir_all(root).expect("remove only this test's isolated fixture copies");
 }
+
+// The suffixes are made in frames of their own, the stack below the test
+// cleared first, so that only what the function holds keeps them.
+#[inline(never)]
+fn load_suffixes_quitting_in_the_walk(interp: &mut Interpreter, env: &mut Env) -> Value {
+    crate::lisp::alloc::clobber_stack();
+    interp.set_symbol_value_key(cached_symbol!("quit-flag"), Value::T);
+    get_load_suffixes_value(interp, env).expect("get the load suffixes")
+}
+
+#[test]
+fn load_suffixes_made_before_a_quit_s_collection_live() {
+    // lread.c:Fget_load_suffixes conses each suffix onto its list, a
+    // local the stack holds, while FOR_EACH_TAIL walks the variables'
+    // lists; the walk's quit check can run the debugger, which here
+    // collects.  The suffixes made before it live, and are themselves.
+    let mut interp = crate::test_support::initialized_upstream_batch_interpreter();
+    let mut env = Env::new();
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        r#"(setq load-suffixes '(".elc" ".el")
+                 load-file-rep-suffixes '("" ".gz")
+                 debug-on-quit t
+                 debugger (lambda (&rest _) (garbage-collect) nil))"#,
+    )
+    .expect("set the suffixes and the debugger up");
+    let suffixes = load_suffixes_quitting_in_the_walk(&mut interp, &mut env);
+    interp.set_global_binding("walked-suffixes", suffixes);
+    assert_eq!(
+        crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
+            r#"(equal walked-suffixes '(".elc" ".elc.gz" ".el" ".el.gz"))"#,
+        )
+        .expect("compare the suffixes"),
+        Value::T
+    );
+    assert!(
+        interp
+            .symbol_value_key(cached_symbol!("quit-flag"))
+            .is_none_or(|flag| flag.is_nil()),
+        "the walk's quit check took the quit"
+    );
+}

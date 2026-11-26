@@ -1920,9 +1920,9 @@ impl Printer {
                 Ok(())
             }
             RecordKind::Obarray => {
-                let count = crate::lisp::primitives::completion::obarray_symbols(interp, obj)
-                    .map(|symbols| symbols.len())
-                    .unwrap_or(0);
+                // print.c: the obarray's count.
+                let count = crate::lisp::primitives::completion::WalkedObarray::of(interp, obj)
+                    .map_or(0, |walked| walked.count(interp));
                 self.strout(interp, env, &format!("#<obarray n={count}>"))
             }
             RecordKind::WindowConfiguration => self.strout(interp, env, "#<window-configuration>"),

@@ -759,39 +759,55 @@ pub(crate) fn compare_string_ranges(
     let Kind::StringObject(right) = right.kind() else {
         return Err(LispError::WrongTypeArgument("stringp".into(), *right));
     };
-    let mut left_byte = left
-        .borrow()
-        .byte_offset(left_start)
-        .expect("validated string index");
-    let mut right_byte = right
-        .borrow()
-        .byte_offset(right_start)
-        .expect("validated string index");
     let left_length = left_end - left_start;
     let right_length = right_end - right_start;
     let common_length = left_length.min(right_length);
-    for matched in 0..common_length {
-        let mut a = left
-            .borrow()
-            .character_as_multibyte_advance(&mut left_byte)
-            .expect("validated string range");
-        let mut b = right
-            .borrow()
-            .character_as_multibyte_advance(&mut right_byte)
-            .expect("validated string range");
-        if a == b {
-            continue;
-        }
+    // The byte cursors, found when the scan first holds the strings.
+    let mut cursors = None;
+    let mut matched = 0;
+    loop {
+        // Both strings are held through a scan up to the first character
+        // that differs; nothing in it runs Lisp.
+        let (mut a, mut b) = {
+            let (left, right) = (left.borrow(), right.borrow());
+            let (left_byte, right_byte) = cursors.get_or_insert_with(|| {
+                (
+                    left.byte_offset(left_start)
+                        .expect("validated string index"),
+                    right
+                        .byte_offset(right_start)
+                        .expect("validated string index"),
+                )
+            });
+            let mut pair = None;
+            while matched < common_length {
+                let a = left
+                    .character_as_multibyte_advance(left_byte)
+                    .expect("validated string range");
+                let b = right
+                    .character_as_multibyte_advance(right_byte)
+                    .expect("validated string range");
+                matched += 1;
+                if a != b {
+                    pair = Some((a, b));
+                    break;
+                }
+            }
+            match pair {
+                Some(pair) => pair,
+                None => break,
+            }
+        };
         if ignore_case {
             // GNU calls Fupcase on the promoted character only after a
             // mismatch. Use the same live buffer case tables and numeric
-            // casing path, releasing string borrows before either call.
+            // casing path, the strings released before either call.
             a = casify_value(interp, &Value::Integer(a), CaseAction::Up, env)?.as_integer()?;
             b = casify_value(interp, &Value::Integer(b), CaseAction::Up, env)?.as_integer()?;
         }
         match a.cmp(&b) {
-            Ordering::Less => return Ok(Value::Integer(-((matched + 1) as i64))),
-            Ordering::Greater => return Ok(Value::Integer((matched + 1) as i64)),
+            Ordering::Less => return Ok(Value::Integer(-(matched as i64))),
+            Ordering::Greater => return Ok(Value::Integer(matched as i64)),
             Ordering::Equal => {}
         }
     }
