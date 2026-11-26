@@ -202,6 +202,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   block holds 2,016 cells with no serial, the census reports the
   sweeps' free counts, and the sweeps clear the mark bits, so an
   allocation of a cons, a float or a small vector tests no epoch.
+  Round 399: the first half of stage R16; a mapped object's mark is a
+  bit of the dump's two bitsets and the image is never swept, at 24%
+  more instructions an explicit collection (33.8M against GNU's
+  54.5M).
 - **In progress: A2.5, A4.7, C5.1, C5.3 and D43** (runtime ownership
   and thread access; the plan: docs/plans/runtime-ownership.md, stages
   0 to 9).  Round 388: stages 0 to 2; the runtime lock names its
@@ -21532,6 +21536,101 @@ setup_process_coding_systems's check now refuses). A 13-form
   two notes of a removed assertion are the debug assertion the stop
   replaces and one that moved with the pop, and its note of a spawned
   process is the new test's child.
+- **Round 399: a mapped object's mark is a bit of the dump's two
+  bitsets, as GNU's is, and the image is never swept (M2, stage R16 of
+  A4.1 and A4.2, first half; none closed).**  **GNU**: pdumper.c never
+  sweeps its dump.  A dumped object's mark is a bit of
+  dump_private.mark_bits, one for each 8-byte word of the dump;
+  pdumper_clear_marks, gc_sweep's last step, makes those bits the last
+  marks and clears the next; and the conservative scan takes a word for
+  a dumped object only if the last collection marked it
+  (pdumper_find_object_type_impl), so one that died is never reached
+  again and the heap objects it held are freed.  **Before**: the image's
+  mapped conses, strings, symbols and vectors were marked in their
+  blocks or in themselves and swept with the heap's, which wrote the
+  image's pages, and their counts lived in three statics.  **Now**: each
+  load enters its mapped section in one static, DUMP, which is
+  dump_public's start and end and the two bitsets; a mapped cell says
+  that it is one (a bit of its cons block's first allocation word, the
+  string's origin, the symbol's bits, the vector block's marks, a large
+  vector's address), its mark goes to the bitset, the sweeps leave the
+  mapped blocks out, and the scan refuses a mapped object the last
+  collection did not mark.  The test binary maps an image for each fresh
+  interpreter, so the regions are a sorted list; a process with one
+  image marks through the one region's start, length and bits and never
+  reads the list on the mark path.  Only the thread holding the runtime
+  marks, scans, sweeps or loads, so the static has no lock, and a load
+  checks the hold.  **Why both bitsets**: a first cut kept the mapped
+  blocks out of the sweep without the last marks, and crashed in the
+  gate: a dead mapped object stayed allocated, a stale stack word
+  brought it back, and the trace followed its field into a heap object
+  freed since.  That is the hazard GNU's last_mark_bits closes.  **The
+  choice of design**: the marks could have stayed where they were, with
+  GNU's last-mark rule read from the cons block's allocation bit, the
+  strings' and symbols' epoch words and a saved copy of each vector
+  block's bitmap; that would have cost no instruction and was not taken,
+  being three mechanisms of Emaxx's own for GNU's one, which also keep
+  the epoch the next half of this stage removes.  **Cost** (before =
+  round 397's build): an explicit collection 27,268,189 instructions to
+  33,820,540, 24% more, against GNU's 54,503,936.  A test of a mapped
+  object's mark is 14 instructions in line after a route test of 2 or 3,
+  where the mark in the object was about 7; GNU's pdumper_marked_p and
+  pdumper_set_marked are 20.9 a test and 31.7 a new mark, 483,273 tests
+  a collection here.  The allocation probes rise by the collections they
+  include and stay under GNU's: a cons loop 2,356.1 to 2,390.4 (GNU
+  2,461.2; without collections 2,195.5 unchanged against 2,110.2),
+  `make-symbol' 1,222.5 to 1,391.2 (1,964.6), `make-vector' 1,243.7 to
+  1,410.0 (1,596.6), a multibyte `concat' 2,452.9 to 2,713.8 (3,172.0),
+  a float 588.7 to 609.9 (656.5).  **Memory**: the first collection of a
+  batch session writes no page of the image, as GNU's writes none; round
+  397's made 1,880 kB of it private.  Private memory before and after
+  that collection: 18,212 to 20,476 kB in round 397's build, 18,432 to
+  18,856 kB now (the two bitsets are 180 kB each), GNU 17,736 to 17,740.
+  **Limits**: a dead mapped object is never cleaned, as GNU never cleans
+  a dumped one, and no mapped address is given out again, so nothing
+  kept for a dead one is read for another object.  What is kept is a
+  little more than GNU keeps: the text properties a session added to a
+  mapped string stay in its side state after it dies, where GNU's
+  sweep_intervals frees a dead dumped string's intervals, and the
+  byte-code verifier's records of a dead mapped string or closure stay,
+  which GNU does not have.  The one-region path does not assert, as
+  pdumper_set_marked does, that a newly marked object was marked last
+  time; the list's path does, and GNU's own check is a checking build's.
+  **Still to do, the second half**: heap strings, symbols and large
+  vectors keep the collection's epoch in their mark words, a load and a
+  store at each allocation, which GNU does not pay.  **The independent
+  review** (the one question: does the round cheat or break something)
+  found the three commits clean, the middle one a refactor that changes
+  nothing.  It compared this build, round 397's and GNU on weak tables
+  of the four kinds keyed and valued by dumped symbols, strings, conses
+  and a closure; dumped alist entries dropped; a dumped cons and a
+  dumped constants vector made the only holder of a heap object; text
+  properties and a widening `aset' on a dumped string; ten collections
+  in a row; the census and `memory-use-counts'; stale stack words naming
+  dropped dumped conses; and a dump, a load, mutation, five collections
+  and a second dump and load: the same answers, with and without the
+  collector's verifier, but for one finalizer case that differed from
+  GNU before the round as after.  It found no reader of a mapped
+  object's mark outside the two predicates, no access to the static off
+  the thread that holds the runtime, and no mapping that ever leaves (so
+  no stale bits at a reused address); it showed that the stale-word test
+  fails whenever the last-mark rule is off, whether or not the freed
+  cell was reused; and its own measurement of the collection's cost
+  agrees with the figures above.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,693 passed, 0 failed, 2 ignored (four
+  library tests more); cli 30, cli_parity 189, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 1,
+  package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementer's run of the whole
+  library at four test threads on its branch: 3,692 passed, 0 failed
+  (before round 398's test of the stop).  The round audit reports no
+  hard finding, 981 changed lines with 4 tests and 20 assertions
+  added; its one note of new state is the static DUMP, which stands
+  for pdumper.c's dump_private and dump_public and replaces three
+  statics.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -25192,6 +25291,20 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 399 and its review), within the
+  plan's later stages or outside the round.**  One line each:
+  `process_tls_state_survives_collection_before_and_after_async_handshake'
+  (in the local gate's skip list) and the file notification scenarios
+  are library tests that check GNU's own answer against a pinned text,
+  and GNU's answer changes under this machine's load (seen in rounds
+  398 and 399); a finalizer held only by a dropped dumped alist cons
+  is run here and not by GNU, before this round as after; a dead mapped
+  string keeps the text properties a session gave it, which GNU's
+  sweep_intervals frees; `memory-use-counts' differs by a constant
+  between two builds whose native-lisp directories differ, so consing
+  counts are compared only between builds of one target directory; the
+  round's first two commits each leave one test failing, by design (a
+  test before its change), which a bisection must know.
 - **Found after the scope lock (round 398 and its review), within the
   plan's later stages or outside the round.**  One line each:
   `cargo test --lib' in the dev profile does not link
