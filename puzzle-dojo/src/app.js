@@ -135,6 +135,22 @@
     'Re-check colors after each sweep of ×’s. A wide color can become a strip in one move.',
   ];
 
+  // ---------- native shell ----------
+  // Inside the iOS app the page talks to Swift through one message channel:
+  // saves go to the device instead of localStorage, and moves can tap the
+  // Taptic Engine. In a browser `native` is null and all of this is a no-op.
+  const native = (() => {
+    const seed = window.__dojoNative;
+    const port = window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.dojo;
+    if (!seed || !port) return null;
+    return {
+      saved: typeof seed.saved === 'string' ? seed.saved : null,
+      post(msg) { try { port.postMessage(msg); } catch (e) { /* shell went away */ } },
+    };
+  })();
+  function haptic(style) { if (native) native.post({ type: 'haptic', style }); }
+  const WHERE = native ? 'on this device' : 'in this browser';
+
   // ---------- storage ----------
   const KEY = 'puzzle-dojo.v1';
   function fresh() {
@@ -150,7 +166,7 @@
   function load() {
     const base = fresh();
     try {
-      const raw = localStorage.getItem(KEY);
+      const raw = native ? native.saved : localStorage.getItem(KEY);
       if (!raw) return base;
       const s = JSON.parse(raw);
       return {
@@ -166,7 +182,11 @@
   let saveTimer = 0;
   function save(now) {
     clearTimeout(saveTimer);
-    const write = () => { try { localStorage.setItem(KEY, JSON.stringify(store)); } catch (e) { /* storage unavailable */ } };
+    const write = () => {
+      const text = JSON.stringify(store);
+      if (native) { native.post({ type: 'save', data: text }); return; }
+      try { localStorage.setItem(KEY, text); } catch (e) { /* storage unavailable */ }
+    };
     if (now) write(); else saveTimer = setTimeout(write, 200);
   }
 
@@ -529,6 +549,7 @@
     const t = store.settings.theme;
     if (t === 'system') delete document.documentElement.dataset.theme;
     else document.documentElement.dataset.theme = t;
+    if (native) native.post({ type: 'theme', value: t });
   }
 
   // ---------- generation ----------
@@ -743,7 +764,13 @@
     rt.ui.note.textContent = '';
     if (rt.hint) closeHint(false);
     rt.analysis = analyze();
-    for (const c of real) if (c.to === 2 && rt.analysis.bad.has(c.i)) gm.clashes++;
+    let placed = false, clashed = false;
+    for (const c of real) {
+      if (c.to !== 2) continue;
+      placed = true;
+      if (rt.analysis.bad.has(c.i)) { gm.clashes++; clashed = true; }
+    }
+    if (placed && !rt.analysis.solved) haptic(clashed ? 'warning' : 'light');
     rt.pop = pop == null ? -1 : pop;
     draw();
     if (rt.analysis.solved && !gm.done) win();
@@ -926,6 +953,7 @@
   function win() {
     const gm = store.game;
     gm.done = true;
+    haptic('success');
     if (rt.hint) closeHint(false);
     const p = gm.puzzle;
     const entry = { ms: Math.round(gm.elapsed), n: p.n, hints: gm.hints.length, at: Date.now() };
@@ -1122,7 +1150,7 @@
         toggle('set-rules', 'Rules reminder', 'Show the three rules under the board for your first games.', 'rules'),
         h('div', { class: 'setting' }, h('label', null, 'Theme'), h('span', { style: 'grid-row:1 / span 2;grid-column:2' }, seg))),
       h('div', { class: 'row', style: 'justify-content:space-between;align-items:center' },
-        h('small', { class: 'muted' }, 'Everything stays in this browser.'), reset),
+        h('small', { class: 'muted' }, `Everything stays ${WHERE}.`), reset),
       h('button', { class: 'btn primary', onclick: () => close() }, 'Done'));
   }
 
@@ -1258,7 +1286,7 @@
 
     // Progress
     wrap.append(progressSection());
-    wrap.append(h('p', { class: 'muted', style: 'font-size:.8rem;text-align:center' }, 'Works offline. Progress stays in this browser.'));
+    wrap.append(h('p', { class: 'muted', style: 'font-size:.8rem;text-align:center' }, `Works offline. Progress stays ${WHERE}.`));
     root.append(wrap);
   }
 
@@ -1405,6 +1433,7 @@
 
     function finish(revealed, stepForText) {
       dr.done = true;
+      if (!revealed) haptic('success');
       const n = dr.d.puzzle.n;
       if (!dr.example && !dr.recorded) {
         dr.recorded = true;
@@ -1487,6 +1516,7 @@
       if (d.elim.includes(i)) {
         dr.marks[i] = 1;
         dr.found.add(i);
+        haptic('light');
         dr.board.flash(i, true);
         feedback.className = 'feedback';
         feedback.textContent = '';
@@ -1502,6 +1532,7 @@
     }
     function miss(i, msg) {
       dr.mistakes++;
+      haptic('warning');
       dr.board.flash(i, false);
       feedback.className = 'feedback bad';
       feedback.textContent = msg;
@@ -1520,6 +1551,7 @@
 
   // ---------- boot ----------
   function start(data) {
+    if (native) document.documentElement.classList.add('native');
     applyTheme();
     data = data || {};
     if (data.view === 'lesson' && data.lessonId && TECH[data.lessonId]) openLesson(data.lessonId, 'home');
@@ -1529,6 +1561,7 @@
   const hot = window.claude && window.claude.hot;
   try { if (hot && hot.snapshot) hot.snapshot(() => { save(true); return { view: app.view, lessonId: app.lessonId }; }); } catch (e) { /* not in a viewer */ }
   window.addEventListener('pagehide', () => save(true));
+  document.addEventListener('visibilitychange', () => { if (document.hidden) save(true); });
   if (hot && hot.ready) hot.ready(start);
   else start((hot && hot.data) || {});
 })();

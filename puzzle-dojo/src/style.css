@@ -60,6 +60,9 @@
 
 *, *::before, *::after { box-sizing: border-box; }
 html, body { min-height: 100%; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; touch-action: manipulation; }
+/* Inside the iOS app: behave like an app, not a document. */
+html.native body { -webkit-user-select: none; user-select: none; -webkit-touch-callout: none; }
 body {
   background: var(--bg);
   color: var(--ink);

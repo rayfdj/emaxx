@@ -1,0 +1,74 @@
+name: Puzzle Dojo iOS
+# Builds the iOS shell of puzzle-dojo and runs its self-test in a simulator.
+# Unrelated to the emaxx workflows: it only runs for changes under puzzle-dojo/ios.
+on:
+  push:
+    branches: [claude/youthful-ptolemy-mb0li5]
+    paths:
+      - puzzle-dojo/ios/**
+      - .github/workflows/puzzle-dojo-ios.yml
+permissions:
+  contents: read
+concurrency:
+  group: puzzle-dojo-ios-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  build-and-launch:
+    runs-on: macos-15
+    timeout-minutes: 30
+    env:
+      BUNDLE_ID: io.github.rayfdj.PuzzleDojo
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build for the iOS Simulator
+        run: |
+          xcodebuild -version
+          xcodebuild -project puzzle-dojo/ios/PuzzleDojo.xcodeproj -target PuzzleDojo \
+            -configuration Debug -sdk iphonesimulator SYMROOT="$PWD/build" build
+      - name: Boot an iPhone simulator and install the app
+        run: |
+          UDID=$(xcrun simctl list devices available -j | python3 -c '
+          import json, sys
+          devices = json.load(sys.stdin)["devices"]
+          phones = [d for runtime in sorted(devices) if "iOS" in runtime
+                    for d in devices[runtime] if d["name"].startswith("iPhone")]
+          print(phones[-1]["udid"])')
+          echo "UDID=$UDID" >> "$GITHUB_ENV"
+          xcrun simctl list devices available | grep "$UDID"
+          xcrun simctl bootstatus "$UDID" -b
+          xcrun simctl install "$UDID" "$PWD/build/Debug-iphonesimulator/PuzzleDojo.app"
+      - name: Self-test, twice (the second launch must find the first one's game)
+        run: |
+          mkdir -p out
+          run() {
+            xcrun simctl launch "$UDID" "$BUNDLE_ID" -selftest
+            DATA=$(xcrun simctl get_app_container "$UDID" "$BUNDLE_ID" data)
+            for i in $(seq 1 90); do [ -f "$DATA/Documents/selftest.json" ] && break; sleep 1; done
+            cat "$DATA/Documents/selftest.json"; echo
+            mv "$DATA/Documents/selftest.json" "out/$1.json"
+            xcrun simctl io "$UDID" screenshot "out/$1.png"
+            xcrun simctl terminate "$UDID" "$BUNDLE_ID" || true
+          }
+          run first
+          run second
+          python3 - <<'PY'
+          import json
+          first, second = (json.load(open(f"out/{name}.json")) for name in ("first", "second"))
+          page1, page2 = json.loads(first["page"]), json.loads(second["page"])
+          assert page1["bridge"] and page1["heading"] == "Puzzle Dojo" and page1["started"], page1
+          assert not page1["resumed"], page1
+          assert first["cells"] == 36 and first["savedHasGame"], first
+          assert page2["resumed"], page2
+          print("self-test passed")
+          PY
+      - name: Screenshot of the home screen
+        if: always()
+        run: |
+          xcrun simctl launch "$UDID" "$BUNDLE_ID" || true
+          sleep 5
+          xcrun simctl io "$UDID" screenshot out/home.png || true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: puzzle-dojo-ios
+          path: out

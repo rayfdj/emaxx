@@ -51,12 +51,44 @@ The solver uses it for:
 Nothing pops up uninvited. The only unprompted signal is a glow on the hint
 button after 45 seconds without a move, and it can be turned off.
 
+## iOS app
+
+[`ios/PuzzleDojo.xcodeproj`](ios/PuzzleDojo.xcodeproj) is a native shell around
+the same game: a SwiftUI app whose one screen is a web view showing the bundled
+page (`ios/PuzzleDojo/Web/index.html`). It makes no network requests. The shell
+adds what a page can't do by itself:
+
+- progress is stored on the device (UserDefaults) rather than in web storage;
+- haptics when a queen lands, when two queens clash, and on a solve;
+- the in-app light/dark choice also drives the status bar and launch screen.
+
+To put it on your iPhone you need a Mac with Xcode 16 or later:
+
+1. Open `ios/PuzzleDojo.xcodeproj`.
+2. Select the PuzzleDojo target, then Signing & Capabilities, and pick your
+   Team. A free Apple ID works. If Xcode says the bundle identifier is taken,
+   change `io.github.rayfdj.PuzzleDojo` to anything unique.
+3. Plug in the phone, choose it as the run destination and press Run. The first
+   time, iOS asks you to turn on Developer Mode (Settings, Privacy & Security)
+   and to trust your developer certificate (Settings, General, VPN & Device
+   Management).
+
+With a free Apple ID the install expires after 7 days; run it from Xcode again
+to renew, and your progress is kept. A paid Apple Developer membership removes
+that limit and allows TestFlight and the App Store.
+
+After changing anything in `src/`, run `npm run build` to refresh the bundled
+page. The icon is drawn in `ios/design/icon.svg` (`node ios/design/render-icon.js`).
+A debug build launched with `-selftest` starts a board and writes
+`Documents/selftest.json`; the `Puzzle Dojo iOS` workflow uses that to check the
+app in a simulator on every change.
+
 ## Development
 
 ```
-npm run build          # writes dist/puzzle-dojo.html
+npm run build          # writes dist/puzzle-dojo.html and the page bundled into the iOS app
 npm test               # solver soundness + drill checks (Node only)
-npm run test:browser   # Playwright: full game, hints, lessons, phone widths
+npm run test:browser   # Playwright: full game, hints, lessons, phone widths, iOS bridge
 ```
 
 `src/engine.js` (generation, uniqueness, solver), `src/app.js` (UI) and

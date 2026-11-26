@@ -1,0 +1,23 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1024 1024" width="1024" height="1024">
+  <!-- A 3x3 corner of a Queens board, full bleed (iOS rounds the corners itself). -->
+  <rect width="1024" height="1024" fill="#b3dfa0"/>
+  <path d="M0 0H683V341H0z" fill="#bba3e2"/>
+  <path d="M683 0H1024V683H683z" fill="#ffc992"/>
+  <path d="M0 341H341V1024H0z" fill="#96beff"/>
+  <path d="M683 683H1024V1024H683z" fill="#ff7b60"/>
+  <g stroke="#17191e" stroke-opacity=".16" stroke-width="5">
+    <path d="M341 0V341M683 341V683M0 683H341M341 683H683M512 341"/>
+    <path d="M341 683V1024M683 683V1024" stroke-opacity="0"/>
+  </g>
+  <g fill="none" stroke="#17191e" stroke-width="30" stroke-linecap="square" stroke-linejoin="miter">
+    <path d="M0 341H683V0"/>
+    <path d="M341 341V1024"/>
+    <path d="M683 341V683H1024"/>
+    <path d="M683 683V1024"/>
+  </g>
+  <g transform="translate(512 512) scale(11.6) translate(-12 -12.8)" fill="#17191e">
+    <path d="M3 8.3l4.7 4.1L12 5.7l4.3 6.7L21 8.3l-1.8 9.2H4.8z"/>
+    <rect x="4.8" y="18.7" width="14.4" height="2.5" rx=".7"/>
+    <circle cx="3" cy="7.4" r="1.6"/><circle cx="12" cy="4.4" r="1.6"/><circle cx="21" cy="7.4" r="1.6"/>
+  </g>
+</svg>

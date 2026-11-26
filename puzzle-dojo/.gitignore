@@ -1,2 +1,5 @@
 shots/
 dist/artifact.html
+ios/build/
+xcuserdata/
+*.xcuserstate
