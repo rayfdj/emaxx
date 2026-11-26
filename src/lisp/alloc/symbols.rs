@@ -183,11 +183,12 @@ pub struct SymbolCell {
     /// `Lisp_Symbol.u.s.next': the next symbol of its obarray bucket.
     pub(crate) next: Cell<Option<SymbolName>>,
     pub(crate) flags: Cell<u8>,
-    /// Bit 0 (`IMAGE_CELL'): allocated while an image loaded (see
-    /// `ImageCells'), set by `allocate_symbol'.  Bits 1 and 2: lisp.h's
-    /// `interned' (`SymbolInterned'), in GNU's encoding.  Bits 3 to 5: a
-    /// forward's kind (`FWD_KIND_BITS'), or 3 to 6 a kboard field's offset
-    /// (`KBOARD_OFFSET_BITS').
+    /// Bit 0 (`IMAGE_CELL'): allocated while an image loaded, in one of
+    /// its rebuilt blocks (see `ImageCells'), set by `allocate_symbol'.
+    /// Bit 7 (`DUMPED_CELL'): a mapped cell, as the image writes it.
+    /// Bits 1 and 2: lisp.h's `interned' (`SymbolInterned'), in GNU's
+    /// encoding.  Bits 3 to 5: a forward's kind (`FWD_KIND_BITS'), or 3 to
+    /// 6 a kboard field's offset (`KBOARD_OFFSET_BITS').
     pub(crate) bits: Cell<u8>,
     pub(crate) state: Cell<u16>,
     pub(crate) mark: MarkBit,
@@ -272,6 +273,9 @@ pub(crate) const STORE_EFFECT_VARIABLES: [&str; 7] = [
 ];
 
 const IMAGE_CELL: u8 = 1;
+/// Bit 7: a cell of the image's mapped blocks, marked in the dump's
+/// mark_bits (`DUMP'), never by its mark word.
+const DUMPED_CELL: u8 = 1 << 7;
 const INTERNED_SHIFT: u32 = 1;
 const INTERNED_BITS: u8 = 3 << INTERNED_SHIFT;
 /// Bits 3 to 5: the kind of a FORWARD symbol's forward (lisp.h's
@@ -1072,9 +1076,10 @@ const _: () = {
 /// The words of a symbol cell an image maps: the key text's offset in the
 /// image and its length, the name, function, plist and value words, no
 /// next symbol (the loader files the symbol, which sets its `interned'),
-/// and the flags, the bits with the image flag alone and STATE, the mark
-/// the loader's.  The offsets and the Lisp words
-/// are the image's, made the process's by relocations.
+/// and the flags, the bits with the mapped flag alone (a mapped cell is
+/// not one of `ImageCells', as no sweep reads it, and is marked in the
+/// dump's mark_bits) and STATE, the mark the loader's.  The offsets and
+/// the Lisp words are the image's, made the process's by relocations.
 pub(crate) fn image_cell_words(
     key: (u64, usize),
     lisp: [u64; 4],
@@ -1089,7 +1094,7 @@ pub(crate) fn image_cell_words(
         lisp[2],
         lisp[3],
         0,
-        u64::from(flags) | u64::from(IMAGE_CELL) << 8 | u64::from(state) << 16,
+        u64::from(flags) | u64::from(DUMPED_CELL) << 8 | u64::from(state) << 16,
     ]
 }
 
@@ -1217,18 +1222,25 @@ impl SymbolRef {
         self.0 == other.0
     }
 
+    /// Whether the symbol is marked for EPOCH.
     #[inline]
-    pub(crate) fn mark_bit(&self) -> &MarkBit {
-        &self.cell().mark
+    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
+        if self.cell().bits.get() & DUMPED_CELL != 0 {
+            return super::DUMP.is_marked(self.0.as_ptr() as usize);
+        }
+        self.cell().mark.is_marked(epoch)
     }
 
     /// Mark the symbol for EPOCH; true when it was not yet marked in it.
     #[inline]
     pub(crate) fn mark(&self, epoch: u32) -> bool {
         let cell = self.cell();
+        if cell.bits.get() & DUMPED_CELL != 0 {
+            return super::DUMP.mark(self.0.as_ptr() as usize);
+        }
         let marked = cell.mark.mark(epoch);
         if marked && cell.is_image() {
-            super::IMAGE_SYMBOLS.note_marked();
+            super::DUMP.symbols.note_marked();
         }
         marked
     }
@@ -1337,7 +1349,7 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
     let mut released = Vec::new();
     // When no image symbol died, the image's blocks are left unread
     // (checked builds read them and assert so).
-    let image_unchanged = super::IMAGE_SYMBOLS.unchanged();
+    let image_unchanged = super::DUMP.symbols.unchanged();
     let mut image_live = 0;
     for (start, image_block) in sweep_blocks_of(BlockKind::Symbol) {
         if image_block && image_unchanged {
@@ -1409,7 +1421,7 @@ pub(crate) fn sweep_symbols(epoch: u32, mut cleanup: impl FnMut(&SymbolCell)) ->
     }
     SYMBOL_FREE_LIST.set(free_list);
     if !image_unchanged {
-        super::IMAGE_SYMBOLS.set_live(image_live);
+        super::DUMP.symbols.set_live(image_live);
     }
     for start in released {
         release_block(start, BlockKind::Symbol);

@@ -818,6 +818,17 @@ impl ImageVectors {
 
 impl Loader<'_> {
     fn load(&mut self, header: DumpHeader) -> Result<LoadedImage, LoadError> {
+        // dump_public's start and end, and the two bitsets, before any of
+        // the image's objects is adopted: the hot section, which holds
+        // every block mapped where it lies.
+        let hot = match header.cold_start as usize {
+            0 => self.image.len,
+            cold => cold,
+        };
+        crate::lisp::alloc::DUMP.register(
+            self.image.at(0).as_ptr() as usize,
+            self.image.at(0).as_ptr() as usize + hot,
+        );
         // pdumper's mapped objects: the image's cons blocks are the heap's
         // where they lie, before anything names one of their conses.
         self.conses = self.adopt_cons_blocks(&header)?;

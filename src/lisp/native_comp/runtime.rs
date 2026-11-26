@@ -6441,6 +6441,7 @@ impl NativeHeap {
         crate::lisp::eval::purge_freed_records_in_live_states(interpreter);
         crate::lisp::types::sweep_symbol_cells(epoch);
         let free_strings = crate::lisp::alloc::sweep_strings(epoch);
+        crate::lisp::alloc::clear_dump_marks();
         interpreter.note_sweeps_free_counts(free_strings, free_vector_slots);
         // The collection is complete.
         std::mem::forget(underway);

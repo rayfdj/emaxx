@@ -160,15 +160,20 @@ const _: () = {
 /// one for each VBLOCK_BYTES_MIN of the block by a vector's start: set by
 /// the mark phase, cleared by `sweep_vectors' once it has read them.
 struct VectorBlockMarks {
-    /// Registered while an image loaded (see `ImageCells').
+    /// Registered while an image loaded, one of its rebuilt blocks (see
+    /// `ImageCells'); a mapped block is not, as no sweep reads it.
     image: bool,
+    /// A mapped block, whose vectors are marked in the dump's mark_bits
+    /// (`DUMP'), never in this bitmap.
+    dumped: bool,
     words: [Cell<usize>; VECTOR_MARK_WORDS],
 }
 
 impl VectorBlockMarks {
-    const fn new(image: bool) -> Self {
+    const fn new(image: bool, dumped: bool) -> Self {
         Self {
             image,
+            dumped,
             words: [const { Cell::new(0) }; VECTOR_MARK_WORDS],
         }
     }
@@ -177,11 +182,14 @@ impl VectorBlockMarks {
 enum VectorMarkStorage<'a> {
     Block(&'a VectorBlockMarks, usize),
     Separate(&'a MarkBit),
+    /// A mapped vector, marked in the dump's mark_bits by its address.
+    Dump(usize),
 }
 
 pub(crate) struct VectorMark<'a>(VectorMarkStorage<'a>);
 
 impl VectorMark<'_> {
+    #[inline(always)]
     pub(crate) fn is_marked(&self, epoch: u32) -> bool {
         match self.0 {
             VectorMarkStorage::Block(block, index) => {
@@ -190,9 +198,11 @@ impl VectorMark<'_> {
                     != 0
             }
             VectorMarkStorage::Separate(mark) => mark.is_marked(epoch),
+            VectorMarkStorage::Dump(address) => super::DUMP.is_marked(address),
         }
     }
 
+    #[inline(always)]
     pub(crate) fn mark(&self, epoch: u32) -> bool {
         match self.0 {
             VectorMarkStorage::Block(block, index) => {
@@ -202,11 +212,12 @@ impl VectorMark<'_> {
                 word.set(old | mask);
                 let marked = old & mask == 0;
                 if marked && block.image {
-                    super::IMAGE_VECTORS.note_marked();
+                    super::DUMP.vectors.note_marked();
                 }
                 marked
             }
             VectorMarkStorage::Separate(mark) => mark.mark(epoch),
+            VectorMarkStorage::Dump(address) => super::DUMP.mark(address),
         }
     }
 }
@@ -236,6 +247,7 @@ pub(super) fn every_mark_bit_clear() -> bool {
 impl VectorHeader {
     /// The collector derives metadata from the allocated object's address
     /// and size. This method is never needed to read or mutate a Lisp slot.
+    #[inline(always)]
     fn mark_bit(&self) -> VectorMark<'_> {
         debug_assert_ne!(self.tag(), VectorTag::Free);
         let address = std::ptr::from_ref(self) as usize;
@@ -248,6 +260,9 @@ impl VectorHeader {
         }
         let nbytes = self.nbytes();
         if nbytes > VBLOCK_BYTES_MAX {
+            if super::DUMP.contains(address) {
+                return VectorMark(VectorMarkStorage::Dump(address));
+            }
             // SAFETY: allocate_vectorlike reserves and initializes a mark
             // immediately after every large vector's rounded payload.
             return VectorMark(VectorMarkStorage::Separate(unsafe {
@@ -257,10 +272,11 @@ impl VectorHeader {
         let base = address & !(VECTOR_BLOCK_SIZE - 1);
         let index = (address - base) / VBLOCK_BYTES_MIN;
         // SAFETY: small vector blocks are aligned to VECTOR_BLOCK_SIZE.
-        VectorMark(VectorMarkStorage::Block(
-            unsafe { block_marks(base) },
-            index,
-        ))
+        let block = unsafe { block_marks(base) };
+        if block.dumped {
+            return VectorMark(VectorMarkStorage::Dump(address));
+        }
+        VectorMark(VectorMarkStorage::Block(block, index))
     }
 
     fn is_marked(&self, epoch: u32) -> bool {
@@ -546,7 +562,7 @@ fn allocate_vector_block() -> usize {
         block
             .add(VECTOR_BLOCK_BYTES)
             .cast::<VectorBlockMarks>()
-            .write(VectorBlockMarks::new(super::image_region_open()))
+            .write(VectorBlockMarks::new(super::image_region_open(), false))
     };
     register_block(start, VECTOR_BLOCK_SIZE, BlockKind::VectorBlock);
     start
@@ -953,7 +969,7 @@ pub(crate) unsafe fn adopt_image_vectors(
             (base as *mut u8)
                 .add(VECTOR_BLOCK_BYTES)
                 .cast::<VectorBlockMarks>()
-                .write(VectorBlockMarks::new(true))
+                .write(VectorBlockMarks::new(false, true))
         };
     }
     let mut at = small;
@@ -1732,7 +1748,7 @@ pub(crate) fn sweep_vectors(epoch: u32) -> usize {
     let mut free_slots = 0usize;
     // When no vector in the image's blocks died, they are left unread
     // (checked builds read them and assert so).
-    let image_unchanged = super::IMAGE_VECTORS.unchanged();
+    let image_unchanged = super::DUMP.vectors.unchanged();
     let mut image_live = 0;
     for (block, image_block) in sweep_blocks_of(BlockKind::VectorBlock) {
         // SAFETY: a registered vector block, released below at the
@@ -1803,12 +1819,8 @@ pub(crate) fn sweep_vectors(epoch: u32) -> usize {
                         break;
                     }
                 }
-                // A block with nothing live is given back, unless it is
-                // the image's own bytes, which stay one free run.
-                if vector as usize == block
-                    && !vector_in_block(next, block)
-                    && !(image_block && super::is_mapped_block(block))
-                {
+                // A block with nothing live is given back.
+                if vector as usize == block && !vector_in_block(next, block) {
                     free_this_block = true;
                 } else if image_block {
                     setup_free_unlinked(vector, total);
@@ -1827,7 +1839,7 @@ pub(crate) fn sweep_vectors(epoch: u32) -> usize {
         }
     }
     if !image_unchanged {
-        super::IMAGE_VECTORS.set_live(image_live);
+        super::DUMP.vectors.set_live(image_live);
     }
     for (start, image_block) in sweep_blocks_of(BlockKind::LargeVector) {
         let vector = start as *mut VectorHeader;
@@ -1840,13 +1852,7 @@ pub(crate) fn sweep_vectors(epoch: u32) -> usize {
             } else {
                 let nbytes = (*vector).nbytes();
                 cleanup_vector(vector);
-                if image_block && super::is_mapped_block(start) {
-                    // The image's own bytes: no longer a vector, never
-                    // given back.
-                    unregister_block(start);
-                } else {
-                    free_large_vector(vector, nbytes);
-                }
+                free_large_vector(vector, nbytes);
             }
         }
     }

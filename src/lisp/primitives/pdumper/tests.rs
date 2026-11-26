@@ -1194,11 +1194,10 @@ fn image_conses_are_cells_of_the_image_where_it_is_mapped() {
 #[test]
 fn a_collection_clears_the_marks_of_the_image_blocks() {
     // The image's conses and vectors are marked in their blocks' bitmaps
-    // where the image is mapped, as the heap's are, and the sweeps reach
-    // those blocks too: they clear the bits they read, when they read the
-    // image's vectors and when they pass their unchanged blocks by (from
-    // the second collection on), so that the next mark phase starts from
-    // nothing marked there either.
+    // where the image is mapped, as the heap's are; no sweep reads those
+    // blocks, and the collection's last step clears their bits
+    // (pdumper.c's pdumper_clear_marks at the end of gc_sweep), so that
+    // the next mark phase starts from nothing marked there either.
     let mut interp = Interpreter::new();
     let graph = Value::list([
         Value::vector([Value::Integer(1), Value::string("v")]),
@@ -3573,4 +3572,121 @@ fn a_mapped_cons_keeps_the_heap_object_it_holds() {
         Value::Integer(1),
         "the string the mapped cell holds lives"
     );
+}
+
+/// A stale stack word naming the mapped cons at the complemented ADDRESS,
+/// in a frame of its own while a collection runs (the conservative scan
+/// reads it as it reads any word).
+#[inline(never)]
+fn collect_with_a_stale_word(target: &mut Interpreter, complement: usize) -> Value {
+    // SAFETY: the address of a cons of a mapped block, which stays where
+    // it is; this handle is only a word on the stack for the scan.
+    let stale = Value::Cons(unsafe {
+        crate::lisp::alloc::ConsRef::from_raw(!complement as *const crate::lisp::types::ConsCell)
+    });
+    std::hint::black_box(&stale);
+    let answer = lisp_step(
+        target,
+        "(progn (garbage-collect) (hash-table-count zz-dump-witness))",
+    );
+    std::hint::black_box(&stale);
+    answer
+}
+
+#[test]
+fn a_stale_word_does_not_bring_back_a_dead_mapped_cons() {
+    // pdumper_find_object_type_impl: the conservative scan takes a word
+    // for a dumped object only if the last collection marked it.  A dead
+    // mapped cons whose car held a heap list, freed since, is named again
+    // by a stack word: taken for an object, it would be marked, and its car
+    // traced into the freed cell (a checked build's "marking a free cons",
+    // or a fault when the cell's block has been given back).
+    let mut target = Interpreter::new();
+    let complement = load_inner_list(&mut target);
+    crate::lisp::alloc::clobber_stack();
+    lisp_step(
+        &mut target,
+        "(progn
+           (setq zz-dump-witness (make-hash-table :test 'eq :weakness 'key))
+           (let ((fresh (list 'fresh (make-string 3 ?x))))
+             (puthash fresh t zz-dump-witness)
+             (setcar zz-dump-inner fresh))
+           (setq zz-dump-inner nil load-path nil)
+           nil)",
+    );
+    let freed = lisp_step(
+        &mut target,
+        "(progn (garbage-collect) (garbage-collect) (hash-table-count zz-dump-witness))",
+    );
+    assert_eq!(
+        freed,
+        Value::Integer(0),
+        "the heap list only the dead cell held is freed"
+    );
+    let after = collect_with_a_stale_word(&mut target, complement);
+    assert_eq!(
+        after,
+        Value::Integer(0),
+        "the collection with the stale word completes"
+    );
+    // Whether or not the freed cell was made again since, the scan did not
+    // take the word: the collection left the dead cell unmarked.
+    assert!(
+        !crate::lisp::alloc::DUMP.marked_last(!complement),
+        "the stale word brought the dead mapped cons back"
+    );
+}
+
+/// An image of one list, (TAG 1 2), loaded into a fresh interpreter whose
+/// variable `zz-dump-list' holds it.
+fn interpreter_with_mapped_list(tag: i64) -> Interpreter {
+    let mut interp = Interpreter::new();
+    let graph = Value::list([Value::Integer(tag), Value::Integer(1), Value::Integer(2)]);
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+    let mut target = Interpreter::new();
+    let image = load_image(&bytes, &mut target).expect("the list loads");
+    let list = loaded_root(&image, RootSlot::LoadPath);
+    assert!(
+        crate::lisp::alloc::cons_is_mapped(cons_address(list)),
+        "the list is the image's"
+    );
+    target.select_symbol_owner();
+    target.set_symbol_value_cell("zz-dump-list", list);
+    target
+}
+
+#[test]
+fn each_mapped_image_has_its_own_marks_in_sequence_and_at_once() {
+    // dump_private's bitsets are an image's: each load enters its own
+    // region, no region overlaps another, and an image stays mapped for
+    // the process's life, so a later one never sees an earlier one's
+    // bits.  Two interpreters one after the other, then two alive at
+    // once, each collecting with the other's image mapped.  The runtime
+    // is this thread's throughout, so no other test's load comes between.
+    let _runtime = crate::Runtime::lock();
+    let before = crate::lisp::alloc::DUMP.regions_listed();
+    let first = interpreter_with_mapped_list(10);
+    drop(first);
+    let mut second = interpreter_with_mapped_list(20);
+    assert_eq!(crate::lisp::alloc::DUMP.regions_listed(), before + 2);
+    assert_eq!(
+        lisp_step(
+            &mut second,
+            "(progn (garbage-collect) (garbage-collect) zz-dump-list)"
+        )
+        .to_string(),
+        "(20 1 2)"
+    );
+    let mut third = interpreter_with_mapped_list(30);
+    assert_eq!(crate::lisp::alloc::DUMP.regions_listed(), before + 3);
+    for _ in 0..2 {
+        assert_eq!(
+            lisp_step(&mut third, "(progn (garbage-collect) zz-dump-list)").to_string(),
+            "(30 1 2)"
+        );
+        assert_eq!(
+            lisp_step(&mut second, "(progn (garbage-collect) zz-dump-list)").to_string(),
+            "(20 1 2)"
+        );
+    }
 }
