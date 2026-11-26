@@ -3799,6 +3799,39 @@ pub(super) unsafe extern "C" fn direct_native_funcall(
     }
 }
 
+/// eval.c:Fapply at the MANY ABI for the subr at INDEX, as native code
+/// calls it through its relocation entry, which passes the index as
+/// `direct_native_nth' is given its own: the handlers brought to the ABI's
+/// state, then `invoke_native_apply', and the subr's own entry for a call
+/// that does not take (a list that is not proper, a call the full
+/// Ffuncall makes), as `invoke_subr's dispatch on apply's kind reached
+/// them.  A count or vector the MANY ABI does not admit is
+/// `invoke_subr_many's.
+///
+/// # Safety
+/// As `invoke_subr_many's: generated code's MANY count and vector.
+#[inline(always)]
+pub(super) unsafe fn direct_native_apply(
+    index: usize,
+    argument_count: isize,
+    arguments: *const NativeWord,
+) -> NativeWord {
+    if argument_count >= 1 && !arguments.is_null() {
+        // SAFETY: generated code supplies the GNU MANY count/pointer pair;
+        // the pointer was checked above.
+        let words = unsafe { std::slice::from_raw_parts(arguments, argument_count as usize) };
+        return with_active(|active| {
+            let Some(subroutine) = entered_subr(active, index) else {
+                return 0;
+            };
+            invoke_native_apply(active, words)
+                .unwrap_or_else(|| invoke_subr_entry(active, subroutine, words))
+        });
+    }
+    // SAFETY: as the caller's.
+    unsafe { invoke_subr_many(index, argument_count, arguments) }
+}
+
 /// alloc.c:Flist at the MANY ABI: the cells consed from the last argument
 /// back.  Every non-positive count is the empty list, as in C.
 pub(super) unsafe extern "C" fn direct_native_list(
@@ -4197,20 +4230,24 @@ fn funcall_function_cell(
 }
 
 /// `invoke_plain_native_funcall' for the words of a native Ffuncall call,
-/// the function first: the call's word, or the error remembered and 0.
-/// None, with nothing changed, for `invoke_native_funcall'.
+/// the function first, and for a byte-code callee, which that leaves,
+/// `invoke_plain_bytecode_funcall' (funcall_general's SUBRP, then its
+/// CLOSUREP): the call's word, or the error remembered and 0.  None,
+/// with nothing changed, for `invoke_native_funcall'.
 #[inline(always)]
 fn plain_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Option<NativeWord> {
     let (&function_word, call_arguments) = arguments.split_first()?;
+    // SAFETY: the caller's live word.
+    let function = unsafe { Value::from_word(function_word) };
     // SAFETY: the activation's pointees outlive this call.
     let result = invoke_plain_native_funcall(
         unsafe { &mut *active.interpreter },
         unsafe { &mut *active.runtime },
         unsafe { &mut *active.environment.get() },
-        // SAFETY: the caller's live word.
-        unsafe { Value::from_word(function_word) },
+        function,
         call_arguments,
-    )?;
+    )
+    .or_else(|| invoke_plain_bytecode_funcall(active, function, call_arguments))?;
     Some(result.unwrap_or_else(|error| {
         remember_helper_error(active, error);
         0
@@ -4337,6 +4374,64 @@ fn invoke_plain_builtin_funcall(
     Some(result)
 }
 
+/// eval.c:Ffuncall -> funcall_general -> funcall_lambda -> exec_byte_code
+/// of a byte-code closure (FUNCTION, or the one in its function cell)
+/// under the conditions of `invoke_plain_native_funcall', as
+/// `plain_funcall' runs one for Rust: the frame recorded, the closure's
+/// activation entered in this frame (`funcall_closure_in_place', which
+/// counts the arguments as funcall_lambda does), then Ffuncall's
+/// `backtrace_debug_on_exit (count)' and the frame's pop.  The callee can
+/// run Lisp, which can switch threads, so the interpreter and the
+/// environment are taken from the activation for each step and no
+/// reference to them is kept across the call.  Out of line, as
+/// exec_byte_code is below Ffuncall, so that the native and subr arms
+/// keep the registers they had.  None, with nothing changed, for any
+/// other callee.
+#[inline(never)]
+fn invoke_plain_bytecode_funcall(
+    active: &ActiveCall,
+    function: Value,
+    arguments: &[NativeWord],
+) -> Option<Result<NativeWord, LispError>> {
+    let name = function.symbol_cell();
+    let callee = match name {
+        Some(name) => name.cell().function.get(),
+        None => function,
+    };
+    let closure = callee
+        .closure_ref()
+        .filter(|closure| closure.is_bytecode())?;
+    // SAFETY: the activation's pointees outlive this call.
+    if !unsafe { &*active.interpreter }.plain_bcall_entry(name)
+        || !unsafe { &*active.runtime }.heap.collection_cannot_be_due()
+    {
+        return None;
+    }
+    let depth = unsafe { &mut *active.interpreter }.enter_plain_native_funcall(function, arguments);
+    // SAFETY: Ffuncall's argument vector belongs to the native caller,
+    // which keeps each word live until the call returns.
+    let values = unsafe { live_values(arguments) };
+    let result = crate::lisp::bytecode::vm::funcall_closure_in_place(
+        unsafe { &mut *active.interpreter },
+        closure,
+        values,
+        unsafe { &mut *active.environment.get() },
+    );
+    // As `plain_funcall's closure arm: the activation leaves the call's
+    // record the innermost, which a value not marked for the debugger
+    // takes off at once.
+    if let Ok(value) = result
+        && unsafe { &mut *active.interpreter }.leave_innermost_funcall(depth)
+    {
+        return Some(Ok(value.word()));
+    }
+    // The exit debugger, which a marked record calls, runs Lisp too.
+    let result = unsafe { &mut *active.interpreter }
+        .settle_call_result(depth, result, unsafe { &mut *active.environment.get() });
+    unsafe { &mut *active.interpreter }.leave_plain_funcall(depth);
+    Some(result.map(|value| value.word()))
+}
+
 /// eval.c:Ffuncall's call_debugger with (exit VALUE) before it drops its
 /// backtrace record, when backtrace-debug marked the frame.  The native
 /// word stays live until the debugger receives the same Lisp object; the
@@ -4454,10 +4549,11 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
 }
 
 /// eval.c:Fapply.  GNU counts the final proper list, copies the fixed
-/// arguments and its elements into one Ffuncall vector, and pads finite C
-/// subrs with nil only in the multi-element spread case.  Keep that vector in
-/// native words so Lisp_Object arguments do not cross through the typed
-/// evaluator merely to be handed back to generated code.
+/// arguments and its elements into one Ffuncall vector, and, for a spread
+/// list of two elements or more, pads with nil the call of a SUBRP
+/// (`apply_padded_count').  Keep that vector in native words so
+/// Lisp_Object arguments do not cross through the typed evaluator merely
+/// to be handed back to generated code.
 fn invoke_native_apply(active: &ActiveCall, arguments: &[NativeWord]) -> Option<NativeWord> {
     let (&spread, fixed) = arguments.split_last()?;
     let spread_length = match native_proper_list_length(active, spread) {
@@ -4468,20 +4564,19 @@ fn invoke_native_apply(active: &ActiveCall, arguments: &[NativeWord]) -> Option<
     let given = fixed.len().saturating_add(spread_length);
     // Fapply's single nil argument becomes Ffuncall's nil function.
     let mut total = given.max(1);
-    if spread_length > 1 {
-        // SAFETY: the caller's function word, live in its activation.
-        let function = unsafe {
-            Value::from_word(match fixed.first() {
-                Some(function) => *function,
-                None => native_car(spread),
-            })
-        };
-        let target = direct_funcall_target(
+    // Fapply's FUN is its first argument: with a single one, the spread
+    // list itself, which no SUBRP is, so that its call is not padded.
+    if spread_length > 1
+        && let Some(&function) = fixed.first()
+    {
+        let padded = apply_padded_count(
             unsafe { &*active.interpreter },
             unsafe { &*active.environment.get() },
-            &function,
+            // SAFETY: the caller's function word, live in its activation.
+            unsafe { Value::from_word(function) },
+            given - 1,
         )?;
-        total = total.max(target.apply_padded_argument_count(given - 1) + 1);
+        total = total.max(padded + 1);
     }
     // SAFE_ALLOCA_LISP (funcall_args, ...): a call of the function below
     // may signal, jumping past this frame.
@@ -4498,6 +4593,42 @@ fn invoke_native_apply(active: &ActiveCall, arguments: &[NativeWord]) -> Option<
         .or_else(|| invoke_native_funcall(active, funcall_arguments));
     words.release(active);
     result
+}
+
+/// eval.c:Fapply's count of the arguments of its Ffuncall of FUNCTION,
+/// given COUNT of them: FUNCTION's function cell, followed as
+/// indirect_function follows it when the cell is a symbol (FUNCTION
+/// itself again when the chain is void), and a SUBRP whose maximum
+/// exceeds COUNT and whose minimum COUNT meets called with its maximum,
+/// the rest nil, as `DirectFuncallTarget::apply_padded_argument_count'
+/// counts it; COUNT for any other function.  None for a native function
+/// with dynamic binding, whose apply the subr's own entry makes.
+#[inline(always)]
+fn apply_padded_count(
+    interpreter: &Interpreter,
+    environment: &Env,
+    function: Value,
+    count: usize,
+) -> Option<usize> {
+    let function = match function.symbol_cell() {
+        Some(name) => interpreter
+            .lookup_function_symbol(&name, environment)
+            .unwrap_or(function),
+        None => function,
+    };
+    if let Some(subr) = function.builtin_ref() {
+        return Some(DirectFuncallTarget::Builtin(subr).apply_padded_argument_count(count));
+    }
+    let Some(native) = function.native_function_ref() else {
+        return Some(count);
+    };
+    super::loader::direct_function(native).map(|target| {
+        DirectFuncallTarget::Native {
+            native,
+            function: target,
+        }
+        .apply_padded_argument_count(count)
+    })
 }
 
 /// fns.c:Fmapcar/mapcar1 for a proper list.  The length is established before
@@ -4632,21 +4763,33 @@ impl NativeWords {
         }
     }
 
-    /// SAFE_FREE's unbind_to (sa_count): the stack cut back to below the
-    /// entry that records the vector at ADDRESS, which is the innermost
-    /// whenever the calls it was taken for left the stack balanced.
+    /// SAFE_FREE's safe_free (sa_count): the vector's entry, which is the
+    /// innermost, popped and freed.  GNU's safe_free pops to sa_count and
+    /// asserts (eassert: a checking build alone) that each entry it frees
+    /// is SAFE_ALLOCA's own; a plain build frees whatever lies there.  A
+    /// vector no entry records, or entries an unbalanced callee left above
+    /// its own, is that impossible state; here it stops the process in
+    /// every build, as emacs_abort does, since the path is the cold one and
+    /// freeing or running what is not the vector's would hide it.
     #[cold]
     #[inline(never)]
     fn release_specpdl(active: &ActiveCall, address: *mut NativeWord) {
         let interpreter = unsafe { &mut *active.interpreter };
-        let Some(depth) = interpreter.array_entry_depth(address.cast::<Value>().cast_const())
-        else {
-            debug_assert!(false, "SAFE_FREE of a vector no entry records");
-            return;
-        };
-        // The vector's entry runs nothing but its free.
-        let undone = interpreter.unbind_to(depth, unsafe { &mut *active.environment.get() });
-        debug_assert!(undone.is_ok());
+        let innermost = interpreter.specpdl_index().checked_sub(1);
+        if innermost.is_none()
+            || interpreter.array_entry_depth(address.cast::<Value>().cast_const()) != innermost
+        {
+            crate::lisp::primitives::batch_stdout::stderr_write(
+                b"emaxx: SAFE_FREE of a vector that is not the innermost specpdl entry\n",
+            );
+            std::process::abort();
+        }
+        if let Some(entry) = interpreter.pop_specpdl_entry() {
+            // The vector's entry runs nothing but its free.
+            let undone =
+                interpreter.undo_specpdl_entry(entry, unsafe { &mut *active.environment.get() });
+            debug_assert!(undone.is_ok());
+        }
     }
 }
 
@@ -4977,9 +5120,13 @@ fn native_proper_list_length(active: &ActiveCall, list: NativeWord) -> Result<Op
         remaining_low = remaining_low.wrapping_sub(1);
         let mut compare_tortoise = remaining_low != 0;
         if !compare_tortoise {
-            runtime_maybe_quit();
-            if native_call_has_pending_error(active) {
-                return Err(());
+            // lisp.h:maybe_quit: probably_quit only for a quit or a
+            // signal pending.
+            if !unsafe { &*active.interpreter }.quit_check_clear() {
+                runtime_maybe_quit();
+                if native_call_has_pending_error(active) {
+                    return Err(());
+                }
             }
             remaining_high = remaining_high.wrapping_sub(1);
             compare_tortoise = remaining_high > 0;
@@ -6429,6 +6576,7 @@ impl NativeHeap {
         crate::lisp::eval::purge_freed_records_in_live_states(interpreter);
         crate::lisp::types::sweep_symbol_cells(epoch);
         let free_strings = crate::lisp::alloc::sweep_strings(epoch);
+        crate::lisp::alloc::clear_dump_marks();
         interpreter.note_sweeps_free_counts(free_strings, free_vector_slots);
         // The collection is complete.
         std::mem::forget(underway);
@@ -8512,7 +8660,8 @@ mod tests {
     /// their primitives, with the arity of each entry (-2 for MANY's
     /// count and vector).  Each has a contract test of its own.
     const UNCOMPARED_ENTRIES: &[(&str, i32)] = &[
-        // MANY, which the harness does not call, and it calls Lisp.
+        // MANY, which the harness does not call, and they call Lisp.
+        ("apply", -2),
         ("funcall", -2),
         // MANY, and each call makes a new list, so that two answers are
         // never one object.
@@ -12183,6 +12332,71 @@ mod tests {
             .expect_err("GNU rejects Unicode text as byte-code storage"),
             crate::lisp::bytecode::ByteCodeError::NonUnibyteCode { char_index: 0 }
         );
+    }
+
+    #[test]
+    fn native_funcall_of_byte_code_pops_its_frame_on_every_exit() {
+        // eval.c:Ffuncall of a byte-code closure from native code:
+        // funcall_lambda's arity test signals with the frame recorded,
+        // and the frame and the depth leave with the call however it
+        // ends.  GNU byte code for one mandatory argument: dup, add1,
+        // return.
+        let mut interpreter = Interpreter::new();
+        let mut environment = Env::new();
+        let mut runtime = NativeRuntime::default();
+        let function = Value::allocated_closure(&[
+            Value::Integer(257),
+            Value::StringObject(crate::lisp::types::StringObjectRef::from_unibyte(vec![
+                0o211, 0o124, 0o207,
+            ])),
+            Value::vector([]),
+            Value::Integer(3),
+        ]);
+        let arity = Value::cons(Value::Integer(1), Value::Integer(1));
+        for (callee, arguments, count) in [
+            (call_funcall_zero as *const c_void, vec![function], 0),
+            (
+                call_funcall_two as *const c_void,
+                vec![function, Value::Integer(1), Value::Integer(2)],
+                2,
+            ),
+        ] {
+            let error = runtime
+                .invoke(
+                    &mut interpreter,
+                    &mut environment,
+                    callee,
+                    NativeCallingConvention::Fixed,
+                    &arguments,
+                )
+                .expect_err("funcall_lambda counts a byte-code function's arguments");
+            assert_eq!(
+                crate::lisp::eval::error_condition_value(&error),
+                Value::list([
+                    Value::symbol("wrong-number-of-arguments"),
+                    arity,
+                    Value::Integer(count),
+                ])
+            );
+            assert_eq!(interpreter.backtrace_frames_len(), 0);
+            assert_eq!(interpreter.lisp_eval_depth, 0);
+        }
+        for _ in 0..2 {
+            assert_eq!(
+                runtime
+                    .invoke(
+                        &mut interpreter,
+                        &mut environment,
+                        call_funcall_one as *const c_void,
+                        NativeCallingConvention::Fixed,
+                        &[function, Value::Integer(9)],
+                    )
+                    .expect("funcall of a byte-code closure"),
+                Value::Integer(10)
+            );
+            assert_eq!(interpreter.backtrace_frames_len(), 0);
+            assert_eq!(interpreter.lisp_eval_depth, 0);
+        }
     }
 
     #[test]
@@ -18870,6 +19084,91 @@ mod tests {
         assert_eq!(values.len(), 250_000);
         assert_eq!(values.first(), Some(&Value::Integer(249_999)));
         assert_eq!(values.last(), Some(&Value::Integer(0)));
+    }
+
+    /// SAFE_FREE of a helper's vector whose specpdl entry is not the
+    /// innermost stops the process (`NativeWords::release_specpdl'), where
+    /// GNU's safe_free asserts in a checking build: once with another entry
+    /// above the vector's own, as an unbalanced callee would leave one, and
+    /// once with no entry recording the vector.  Each runs in a child
+    /// process, this test again with the variable naming the part, and the
+    /// balanced take and release is the control: its child returns.
+    #[test]
+    fn safe_free_of_a_vector_not_innermost_stops_the_process() {
+        use std::os::unix::process::ExitStatusExt;
+
+        const CHILD: &str = "EMAXX_TEST_SAFE_FREE_PART";
+        const STOP: &str = "emaxx: SAFE_FREE of a vector that is not the innermost specpdl entry";
+        if let Ok(part) = std::env::var(CHILD) {
+            let mut interpreter = Interpreter::new();
+            let mut environment = Env::new();
+            let mut runtime = NativeRuntime::default();
+            let frame = runtime.new_call_frame(std::ptr::null_mut(), &interpreter);
+            runtime.begin_call(&frame);
+            with_active_call(&mut interpreter, &mut environment, &mut runtime, || {
+                with_active(|active| {
+                    // One word more than the helper's own array holds: the
+                    // vector is the specpdl's (SAFE_ALLOCA_LISP's xmalloc).
+                    let mut inline = [0; 2];
+                    let words = NativeWords::take(active, &mut inline, 3);
+                    assert!(words.in_specpdl);
+                    // SAFETY: the active call's interpreter, used for one
+                    // statement, as the helpers use it.
+                    let interpreter = unsafe { &mut *active.interpreter };
+                    let innermost = interpreter.specpdl_index() - 1;
+                    assert_eq!(
+                        interpreter.array_entry_depth(words.address.cast::<Value>().cast_const()),
+                        Some(innermost)
+                    );
+                    match part.as_str() {
+                        "above" => interpreter.record_unwind_current_buffer(),
+                        "popped" => assert!(interpreter.pop_specpdl_entry().is_some()),
+                        "balanced" => {}
+                        other => panic!("no part {other}"),
+                    }
+                    words.release(active);
+                    assert_eq!(part, "balanced", "SAFE_FREE returned");
+                    // SAFETY: as above.
+                    assert_eq!(unsafe { &*active.interpreter }.specpdl_index(), innermost);
+                });
+            });
+            runtime
+                .finish_call(&mut interpreter, &frame)
+                .expect("finish the native activation");
+            return;
+        }
+        let run = |part: &str| {
+            std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    concat!(
+                        module_path!(),
+                        "::safe_free_of_a_vector_not_innermost_stops_the_process"
+                    )
+                    .strip_prefix("emaxx::")
+                    .expect("the crate's module path"),
+                    "--exact",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(CHILD, part)
+                .output()
+                .expect("run the part in a child process")
+        };
+        for part in ["above", "popped"] {
+            let child = run(part);
+            let stderr = String::from_utf8_lossy(&child.stderr);
+            assert_eq!(
+                child.status.signal(),
+                Some(libc::SIGABRT),
+                "{part}: {:?}\n{stderr}",
+                child.status
+            );
+            assert!(stderr.contains(STOP), "{part}: {stderr}");
+        }
+        let control = run("balanced");
+        let stderr = String::from_utf8_lossy(&control.stderr);
+        assert!(control.status.success(), "{:?}\n{stderr}", control.status);
+        assert!(!stderr.contains(STOP), "{stderr}");
     }
 }
 

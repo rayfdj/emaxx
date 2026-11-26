@@ -282,9 +282,15 @@ fn emit(table: &Table) -> String {
         }
         if let Some((target, arity)) = indexed_native_target(&primitive.name) {
             assert_entry_arity(primitive, arity);
+            if primitive.max_args == -2 {
+                generated.push_str(&format!(
+                    "unsafe extern \"C\" fn native_subr_{index:04}(nargs: isize, args: *const super::runtime::NativeWord) -> super::runtime::NativeWord {{\n    unsafe {{ super::runtime::{target}({index}, nargs, args) }}\n}}\n\n"
+                ));
+                continue;
+            }
             assert!(
                 primitive.max_args >= 0,
-                "an entry that passes its index takes a fixed number of arguments"
+                "an entry that passes its index takes MANY's two parameters or a fixed number of arguments"
             );
             let (parameters, arguments) = fixed_parameters(primitive.max_args);
             generated.push_str(&format!(
@@ -444,9 +450,11 @@ fn direct_native_target(name: &str) -> Option<(&'static str, i32)> {
 // passes its index in the table with its arguments to the runtime
 // function, which is inlined into it, so that the index is a constant of
 // the entry and nothing is searched for at run time.  Each name comes with
-// its entry's arity, as above.
+// its entry's arity, as above: an entry of MANY's two parameters passes
+// them after the index.
 fn indexed_native_target(name: &str) -> Option<(&'static str, i32)> {
     Some(match name {
+        "apply" => ("direct_native_apply", -2),
         "bare-symbol" => ("direct_native_bare_symbol", 1),
         "symbol-with-pos-pos" => ("direct_native_symbol_with_pos_pos", 1),
         "nth" => ("direct_native_nth", 2),

@@ -35,9 +35,19 @@ pub(crate) struct StringCell {
     /// A `CodeState': whether the bytecode verifier holds a result for
     /// this string as a function's code.
     code: Cell<u8>,
-    /// Allocated while an image loaded (see `ImageCells').
-    image: bool,
+    /// Where the cell is: `HEAP_CELL', `IMAGE_CELL' (allocated while an
+    /// image loaded, in one of its rebuilt blocks, see `ImageCells') or
+    /// `DUMPED_CELL' (one of the image's mapped cells, which no sweep reads,
+    /// marked in the dump's mark_bits, `DUMP').
+    origin: u8,
 }
+
+/// A heap string's `origin'.
+const HEAP_CELL: u8 = 0;
+/// A string the image's load rebuilt, in one of its blocks.
+const IMAGE_CELL: u8 = 1;
+/// One of the image's mapped strings.
+const DUMPED_CELL: u8 = 2;
 
 /// The bytecode verifier's view of a string (see `bytecode::verify'): no
 /// result, a result for the current bytes, or results made stale by a
@@ -69,7 +79,11 @@ impl StringCell {
             pure,
             permanent_empty: false,
             code: Cell::new(CodeState::Unverified as u8),
-            image: super::image_region_open(),
+            origin: if super::image_region_open() {
+                IMAGE_CELL
+            } else {
+                HEAP_CELL
+            },
         }
     }
 }
@@ -317,14 +331,26 @@ pub(crate) struct StringMark<'a>(&'a StringCell);
 
 impl StringMark<'_> {
     pub(crate) fn is_marked(&self, epoch: u32) -> bool {
-        self.0.pure || self.0.permanent_empty || self.0.mark.is_marked(epoch)
+        if self.0.pure || self.0.permanent_empty {
+            return true;
+        }
+        if self.0.origin == DUMPED_CELL {
+            return super::DUMP.is_marked(std::ptr::from_ref(self.0) as usize);
+        }
+        self.0.mark.is_marked(epoch)
     }
 
     pub(crate) fn mark(&self, epoch: u32) -> bool {
         // Pure strings have no properties and no collectable children.
-        let marked = !self.0.pure && self.0.mark.mark(epoch);
-        if marked && self.0.image {
-            super::IMAGE_STRINGS.note_marked();
+        if self.0.pure {
+            return false;
+        }
+        if self.0.origin == DUMPED_CELL {
+            return super::DUMP.mark(std::ptr::from_ref(self.0) as usize);
+        }
+        let marked = self.0.mark.mark(epoch);
+        if marked && self.0.origin == IMAGE_CELL {
+            super::DUMP.strings.note_marked();
         }
         marked
     }
@@ -631,7 +657,7 @@ pub(crate) unsafe fn adopt_image_string_blocks<E>(
                 pure: false,
                 permanent_empty: false,
                 code: Cell::new(CodeState::Unverified as u8),
-                image: true,
+                origin: DUMPED_CELL,
             });
         }
     }
@@ -740,7 +766,7 @@ pub(crate) fn sweep_strings(epoch: u32) -> usize {
     let mut released = Vec::new();
     // When no image string died, the image's blocks are left unread
     // (checked builds read them and assert so).
-    let image_unchanged = super::IMAGE_STRINGS.unchanged();
+    let image_unchanged = super::DUMP.strings.unchanged();
     let mut image_live = 0;
     for (start, image_block) in sweep_blocks_of(BlockKind::String) {
         if image_block && image_unchanged {
@@ -767,7 +793,7 @@ pub(crate) fn sweep_strings(epoch: u32) -> usize {
                         continue;
                     }
                     if mark == epoch {
-                        image_live += usize::from((*cell).image);
+                        image_live += usize::from((*cell).origin == IMAGE_CELL);
                         if image_block {
                             continue;
                         }
@@ -806,7 +832,7 @@ pub(crate) fn sweep_strings(epoch: u32) -> usize {
     }
     FREE_LIST.set(free_list);
     if !image_unchanged {
-        super::IMAGE_STRINGS.set_live(image_live);
+        super::DUMP.strings.set_live(image_live);
     }
     for start in released {
         release_block(start, BlockKind::String);

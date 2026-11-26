@@ -90,6 +90,7 @@ fn vector_word_offsets_survive_mark_bitmap_boundaries() {
                     Some(vector.0.as_ptr()),
                 );
             }
+            VectorMarkStorage::Dump(_) => panic!("a heap vector marked in the dump's bits"),
         }
         vector.set(0, value);
         roots.push(value);

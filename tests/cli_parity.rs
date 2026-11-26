@@ -22,6 +22,15 @@ fn emaxx() -> &'static Path {
     common::emaxx(true)
 }
 
+/// A TCP port of this run's own for the server a case starts (the gnutls
+/// cases' gnutls-serv), CASE apart for each such case: on a fixed one two
+/// runs at once, from two worktrees, refuse each other's connections.
+/// From the process id, in 20000-29999, below Linux's ephemeral ports
+/// (32768-60999), which a connection's own end therefore never takes.
+fn own_port(case: u32) -> u32 {
+    20_000 + std::process::id() % 5_000 * 2 + case
+}
+
 struct Corpus {
     directory: PathBuf,
 }
@@ -6592,19 +6601,25 @@ fn a_childs_end_waits_for_status_notify_as_gnu_s() {
   (princ (format "kill-buffer %S\n" (condition-case err (kill-buffer b) (error err))))
   (princ (format "log %S live=%S\n" (reverse log) (buffer-live-p b)))))"##,
         r##"(progn
-(defun busy (s) (let ((end (+ (float-time) s))) (while (< (float-time) end))))
 (let* ((log nil) p
        (m (make-mutex)) (cv (make-condition-variable m)) (go nil)
        (th (make-thread
             (lambda ()
-              (setq p (make-process :name "tp" :command '("sh" "-c" "echo x") :noquery t :connection-type 'pipe
+              (setq p (make-process :name "tp" :command '("sh" "-c" "read l; echo x") :noquery t :connection-type 'pipe
                                     :filter (lambda (_ s) (push (list 'out s (thread-name (current-thread))) log))
                                     :sentinel (lambda (_ e) (push (list 'sen e (thread-name (current-thread))) log))))
               (with-mutex m (while (not go) (condition-wait cv)))
               (push 'thread-done log))
             "T")))
   (while (not p) (sleep-for 0.05))
-  (busy 0.4)
+  ;; The child ends at its input's end, so after make-process has
+  ;; returned in T (a SIGCHLD during it is GNU's to lose: handled on
+  ;; this thread, where T's block_child_signal does not reach, before
+  ;; p->alive).  Then wait until the SIGCHLD handler has reaped it (its
+  ;; /proc entry goes with the reap); the bound is only against a hang.
+  (process-send-eof p)
+  (let ((proc (format "/proc/%d" (process-id p))) (end (+ (float-time) 30)))
+    (while (and (file-exists-p proc) (< (float-time) end))))
   (accept-process-output nil 0.3)
   (princ (format "main-wait %S %S\n" (reverse log) (memq p (process-list))))
   (with-mutex m (setq go t) (condition-notify cv t))
@@ -6904,17 +6919,18 @@ fn the_processes_at_exit_are_shut_down_as_shut_down_emacs_does() {
             .to_string(),
         r##"(progn
 (require 'gnutls)
-(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "44392"))
+(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "PORT"))
 (set-process-query-on-exit-flag srv nil)
 (sleep-for 1)
-(let ((c (open-network-stream "t" nil "127.0.0.1" 44392 :type 'plain)))
+(let ((c (open-network-stream "t" nil "127.0.0.1" PORT :type 'plain)))
   (set-process-query-on-exit-flag c nil)
   (set-process-sentinel c (lambda (_p e) (princ (format "sentinel %S\n" e))))
   (princ (format "boot %S\n" (gnutls-boot c 'gnutls-x509pki '(:hostname "localhost" :priority "NORMAL:%NO_SHUFFLE_EXTENSIONS" :loglevel 2)))))
 (add-hook 'kill-emacs-hook (lambda () (princ "hook\n") (signal-process srv 'SIGTERM)))
 (princ "end\n"))"##
             .replace("KEYFILE", &resources.join("key.pem").display().to_string())
-            .replace("CERTFILE", &resources.join("cert.pem").display().to_string()),
+            .replace("CERTFILE", &resources.join("cert.pem").display().to_string())
+            .replace("PORT", &own_port(1).to_string()),
     ] {
         assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
     }
@@ -6935,13 +6951,13 @@ fn gnutls_boot_verifies_and_logs_as_gnutls_c_does() {
     let program = r##"(progn
 (require 'gnutls)
 (defun show (tag form) (princ (format "%s %S\n" tag (condition-case err (funcall form) (error (list 'ERR err))))))
-(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "44391"))
+(defvar srv (start-process "srv" nil "gnutls-serv" "--http" "--x509keyfile" "KEYFILE" "--x509certfile" "CERTFILE" "--port" "PORT"))
 (sleep-for 1)
 (dolist (host '("localhost" "example.org"))
   (dolist (ve '(nil t (:hostname) (:trustfiles)))
     (show (format "%s %S" host ve)
           (lambda ()
-            (let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+            (let ((c (open-network-stream "t" nil "127.0.0.1" PORT :type 'plain)))
               (prog1 (condition-case e
                          (progn (gnutls-negotiate :process c :hostname host :verify-error ve :trustfiles '("CERTFILE"))
                                 (let ((st (gnutls-peer-status c)))
@@ -6956,19 +6972,20 @@ fn gnutls_boot_verifies_and_logs_as_gnutls_c_does() {
                       '(:hostname "localhost" :keylist (("/nonexistent/k" "/nonexistent/c")))
                       '(:hostname "localhost" :verify-error t)
                       '(:hostname "example.org" :verify-error (:hostname) :trustfiles ("CERTFILE"))))
-  (let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+  (let ((c (open-network-stream "t" nil "127.0.0.1" PORT :type 'plain)))
     (princ (format "%S -> %S stage %S\n" params
                    (condition-case e (gnutls-boot c 'gnutls-x509pki params) (error (list 'ERR e)))
                    (gnutls-get-initstage c)))
     (princ (format "   status %S\n" (plist-get (gnutls-peer-status c) :warnings)))
     (delete-process c)))
-(let ((c (open-network-stream "t" nil "127.0.0.1" 44391 :type 'plain)))
+(let ((c (open-network-stream "t" nil "127.0.0.1" PORT :type 'plain)))
   (princ (format "boot1 %S\n" (condition-case e (gnutls-boot c 'gnutls-x509pki (list :hostname "example.org" :trustfiles '("CERTFILE") :loglevel 1 :verify-flags 'bogus)) (error (list 'ERR e)))))
   (princ (format "deinit %S\n" (gnutls-deinit c)))
   (delete-process c))
 (delete-process srv))"##
         .replace("KEYFILE", &resources.join("key.pem").display().to_string())
-        .replace("CERTFILE", &resources.join("cert.pem").display().to_string());
+        .replace("CERTFILE", &resources.join("cert.pem").display().to_string())
+        .replace("PORT", &own_port(0).to_string());
     let corpus = Corpus::new();
     assert_same(&corpus, &["--batch", "-Q", "--eval", &program]);
 }
@@ -13777,6 +13794,221 @@ fn a_native_function_that_takes_a_vector_is_called_as_funcall_subr_calls_it() {
 (zz-many-probe (let ((max-lisp-eval-depth 100))
             (defun zz-many-deeper (n) (always (zz-many-deeper (1+ n))))
             (car (condition-case e (zz-many-deeper 0) (error e)))))
+"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn native_code_calls_byte_code_through_funcall_as_ffuncall_does() {
+    // Native code's `funcall' is Ffuncall itself (its relocation entry):
+    // maybe_quit, the depth, record_in_backtrace, debug_on_next_call and
+    // maybe_gc, then funcall_general, funcall_lambda and exec_byte_code
+    // for a byte-code callee, then the debugger at the exit of a marked
+    // frame and the frame's pop (eval.c:Ffuncall, funcall_lambda).  The
+    // same calls of byte-code functions from native code, compared with
+    // GNU's answers: each arity and its errors, throws and signals
+    // through the call, the frames the callee and a handler-bind handler
+    // see, the debugger at the call and at its exit, collections inside
+    // the callee, a callee that redefines itself, the depth limit met
+    // with native code and byte code calling each other, and a
+    // dynamic-binding callee.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "native-funcall-byte-code.el",
+        r##";;; -*- lexical-binding: t -*-
+;; Native code's funcall of byte-code functions.
+(defvar zz-n 0)
+(defvar zz-log nil)
+(defmacro zz-probe (&rest body)
+  `(progn (setq zz-n (1+ zz-n))
+          (princ (format "%d: %S\n" zz-n
+                         (condition-case e (progn ,@body) (t (list 'signal e)))))))
+(define-error 'zz-error "zz error")
+;; Native callers.
+(defun zz-nat-0 (f) (funcall f))
+(defun zz-nat-1 (f x) (funcall f x))
+(defun zz-nat-2 (f x y) (funcall f x y))
+(defun zz-nat-3 (f x y z) (funcall f x y z))
+(defun zz-nat-catch (f tag v) (catch tag (funcall f tag v)))
+(defun zz-nat-cc (f x) (condition-case e (funcall f x) (zz-error (list 'caught e))))
+(defun zz-nat-dnc (f x) (setq debug-on-next-call t) (funcall f x))
+(defun zz-nat-twice (f x) (list (funcall f x) (funcall f x)))
+(dolist (f '(zz-nat-0 zz-nat-1 zz-nat-2 zz-nat-3 zz-nat-catch zz-nat-cc zz-nat-dnc zz-nat-twice))
+  (native-compile f))
+;; Byte-code callees.
+(defun zz-bc-id (x) x)
+(defun zz-bc-opt (a &optional b) (list a b))
+(defun zz-bc-rest (a &rest r) (list a r))
+(defun zz-bc-throw (tag v) (throw tag (list 'thrown v)))
+(defun zz-bc-signal (x) (signal 'zz-error (list x)))
+(defun zz-bc-frames (x)
+  (list x (backtrace-frame 0 'zz-bc-frames) (backtrace-frame 1 'zz-bc-frames)))
+(defun zz-bc-mark (x) (backtrace-debug 1 t) (list 'marked x))
+(defun zz-bc-gc (x)
+  (let ((l (make-list 1000 x)))
+    (garbage-collect)
+    (let ((v (make-vector 100 x))) (garbage-collect) (list (length l) (aref v 99) x))))
+(defun zz-bc-redefine (x)
+  (fset 'zz-bc-redefine (lambda (y) (list 'new y)))
+  (list 'old x))
+(defun zz-bc-depth (f n)
+  (setq zz-n-depth (1+ zz-n-depth))
+  (zz-nat-2 f f n))
+(defvar zz-n-depth 0)
+(defun zz-bc-hb (x) (signal 'zz-error (list x)))
+(dolist (f '(zz-bc-id zz-bc-opt zz-bc-rest zz-bc-throw zz-bc-signal zz-bc-frames zz-bc-mark
+             zz-bc-gc zz-bc-redefine zz-bc-depth zz-bc-hb))
+  (byte-compile f))
+(zz-probe (list (native-comp-function-p (symbol-function 'zz-nat-1))
+                (byte-code-function-p (symbol-function 'zz-bc-id))))
+;; The call, by symbol and by the function itself.
+(zz-probe (zz-nat-1 'zz-bc-id 'foo))
+(zz-probe (zz-nat-1 (symbol-function 'zz-bc-id) 'foo))
+(zz-probe (zz-nat-1 #'zz-bc-opt 1))
+(zz-probe (zz-nat-2 #'zz-bc-opt 1 2))
+(zz-probe (zz-nat-3 #'zz-bc-rest 1 2 3))
+(zz-probe (zz-nat-1 #'zz-bc-rest 1))
+;; Wrong numbers of arguments.
+(zz-probe (zz-nat-0 #'zz-bc-id))
+(zz-probe (zz-nat-2 #'zz-bc-id 1 2))
+(zz-probe (zz-nat-3 #'zz-bc-opt 1 2 3))
+(zz-probe (zz-nat-0 (symbol-function 'zz-bc-opt)))
+;; A throw to native code's catch, a signal to its condition-case.
+(zz-probe (zz-nat-catch #'zz-bc-throw 'zz-tag 7))
+(zz-probe (zz-nat-cc #'zz-bc-signal 5))
+(zz-probe (zz-nat-1 #'zz-bc-signal 6))
+;; The frames the callee sees.
+(zz-probe (zz-nat-1 #'zz-bc-frames 42))
+(zz-probe (zz-nat-1 (symbol-function 'zz-bc-frames) 43))
+;; The debugger at the call's exit, and at the next call.
+(zz-probe (let ((debugger (lambda (&rest args) (push args zz-log) (list 'debugger args)))
+                (zz-log nil))
+            (list (zz-nat-1 #'zz-bc-mark 1) zz-log)))
+(zz-probe (let ((debugger (lambda (&rest args) (push (car args) zz-log) (if (eq (car args) 'exit) (list 'exit-value (cadr args)) nil)))
+                (zz-log nil))
+            (list (zz-nat-dnc #'zz-bc-id 2) debug-on-next-call (reverse zz-log))))
+;; Collections inside the callee.
+(zz-probe (zz-nat-1 #'zz-bc-gc 'g))
+(zz-probe (let ((gc-cons-threshold 10000)) (zz-nat-1 #'zz-bc-gc (list 'h))))
+;; A callee that replaces its own definition.
+(zz-probe (zz-nat-twice 'zz-bc-redefine 3))
+;; The depth limit, native code and byte code calling each other.
+(zz-probe (let ((max-lisp-eval-depth 200))
+            (setq zz-n-depth 0)
+            (list (condition-case e (zz-nat-2 #'zz-bc-depth #'zz-bc-depth 0) (error (car e)))
+                  zz-n-depth)))
+;; A dynamic-binding byte-code callee.
+(defvar zz-dyn-reader (byte-compile (eval '(lambda (zzdyn) (list zzdyn (symbol-value 'zzdyn))) nil)))
+(zz-probe (list (byte-code-function-p zz-dyn-reader) (aref zz-dyn-reader 0)))
+(zz-probe (zz-nat-1 zz-dyn-reader 'dyn))
+;; A handler-bind handler sees the callee's frame.
+(zz-probe (let ((zz-log nil))
+            (list (condition-case e
+                      (handler-bind ((zz-error (lambda (err) (push (list err (backtrace-frame 0 'zz-bc-hb)) zz-log))))
+                        (zz-nat-1 #'zz-bc-hb 9))
+                    (zz-error (list 'caught e)))
+                  zz-log)))
+"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn native_code_calls_apply_as_fapply_does() {
+    // Native code's `apply' is Fapply itself (its relocation entry): the
+    // spread list counted by list_length (FOR_EACH_TAIL's cycle test and
+    // its maybe_quit), Ffuncall at once for a list of no element or one,
+    // and for two or more FUN, the first argument, read through its
+    // function cell and indirect_function when that holds a symbol, and
+    // the call of a SUBRP whose maximum exceeds the count and whose
+    // minimum the count meets padded with nil (eval.c:Fapply), which
+    // Ffuncall's frame shows.  The same calls from native code, compared
+    // with GNU's answers: native, dynamic-binding native, byte-code and C
+    // callees, the single argument whose FUN is the list itself, aliases
+    // and fset's refusal of a cycle, the functions apply cannot call, the
+    // spread list's shapes, and a quit pending while the list is counted.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "native-apply.el",
+        r##";;; -*- lexical-binding: t -*-
+;; Native code's apply.
+(defvar zz-n 0)
+(defvar zz-log nil)
+(defmacro zz-probe (&rest body)
+  `(progn (setq zz-n (1+ zz-n))
+          (princ (format "%d: %S\n" zz-n
+                         (condition-case e (progn ,@body) (t (list 'signal e)))))))
+(defun zz-frame (name) (backtrace-frame 0 name))
+;; Native callers.
+(defun zz-nat-apply1 (l) (apply l))
+(defun zz-nat-apply2 (f l) (apply f l))
+(defun zz-nat-apply3 (f x l) (apply f x l))
+(defun zz-nat-apply4 (f x y l) (apply f x y l))
+(defun zz-nat-quit-apply (f l) (setq quit-flag t) (apply f l))
+(dolist (f '(zz-nat-apply1 zz-nat-apply2 zz-nat-apply3 zz-nat-apply4 zz-nat-quit-apply))
+  (native-compile f))
+;; Callees: native, dynamic-binding native, byte code.
+(defun zz-nat-opt (a &optional b c) (list a b c (zz-frame 'zz-nat-opt)))
+(native-compile 'zz-nat-opt)
+(let ((lexical-binding nil))
+  (eval '(defun zz-nat-dyn (a &optional b c) (list a b c (zz-frame 'zz-nat-dyn))) nil))
+(native-compile 'zz-nat-dyn)
+(defun zz-bc-opt (a &optional b c) (list a b c (zz-frame 'zz-bc-opt)))
+(byte-compile 'zz-bc-opt)
+(defun zz-mapconcat-frame (_) (format "%S" (zz-frame 'mapconcat)))
+(zz-probe (list (native-comp-function-p (symbol-function 'zz-nat-dyn))
+                (subr-arity (symbol-function 'zz-nat-dyn))
+                (subr-arity (symbol-function 'zz-nat-opt))
+                (byte-code-function-p (symbol-function 'zz-bc-opt))))
+;; Fapply pads with nil a SUBRP whose maximum exceeds the count and whose
+;; minimum the count meets, when the spread list has two or more
+;; elements; Ffuncall's frame shows the padding.
+(zz-probe (zz-nat-apply2 #'zz-nat-opt '(1 2)))
+(zz-probe (zz-nat-apply2 'zz-nat-opt '(1 2)))
+(zz-probe (zz-nat-apply3 'zz-nat-opt 1 '(2)))
+(zz-probe (zz-nat-apply4 'zz-nat-opt 1 2 nil))
+(zz-probe (zz-nat-apply2 #'zz-nat-dyn '(1 2)))
+(zz-probe (zz-nat-apply2 #'zz-bc-opt '(1 2)))
+(zz-probe (zz-nat-apply2 #'mapconcat (list #'zz-mapconcat-frame '(a))))
+(zz-probe (zz-nat-apply3 #'mapconcat #'zz-mapconcat-frame '((a))))
+(zz-probe (zz-nat-apply2 #'mapconcat (list #'zz-mapconcat-frame '(a) "-")))
+;; With a single argument, Fapply's FUN is the list itself, which no SUBRP
+;; is: the call is not padded.
+(zz-probe (zz-nat-apply1 (list #'mapconcat #'zz-mapconcat-frame '(a))))
+(zz-probe (zz-nat-apply1 (list 'mapconcat #'zz-mapconcat-frame '(a))))
+(zz-probe (zz-nat-apply2 #'aset (list (make-vector 2 0) 1)))
+(zz-probe (zz-nat-apply2 #'substring '("abcd" 1)))
+(zz-probe (zz-nat-apply2 #'list '(1 2 3)))
+(zz-probe (zz-nat-apply4 #'list 1 2 '(3 4)))
+;; The function through aliases; a cycle is refused by fset.
+(defalias 'zz-alias1 'mapconcat)
+(defalias 'zz-alias2 'zz-alias1)
+(defun zz-alias-frame (_) (format "%S" (zz-frame 'zz-alias2)))
+(zz-probe (zz-nat-apply2 'zz-alias2 (list #'zz-alias-frame '(a))))
+(zz-probe (defalias 'zz-alias1 'zz-alias2))
+(zz-probe (zz-nat-apply2 'zz-alias2 (list #'zz-alias-frame '(b))))
+;; Functions apply cannot call.
+(zz-probe (zz-nat-apply2 'when '(t 1)))
+(zz-probe (zz-nat-apply2 'if '(t 1 2)))
+(zz-probe (zz-nat-apply2 'zz-void '(1 2)))
+(zz-probe (zz-nat-apply2 nil '(1 2)))
+;; The spread list's shapes.
+(zz-probe (zz-nat-apply1 nil))
+(zz-probe (zz-nat-apply1 '(list 1 2)))
+(zz-probe (zz-nat-apply2 #'list nil))
+(zz-probe (zz-nat-apply3 #'list 1 '(2 . 3)))
+(zz-probe (let ((l (list 1 2))) (setcdr (cdr l) l)
+            (condition-case e (zz-nat-apply3 #'list 0 l) (error (car e)))))
+;; A quit pending when apply counts the list.
+(zz-probe (let ((zz-log nil))
+            (condition-case nil
+                (zz-nat-quit-apply (lambda (&rest a) (push a zz-log)) '(1 2 3))
+              (quit (list 'quit zz-log)))))
+(zz-probe (let ((zz-log nil))
+            (condition-case nil
+                (zz-nat-quit-apply (lambda (&rest a) (push a zz-log)) '(1))
+              (quit (list 'quit zz-log)))))
 "##,
     );
     assert_same(&corpus, &["--batch", "-Q", "-l", &program]);

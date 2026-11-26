@@ -4920,7 +4920,7 @@ impl LispReachability {
             Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
             // alloc.c:survives_gc_p tests the symbol's mark. A live owner's
             // obarray marks its symbols; a retired owner's names are not roots.
-            Kind::Symbol(symbol) => symbol.mark_bit().is_marked(self.epoch),
+            Kind::Symbol(symbol) => symbol.is_marked(self.epoch),
             Kind::Cons(value) => value.mark_bit().is_marked(),
             Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
             Kind::Closure(value) => value.mark_bit().is_marked(self.epoch),

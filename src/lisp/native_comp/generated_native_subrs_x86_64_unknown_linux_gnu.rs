@@ -15336,7 +15336,7 @@ unsafe extern "C" fn native_subr_0908(
     nargs: isize,
     args: *const super::runtime::NativeWord,
 ) -> super::runtime::NativeWord {
-    unsafe { super::runtime::invoke_subr_many(908, nargs, args) }
+    unsafe { super::runtime::direct_native_apply(908, nargs, args) }
 }
 
 extern "C" fn native_subr_0909(

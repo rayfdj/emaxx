@@ -426,15 +426,16 @@ impl SymbolName {
         ))
     }
 
-    /// alloc.c's mark bit on the symbol object.
-    pub(crate) fn mark_bit(&self) -> &MarkBit {
-        self.0.mark_bit()
-    }
-
     /// Mark the symbol for EPOCH; true when it was not yet marked in it.
     #[inline]
     pub(crate) fn mark(&self, epoch: u32) -> bool {
         self.0.mark(epoch)
+    }
+
+    /// Whether the symbol is marked for EPOCH.
+    #[inline]
+    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
+        self.0.is_marked(epoch)
     }
 
     /// The interned symbol host TEXT names: oblookup in the initial

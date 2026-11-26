@@ -20,7 +20,7 @@
 
 use super::types::{ConsCell, Kind, Value};
 use std::cell::Cell;
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::ptr::NonNull;
 use std::sync::Mutex;
 
@@ -131,26 +131,34 @@ pub(crate) enum BlockKind {
 const BLOCK_KINDS: usize = 6;
 const _: () = assert!(BlockKind::String as usize == BLOCK_KINDS - 1);
 
+/// Where a registered block's cells come from.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+enum BlockOrigin {
+    /// Allocated for the heap.
+    Heap,
+    /// Allocated while an image loaded (see `IMAGE_REGION_OPEN'): its
+    /// objects are the image's rebuilt ones, swept but not counted.
+    Image,
+    /// The image's own bytes where the loader mapped them
+    /// (`adopt_image_cons_blocks', `adopt_image_string_blocks',
+    /// `vectors::adopt_image_vectors', `adopt_image_symbol_blocks'):
+    /// pdumper's dump, which no sweep visits and nothing frees.
+    Mapped,
+}
+
 /// The registered blocks.
 struct BlockRegistry {
     /// Every block by start address, with its kind, for `mem_find'
     /// (alloc.c's mem tree, a red-black tree there; the map's lookup is
     /// the same order).
     all: BTreeMap<usize, BlockKind>,
-    /// Each kind's blocks by start address, each with whether an image
-    /// load registered it (see `IMAGE_REGION_OPEN'), for its sweep.
-    by_kind: [BTreeMap<usize, bool>; BLOCK_KINDS],
-    /// The image blocks that are the image's own bytes where the loader
-    /// mapped them (`adopt_image_cons_blocks', `adopt_image_string_blocks',
-    /// `vectors::adopt_image_vectors'): pdumper.c never frees its dump, so
-    /// their storage is never given back.
-    mapped: BTreeSet<usize>,
+    /// Each kind's blocks by start address, each with its origin.
+    by_kind: [BTreeMap<usize, BlockOrigin>; BLOCK_KINDS],
 }
 
 static BLOCKS: Mutex<BlockRegistry> = Mutex::new(BlockRegistry {
     all: BTreeMap::new(),
     by_kind: [const { BTreeMap::new() }; BLOCK_KINDS],
-    mapped: BTreeSet::new(),
 });
 
 /// alloc.c's `min_heap_address' and `max_heap_address': the lowest block
@@ -163,27 +171,22 @@ static HEAP_HIGH: AtomicUsize = AtomicUsize::new(0);
 
 /// alloc.c's `mem_insert' of a block of KIND and BYTES at START.
 fn register_block(start: usize, bytes: usize, kind: BlockKind) {
-    let image = IMAGE_REGION_OPEN.load(Ordering::Relaxed);
-    register_block_of(start, bytes, kind, image, false);
-}
-
-/// `register_block' of an image block (IMAGE), one of the image's own
-/// mapped bytes (MAPPED) or not.
-fn register_block_of(start: usize, bytes: usize, kind: BlockKind, image: bool, mapped: bool) {
+    let origin = if IMAGE_REGION_OPEN.load(Ordering::Relaxed) {
+        BlockOrigin::Image
+    } else {
+        BlockOrigin::Heap
+    };
     let mut blocks = BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     blocks.all.insert(start, kind);
-    blocks.by_kind[kind as usize].insert(start, image);
-    if mapped {
-        blocks.mapped.insert(start);
-    }
+    blocks.by_kind[kind as usize].insert(start, origin);
     drop(blocks);
     HEAP_LOW.fetch_min(start, Ordering::Relaxed);
     HEAP_HIGH.fetch_max(start + bytes, Ordering::Relaxed);
 }
 
-/// `register_block_of' of each of the image's mapped blocks of KIND, a
+/// alloc.c's `mem_insert' of each of the image's mapped blocks of KIND, a
 /// (start, bytes) each, under one lock: the registry's maps take them
 /// built in order, where an insertion each walked them for its place.
 pub(crate) fn register_image_blocks(kind: BlockKind, blocks: &[(usize, usize)]) {
@@ -200,22 +203,14 @@ pub(crate) fn register_image_blocks(kind: BlockKind, blocks: &[(usize, usize)]) 
         .unwrap_or_else(|poisoned| poisoned.into_inner());
     let mut all = blocks.iter().map(|&(start, _)| (start, kind)).collect();
     registry.all.append(&mut all);
-    let mut by_kind = blocks.iter().map(|&(start, _)| (start, true)).collect();
+    let mut by_kind = blocks
+        .iter()
+        .map(|&(start, _)| (start, BlockOrigin::Mapped))
+        .collect();
     registry.by_kind[kind as usize].append(&mut by_kind);
-    let mut mapped = blocks.iter().map(|&(start, _)| start).collect();
-    registry.mapped.append(&mut mapped);
     drop(registry);
     HEAP_LOW.fetch_min(low, Ordering::Relaxed);
     HEAP_HIGH.fetch_max(high, Ordering::Relaxed);
-}
-
-/// True when the block at START is one of the image's mapped blocks.
-fn is_mapped_block(start: usize) -> bool {
-    BLOCKS
-        .lock()
-        .unwrap_or_else(|poisoned| poisoned.into_inner())
-        .mapped
-        .contains(&start)
 }
 
 /// alloc.c's `mem_delete'.
@@ -226,28 +221,34 @@ fn unregister_block(start: usize) {
     let removed = blocks.all.remove(&start);
     debug_assert!(removed.is_some());
     if let Some(kind) = removed {
-        blocks.by_kind[kind as usize].remove(&start);
+        let origin = blocks.by_kind[kind as usize].remove(&start);
+        debug_assert_ne!(
+            origin,
+            Some(BlockOrigin::Mapped),
+            "a mapped block given back"
+        );
     }
-    blocks.mapped.remove(&start);
 }
 
 /// pdumper's mapped region, as this loader has it. GNU's sweeps never visit
 /// dumped objects, gcstat never counts them (so `total_bytes_of_live_objects'
 /// and the `garbage-collect' census are the heap's own objects), and their
-/// storage is never reused. This loader maps the image's conses, strings
-/// and vectors where the image holds them and rebuilds its other objects in
-/// ordinary blocks, and every block registered while an image loads is an
-/// image block: the sweeps leave its objects out of the census and its freed
-/// cells off the free lists. Dead objects there are still cleaned, because
-/// they own host storage, and a block with nothing live is still released
-/// unless it is the image's own bytes.
+/// storage is never reused. This loader maps the image's conses, strings,
+/// symbols and vectors where the image holds them, and no sweep visits
+/// those either (their marks are the dump's, see `dump'). It rebuilds its
+/// other objects in ordinary blocks, and every block registered while an
+/// image loads is an image block: the sweeps leave its objects out of the
+/// census and its freed cells off the free lists. Dead objects there are
+/// still cleaned, because they own host storage, and a block with nothing
+/// live is still released.
 static IMAGE_REGION_OPEN: AtomicBool = AtomicBool::new(false);
 
-/// The image's cells of one kind (strings and symbols allocated while an
-/// image loads, vectors in its blocks), for a sweep that need not read
-/// them: how many the current mark epoch has marked, raised as a mark
-/// first reaches one, and how many the last sweep that read them left
-/// (`UNKNOWN' until one has since an image load).  Only a sweep frees an
+/// The image's rebuilt cells of one kind (strings and symbols allocated
+/// while an image loads, vectors in the blocks registered then), for a
+/// sweep that need not read them: how many the current mark epoch has
+/// marked, raised as a mark first reaches one, and how many the last sweep
+/// that read them left (`UNKNOWN' until one has since an image load).  The
+/// mapped cells are not counted: no sweep reads them.  Only a sweep frees an
 /// image cell and none is allocated outside a load, so when the two agree
 /// every image cell that sweep left is marked again: nothing in the image
 /// died, and the sweep passes its blocks by unread, as GNU's sweeps never
@@ -260,7 +261,7 @@ pub(crate) struct ImageCells {
 impl ImageCells {
     const UNKNOWN: usize = usize::MAX;
 
-    const fn new() -> Self {
+    pub(crate) const fn new() -> Self {
         Self {
             marked: AtomicUsize::new(0),
             live: AtomicUsize::new(Self::UNKNOWN),
@@ -292,10 +293,6 @@ impl ImageCells {
     }
 }
 
-pub(crate) static IMAGE_STRINGS: ImageCells = ImageCells::new();
-pub(crate) static IMAGE_SYMBOLS: ImageCells = ImageCells::new();
-pub(crate) static IMAGE_VECTORS: ImageCells = ImageCells::new();
-
 /// Clear the bitmap WORDS, writing only the words with a bit set (an
 /// image block's marks are in its mapped pages).
 fn clear_bits(words: &[Cell<usize>]) {
@@ -308,7 +305,7 @@ fn clear_bits(words: &[Cell<usize>]) {
 
 /// A mark epoch begins: no image cell is marked in it yet.
 pub(crate) fn begin_image_mark_epoch() {
-    for cells in [&IMAGE_STRINGS, &IMAGE_SYMBOLS, &IMAGE_VECTORS] {
+    for cells in [&DUMP.strings, &DUMP.symbols, &DUMP.vectors] {
         cells.marked.store(0, Ordering::Relaxed);
     }
 }
@@ -344,7 +341,7 @@ impl Drop for ImageRegion {
 
 /// The image's cells change: the next sweep reads them all.
 fn forget_image_live() {
-    for cells in [&IMAGE_STRINGS, &IMAGE_SYMBOLS, &IMAGE_VECTORS] {
+    for cells in [&DUMP.strings, &DUMP.symbols, &DUMP.vectors] {
         cells.live.store(ImageCells::UNKNOWN, Ordering::Relaxed);
     }
 }
@@ -816,6 +813,19 @@ pub(crate) enum Found {
     Vectorlike(*mut VectorHeader),
     Symbol(*mut SymbolCell),
     String(*mut strings::StringCell),
+}
+
+impl Found {
+    /// The object's start.
+    fn address(&self) -> usize {
+        match *self {
+            Found::Cons(cell) => cell as usize,
+            Found::Float(cell) => cell as usize,
+            Found::Vectorlike(header) => header as usize,
+            Found::Symbol(cell) => cell as usize,
+            Found::String(cell) => cell as usize,
+        }
+    }
 }
 
 thread_local! {
@@ -1637,6 +1647,8 @@ pub(crate) struct ConsMark<'a> {
     /// The cell's slot from the block's address (`CONS_FIRST_SLOT' for
     /// the first cell).
     slot: usize,
+    /// A mapped cell, whose mark is in the dump's mark_bits (`DUMP').
+    dumped: bool,
 }
 
 impl ConsMark<'_> {
@@ -1659,14 +1671,26 @@ impl ConsMark<'_> {
         self.block.allocated[word].get() & mask != 0
     }
 
+    /// The cell's address.
+    #[inline(always)]
+    fn address(&self) -> usize {
+        std::ptr::from_ref(self.block) as usize + self.slot * CELL_SIZE
+    }
+
     #[inline]
     pub(crate) fn is_marked(&self) -> bool {
+        if self.dumped {
+            return self.allocated() && DUMP.is_marked(self.address());
+        }
         self.allocated() && self.block.marked[self.bit().0].get() & self.bit().1 != 0
     }
 
     /// XMARK_CONS: true when the cons was not yet marked.
     pub(crate) fn mark(&self) -> bool {
         debug_assert!(self.allocated(), "marking a free cons");
+        if self.dumped {
+            return DUMP.mark(self.address());
+        }
         let (word, mask) = self.bit();
         let old = self.block.marked[word].get();
         self.block.marked[word].set(old | mask);
@@ -1716,7 +1740,30 @@ unsafe fn cons_mark<'a>(cell: *const ConsCell) -> ConsMark<'a> {
     let slot = address.wrapping_sub(base) / CELL_SIZE;
     debug_assert!((CONS_FIRST_SLOT..CONS_FIRST_SLOT + CELLS_PER_BLOCK).contains(&slot));
     let block = unsafe { &*std::ptr::addr_of!((*(base as *const ConsBlock)).metadata) };
-    ConsMark { block, slot }
+    ConsMark {
+        block,
+        slot,
+        dumped: false,
+    }
+}
+
+/// The bit of a cons block's first allocation word, below its first cell
+/// (the metadata's own slot), that says the block is one of the image's
+/// mapped ones, whose cells are marked in the dump's mark_bits.
+const DUMPED_CONS_BLOCK: usize = 1;
+const _: () = assert!(CONS_FIRST_SLOT > 0);
+
+/// `cons_mark' for the collector, whose mark of a mapped cell is in the
+/// dump's mark_bits (pdumper_object_p, then pdumper_set_marked).
+///
+/// # Safety
+/// As `cons_mark'.
+#[inline(always)]
+unsafe fn cons_mark_for_collection<'a>(cell: *const ConsCell) -> ConsMark<'a> {
+    // SAFETY: the caller's contract.
+    let mut mark = unsafe { cons_mark(cell) };
+    mark.dumped = mark.block.allocated[0].get() & DUMPED_CONS_BLOCK != 0;
+    mark
 }
 
 #[repr(transparent)]
@@ -1755,7 +1802,7 @@ impl ConsRef {
     #[inline(always)]
     pub(crate) fn mark_bit(&self) -> ConsMark<'_> {
         // SAFETY: this reached handle keeps its containing block allocated.
-        unsafe { cons_mark(self.0.as_ptr()) }
+        unsafe { cons_mark_for_collection(self.0.as_ptr()) }
     }
 }
 
@@ -1869,7 +1916,9 @@ pub(crate) unsafe fn adopt_image_cons_blocks(start: *mut u8, count: usize) {
         // stay free.
         unsafe {
             ConsMetadata::init(std::ptr::addr_of_mut!((*(base as *mut ConsBlock)).metadata));
-            cons_mark(cons_cell(base, 0)).allocate_run(cells);
+            let first = cons_mark(cons_cell(base, 0));
+            first.allocate_run(cells);
+            first.block.allocated[0].set(first.block.allocated[0].get() | DUMPED_CONS_BLOCK);
         }
         blocks.push((base, CONS_BLOCK_BYTES));
     }
@@ -1911,10 +1960,6 @@ unsafe fn fill_cons(slot: *mut ConsCell, cell: ConsCell) -> ConsRef {
 /// alloc.c's `lisp_align_free' of a block every cell of which is free
 /// (the sweep found nothing live in it).
 fn release_block(start: usize, kind: BlockKind) {
-    // The image's mapped blocks stay as they are, their cells free.
-    if is_mapped_block(start) {
-        return;
-    }
     unregister_block(start);
     // SAFETY: a block `new_block' allocated of this kind, unregistered
     // above; every cell is free (nothing reaches it).
@@ -2005,6 +2050,22 @@ unsafe fn mem_find_with(
     }
     let (start, kind) = lookup(address)?;
     let offset = address.checked_sub(start)?;
+    // SAFETY: the caller's contract: START is a registered block of KIND.
+    let found = unsafe { mem_find_in_block(start, offset, kind) }?;
+    // pdumper_find_object_type_impl: a mapped object is one only if the
+    // last collection marked it, so one that died is not reached again.
+    let object = found.address();
+    if DUMP.contains(object) && !DUMP.marked_last(object) {
+        return None;
+    }
+    Some(found)
+}
+
+/// `mem_find_with' in the block of KIND at START: the allocated object at
+/// OFFSET into it.
+#[inline(always)]
+unsafe fn mem_find_in_block(start: usize, offset: usize, kind: BlockKind) -> Option<Found> {
+    let address = start + offset;
     match kind {
         BlockKind::Cons => {
             let index = offset.checked_sub(CONS_CELLS)? / CELL_SIZE;
@@ -2069,6 +2130,19 @@ pub(crate) fn cons_allocated_at(address: usize) -> bool {
     unsafe { mem_find_cons(address) }.is_some_and(|cell| cell as usize == address)
 }
 
+/// For tests: whether ADDRESS is in one of the image's mapped cons blocks.
+#[cfg(test)]
+pub(crate) fn cons_is_mapped(address: usize) -> bool {
+    crate::lisp::runtime::ensure_held();
+    let start = address & !(CONS_BLOCK_ALIGN - 1);
+    BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .by_kind[BlockKind::Cons as usize]
+        .get(&start)
+        == Some(&BlockOrigin::Mapped)
+}
+
 /// For tests: whether every mark bit of the cons, float and vector blocks
 /// is clear, as a collection's sweeps leave them.
 #[cfg(test)]
@@ -2114,15 +2188,38 @@ fn blocks_of(kind: BlockKind) -> Vec<usize> {
         .collect()
 }
 
-/// The blocks of KIND for a sweep, each with whether it is an image block.
+/// The blocks of KIND for a sweep, each with whether it is an image block:
+/// the mapped ones are not on the list, as no sweep of alloc.c's visits a
+/// dumped object.
 fn sweep_blocks_of(kind: BlockKind) -> Vec<(usize, bool)> {
     BLOCKS
         .lock()
         .unwrap_or_else(|poisoned| poisoned.into_inner())
         .by_kind[kind as usize]
         .iter()
-        .map(|(&start, &image)| (start, image))
+        .filter(|&(_, &origin)| origin != BlockOrigin::Mapped)
+        .map(|(&start, &origin)| (start, origin == BlockOrigin::Image))
         .collect()
+}
+
+/// The mapped blocks of KIND.
+fn mapped_blocks_of(kind: BlockKind) -> Vec<usize> {
+    BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .by_kind[kind as usize]
+        .iter()
+        .filter(|&(_, &origin)| origin == BlockOrigin::Mapped)
+        .map(|(&start, _)| start)
+        .collect()
+}
+
+/// pdumper.c:pdumper_clear_marks, the last step of gc_sweep: the mapped
+/// objects' marks, which no sweep reads, become the last ones the
+/// conservative scan reads, and the next collection's start clear (see
+/// `dump').
+pub(crate) fn clear_dump_marks() {
+    DUMP.clear_marks();
 }
 
 /// The cons blocks, for the sweep and the checks.
@@ -2254,7 +2351,7 @@ fn verify_marking(epoch: u32) {
         for index in 0..CELLS_PER_BLOCK {
             let cell = cons_cell(start, index);
             // SAFETY: a registered cons block, including its metadata.
-            let mark = unsafe { cons_mark(cell) };
+            let mark = unsafe { cons_mark_for_collection(cell) };
             if !mark.is_marked() {
                 continue;
             }
@@ -2270,7 +2367,7 @@ fn verify_marking(epoch: u32) {
                 );
                 if let Kind::Cons(target) = value.kind() {
                     // SAFETY: a cons field holds a Lisp object in a live block.
-                    let target_mark = unsafe { cons_mark(target.as_ptr()) };
+                    let target_mark = unsafe { cons_mark_for_collection(target.as_ptr()) };
                     assert!(
                         target_mark.is_marked(),
                         "marked cons {:#x} holds unmarked cons {:#x} (allocated {}) in {which} at epoch {epoch}",
@@ -2313,6 +2410,9 @@ fn vectorlike_is_marked(value: &super::types::Value, epoch: u32) -> Option<bool>
 #[cfg(test)]
 mod verifier_tests;
 
+mod dump;
+pub(crate) use dump::DUMP;
+
 /// A word of a cell, for the reports: its kind, a symbol's name, an
 /// integer, a cons's address.
 fn describe(value: &super::types::Value) -> String {
@@ -2332,11 +2432,16 @@ fn describe(value: &super::types::Value) -> String {
 /// a freed one.  A live cell that does means a reference the mark phase
 /// could not see was written into it, or was reached but not traced.
 fn verify_heap() {
+    let mapped = mapped_blocks_of(BlockKind::Cons);
     for start in all_blocks() {
+        // A mapped block is not swept: its dead cells stay allocated, and
+        // only the marked ones are live (`clear_dump_marks' has not yet run).
+        let dumped = mapped.binary_search(&start).is_ok();
         for index in 0..CELLS_PER_BLOCK {
             let cell = cons_cell(start, index);
             // SAFETY: inside a registered block.
-            if !unsafe { cons_mark(cell) }.allocated() {
+            let mark = unsafe { cons_mark_for_collection(cell) };
+            if !mark.allocated() || (dumped && !mark.is_marked()) {
                 continue;
             }
             // SAFETY: an allocated cell.
@@ -2430,7 +2535,10 @@ pub(crate) fn block_records() -> Vec<BlockRecord> {
         let blocks = &registry.by_kind[kind as usize];
         (
             blocks.len(),
-            blocks.values().filter(|&&image| image).count(),
+            blocks
+                .values()
+                .filter(|&&origin| origin != BlockOrigin::Heap)
+                .count(),
         )
     };
     [
