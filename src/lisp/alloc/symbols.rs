@@ -372,6 +372,16 @@ impl SymbolCell {
             .set(self.state.get() | if truth { BUILTIN_T } else { BUILTIN_NIL });
     }
 
+    /// Whether this is the built-in nil or t, whose words are not their
+    /// cell's (`builtin_boolean').
+    #[inline(always)]
+    pub(crate) fn is_builtin_boolean(&self) -> bool {
+        // Both flags are in the state's low byte, which one test reads.
+        const FLAGS: u8 = (BUILTIN_NIL | BUILTIN_T) as u8;
+        const _: () = assert!(FLAGS as u16 == BUILTIN_NIL | BUILTIN_T);
+        self.state.get() as u8 & FLAGS != 0
+    }
+
     pub(crate) fn builtin_boolean(&self) -> Option<Value> {
         match self.state.get() & (BUILTIN_NIL | BUILTIN_T) {
             BUILTIN_NIL => Some(Value::Nil),

@@ -1148,17 +1148,19 @@ impl SymbolOwner {
         self.0.names.borrow().count() as usize
     }
 
-    /// DOOBARRAY's advance of IT in the initial obarray past a chain's
-    /// end, on the buckets as they are; true at the walk's end.
-    #[inline]
-    pub(crate) fn advance_walk(&self, it: &mut super::obarray::ObarrayIter) -> bool {
-        // SAFETY: the buckets are read, and the reference dropped, before
-        // anything can intern or unintern (no Lisp runs in the scan); a
-        // mutable borrow in force is refused.
-        match unsafe { self.0.names.try_borrow_unguarded() } {
-            Ok(names) => names.advance(it),
-            Err(_) => self.0.names.borrow().advance(it),
-        }
+    /// obarray_iter_at_end's scan in the initial obarray past a chain's
+    /// end, on the buckets as they are: the first nonempty bucket at or
+    /// after START, with its first symbol.
+    #[inline(always)]
+    pub(crate) fn first_in_walk(&self, start: usize) -> Option<(usize, SymbolName)> {
+        // SAFETY: the reference is dropped at the scan's end, before
+        // anything can intern or unintern (no Lisp runs in the scan).  A
+        // mutable borrow in force would be an intern or unintern that
+        // walks the obarray, which none does; it panics, as `borrow'
+        // would.
+        unsafe { self.0.names.try_borrow_unguarded() }
+            .expect("the initial obarray is not being changed")
+            .first_from(start)
     }
 
     pub(crate) fn contains(&self, name: &str) -> bool {

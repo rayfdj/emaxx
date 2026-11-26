@@ -151,47 +151,32 @@ pub(crate) struct ObarrayIter {
 }
 
 impl ObarrayIter {
-    /// Whether the walk is within a chain: obarray_iter_at_end's first
-    /// test, which answers without reading the obarray.
+    /// obarray_iter_at_end, then obarray_iter_symbol: the walk's current
+    /// symbol, or None at its end.  Within a chain it answers at once;
+    /// past a chain's end FIRST_FROM gives the first nonempty bucket at or
+    /// after an index of the obarray as it is now, with its first symbol.
     #[inline(always)]
-    pub(crate) fn in_chain(&self) -> bool {
-        self.symbol.is_some()
-    }
-
-    /// obarray_iter_at_end, FIRST_FROM giving the first nonempty bucket at
-    /// or after an index of the obarray as it is now, with its first
-    /// symbol.
-    #[inline]
-    pub(crate) fn at_end(
+    pub(crate) fn current(
         &mut self,
         first_from: impl FnOnce(usize) -> Option<(usize, SymbolName)>,
-    ) -> bool {
-        if self.symbol.is_some() {
-            return false;
+    ) -> Option<SymbolName> {
+        if let Some(symbol) = self.symbol {
+            return Some(symbol);
         }
-        match first_from(self.next_bucket) {
-            Some((index, symbol)) => {
-                self.next_bucket = index + 1;
-                self.symbol = Some(symbol);
-                false
-            }
-            None => {
-                self.next_bucket = usize::MAX;
-                true
-            }
-        }
+        let Some((index, symbol)) = first_from(self.next_bucket) else {
+            self.next_bucket = usize::MAX;
+            return None;
+        };
+        self.next_bucket = index + 1;
+        self.symbol = Some(symbol);
+        Some(symbol)
     }
 
-    /// obarray_iter_symbol, once at_end has answered false.
-    #[inline]
-    pub(crate) fn symbol(&self) -> SymbolName {
-        self.symbol.expect("the walk is not at its end")
-    }
-
-    /// obarray_iter_step: the current symbol's `next', as it is now.
-    #[inline]
-    pub(crate) fn step(&mut self) {
-        self.symbol = self.symbol.and_then(|symbol| symbol.cell().next.get());
+    /// obarray_iter_step from SYMBOL, the current symbol: its `next', as
+    /// it is now.
+    #[inline(always)]
+    pub(crate) fn step_from(&mut self, symbol: SymbolName) {
+        self.symbol = symbol.cell().next.get();
     }
 }
 
@@ -374,21 +359,20 @@ impl Default for StandardBuckets {
 }
 
 impl StandardBuckets {
-    /// obarray_iter_at_end of IT past a chain's end, over the buckets as
-    /// they are: IT at the next nonempty bucket's first symbol, or at its
-    /// end (true).
-    #[inline]
-    pub(crate) fn advance(&self, it: &mut ObarrayIter) -> bool {
-        let start = it.next_bucket;
-        if let Some(rest) = self.buckets.get(start..)
-            && let Some(offset) = rest.iter().position(Option::is_some)
-        {
-            it.next_bucket = start + offset + 1;
-            it.symbol = rest[offset];
-            return false;
+    /// obarray_iter_at_end's scan past a chain's end, over the buckets as
+    /// they are: the first nonempty bucket at or after START, with its
+    /// first symbol.
+    #[inline(always)]
+    pub(crate) fn first_from(&self, start: usize) -> Option<(usize, SymbolName)> {
+        let buckets = self.buckets.as_slice();
+        let mut index = start;
+        while index < buckets.len() {
+            if let Some(symbol) = buckets[index] {
+                return Some((index, symbol));
+            }
+            index += 1;
         }
-        it.next_bucket = usize::MAX;
-        true
+        None
     }
 }
 

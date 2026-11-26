@@ -91,31 +91,33 @@ impl WalkedObarray {
         interp.find_record(id).and_then(private_obarray_slots)
     }
 
-    /// obarray_iter_at_end of IT over this obarray's buckets now: within a
-    /// chain it answers at once, past a chain's end it reads the buckets.
+    /// obarray_iter_at_end, then obarray_iter_symbol, of IT over this
+    /// obarray's buckets now: the walk's current symbol, or None at its
+    /// end.  Within a chain it answers at once; past a chain's end it
+    /// reads the buckets.
     #[inline(always)]
-    pub(crate) fn at_end(&self, interp: &Interpreter, it: &mut obarray::ObarrayIter) -> bool {
-        if it.in_chain() {
-            return false;
-        }
-        match self {
-            Self::Initial => interp.standard_obarray_advance_walk(it),
-            Self::Record(obarray) => Self::next_record_chain(interp, obarray, it),
-            Self::Empty => true,
-        }
+    pub(crate) fn current(
+        &self,
+        interp: &Interpreter,
+        it: &mut obarray::ObarrayIter,
+    ) -> Option<SymbolName> {
+        it.current(|start| match self {
+            Self::Initial => interp.standard_obarray_first_from(start),
+            Self::Record(obarray) => Self::record_first_from(interp, obarray, start),
+            Self::Empty => None,
+        })
     }
 
-    /// obarray_iter_at_end past a chain's end in a private obarray.
+    /// obarray_iter_at_end's scan past a chain's end in a private obarray:
+    /// its first nonempty bucket at or after START, with its first symbol.
     #[inline(never)]
-    fn next_record_chain(
+    fn record_first_from(
         interp: &Interpreter,
         obarray: &Value,
-        it: &mut obarray::ObarrayIter,
-    ) -> bool {
-        it.at_end(|index| {
-            Self::record_slots(interp, obarray)
-                .and_then(|slots| obarray::RecordBucketsRef(slots).first_from(index))
-        })
+        start: usize,
+    ) -> Option<(usize, SymbolName)> {
+        Self::record_slots(interp, obarray)
+            .and_then(|slots| obarray::RecordBucketsRef(slots).first_from(start))
     }
 
     /// oblookup of the Lisp string NAME: the symbol of that name, or None.
@@ -145,8 +147,18 @@ impl WalkedObarray {
 /// A symbol of an obarray as Lisp sees it: the built-in `nil' and `t'
 /// are Qnil and Qt (the Value constructor's test of the cell), and every
 /// other symbol is itself, a private obarray's `nil' among them.
-#[inline]
+#[inline(always)]
 pub(crate) fn obarray_symbol_value(symbol: SymbolName) -> Value {
+    if symbol.cell().is_builtin_boolean() {
+        return builtin_symbol_value(symbol);
+    }
+    Value::symbol_of_cell(symbol)
+}
+
+/// `obarray_symbol_value' of the built-in nil or t, two symbols of a walk.
+#[cold]
+#[inline(never)]
+fn builtin_symbol_value(symbol: SymbolName) -> Value {
     Value::Symbol(symbol)
 }
 
@@ -802,12 +814,21 @@ enum CompletionElementsKind {
     Hash,
 }
 
-/// One possible completion: the element the predicate is given, the name
-/// it offers (a symbol's name object), and a hash table's value.
+/// One possible completion: the element the predicate is given (an
+/// obarray's symbol, made a Lisp word only when the predicate is called),
+/// the name it offers (a symbol's name object), and a hash table's value.
 struct CompletionElement {
     elt: Value,
+    symbol: Option<SymbolName>,
     eltstring: Value,
     hash_value: Option<Value>,
+}
+
+impl CompletionElement {
+    /// The element as the predicate is given it.
+    fn elt(&self) -> Value {
+        self.symbol.map_or(self.elt, obarray_symbol_value)
+    }
 }
 
 /// Fsymbol_name for an element: the symbol's own name object.
@@ -850,6 +871,7 @@ impl CompletionElements {
         })
     }
 
+    #[inline(always)]
     fn next(&mut self, interp: &Interpreter) -> Result<Option<CompletionElement>, LispError> {
         match &mut self.kind {
             CompletionElementsKind::List => {
@@ -877,21 +899,23 @@ impl CompletionElements {
                 };
                 Ok(Some(CompletionElement {
                     elt,
+                    symbol: None,
                     eltstring: completion_element_name(eltstring),
                     hash_value: None,
                 }))
             }
             CompletionElementsKind::Obarray(walked, it) => {
                 // The symbol, then the step past it, before the predicate
-                // sees it (minibuf.c).
-                if walked.at_end(interp, it) {
+                // sees it (minibuf.c); Fsymbol_name is the symbol's own
+                // name object, nil's and t's among them.
+                let Some(symbol) = walked.current(interp, it) else {
                     return Ok(None);
-                }
-                let elt = obarray_symbol_value(it.symbol());
-                it.step();
+                };
+                it.step_from(symbol);
                 Ok(Some(CompletionElement {
-                    elt,
-                    eltstring: completion_element_name(elt),
+                    elt: Value::Nil,
+                    symbol: Some(symbol),
+                    eltstring: symbol.lisp_name(),
                     hash_value: None,
                 }))
             }
@@ -903,6 +927,7 @@ impl CompletionElements {
                 self.index += 2;
                 Ok(Some(CompletionElement {
                     elt,
+                    symbol: None,
                     eltstring: completion_element_name(elt),
                     hash_value: Some(value),
                 }))
@@ -966,8 +991,8 @@ fn completion_predicate_accepts(
 ) -> Result<bool, LispError> {
     let predicate = resolve_callable(interp, predicate, env)?;
     let accepted = match element.hash_value {
-        Some(value) => invoke_function_value(interp, &predicate, &[element.elt, value], env)?,
-        None => invoke_function_value(interp, &predicate, &[element.elt], env)?,
+        Some(value) => invoke_function_value(interp, &predicate, &[element.elt(), value], env)?,
+        None => invoke_function_value(interp, &predicate, &[element.elt()], env)?,
     };
     Ok(accepted.is_truthy())
 }
@@ -1243,9 +1268,9 @@ pub(crate) fn test_completion(
         if ignore_case && tem.is_none() {
             let string_size = string_chars(&string);
             let mut it = obarray::ObarrayIter::default();
-            while !walked.at_end(interp, &mut it) {
-                let symbol = obarray_symbol_value(it.symbol());
-                let symbol_name = completion_element_name(symbol);
+            while let Some(current) = walked.current(interp, &mut it) {
+                let symbol = obarray_symbol_value(current);
+                let symbol_name = current.lisp_name();
                 let name_size = string_chars(&symbol_name);
                 if compare_string_ranges(
                     interp,
@@ -1261,7 +1286,7 @@ pub(crate) fn test_completion(
                     tem = Some(symbol);
                     break;
                 }
-                it.step();
+                it.step_from(current);
             }
         }
         let Some(tem) = tem else {

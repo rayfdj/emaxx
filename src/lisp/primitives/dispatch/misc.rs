@@ -1651,12 +1651,12 @@ define_dispatch!(
                 // is a word of this frame, as GNU's iterator's is of its.
                 let walked = super::super::completion::WalkedObarray::of(interp, &obarray)?;
                 let mut it = crate::lisp::types::obarray::ObarrayIter::default();
-                while !walked.at_end(interp, &mut it) {
-                    let symbol = super::super::completion::obarray_symbol_value(it.symbol());
+                while let Some(symbol) = walked.current(interp, &mut it) {
+                    let value = super::super::completion::obarray_symbol_value(symbol);
                     // Resolve a symbol's current function cell on every
                     // call, as call1 does.
-                    call_function_value(interp, &args[0], &[symbol], env)?;
-                    it.step();
+                    call_function_value(interp, &args[0], &[value], env)?;
+                    it.step_from(symbol);
                 }
                 Ok(Value::Nil)
             }

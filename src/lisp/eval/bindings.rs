@@ -1042,14 +1042,15 @@ impl Interpreter {
             .collect()
     }
 
-    /// DOOBARRAY's advance in the initial obarray past a chain's end
-    /// (`ObarrayIter'); true at the walk's end.
-    #[inline]
-    pub(crate) fn standard_obarray_advance_walk(
+    /// obarray_iter_at_end's scan in the initial obarray past a chain's
+    /// end: the first nonempty bucket at or after START, with its first
+    /// symbol.
+    #[inline(always)]
+    pub(crate) fn standard_obarray_first_from(
         &self,
-        it: &mut crate::lisp::types::obarray::ObarrayIter,
-    ) -> bool {
-        self.globals.advance_initial_walk(it)
+        start: usize,
+    ) -> Option<(usize, crate::lisp::types::SymbolName)> {
+        self.globals.initial_walk_first_from(start)
     }
 
     /// The initial obarray's count.
