@@ -564,13 +564,21 @@ impl SharedStringState {
     /// fns.c:string_char_to_byte: the byte index of character CHAR_INDEX
     /// (at most the length), scanned from the nearest of the start, the
     /// end and the cached position, which then moves there.
+    #[inline(always)]
     pub(crate) fn char_to_byte(&self, char_index: usize) -> usize {
         assert!(char_index <= self.size, "character index within the string");
-        let (mut below, mut below_byte) = (0, 0);
-        let (mut above, mut above_byte) = (self.size, self.storage_bytes());
-        if above == above_byte {
+        if self.size == self.storage_bytes() {
             return char_index;
         }
+        self.char_to_byte_scanned(char_index)
+    }
+
+    /// string_char_to_byte past its first test, in a string with a
+    /// character of more than one byte.
+    #[inline(never)]
+    fn char_to_byte_scanned(&self, char_index: usize) -> usize {
+        let (mut below, mut below_byte) = (0, 0);
+        let (mut above, mut above_byte) = (self.size, self.storage_bytes());
         let cache = self.char_byte_cache();
         if let Some(cache) = cache {
             if cache.charpos < char_index {
@@ -983,9 +991,15 @@ impl SharedStringState {
     /// character.h:fetch_string_char_as_multibyte_advance reads one
     /// character from the actual bytes, promoting an unibyte octet to
     /// byte8 before any case-table lookup. The caller owns the byte cursor.
+    #[inline]
     pub(crate) fn character_as_multibyte_advance(&self, offset: &mut usize) -> Option<i64> {
         let (code, width) = if self.is_multibyte() {
-            decode_character(self.bytes().get(*offset..)?).ok()?
+            // string_char_and_length's first test: an ASCII byte is its
+            // character.
+            match *self.bytes().get(*offset)? {
+                byte if byte < 0x80 => (u32::from(byte), 1),
+                _ => decode_character(self.bytes().get(*offset..)?).ok()?,
+            }
         } else {
             let byte = u32::from(*self.bytes().get(*offset)?);
             (if byte >= 128 { 0x3fff00 + byte } else { byte }, 1)
