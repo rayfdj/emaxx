@@ -111,6 +111,67 @@ fn a_quit_processed_inside_a_string_match_collects_nothing() {
     run_cases("native-string-match-quit", &cases, true);
 }
 
+/// A collection in the windows where the collector reads what another
+/// stack or an outer native call holds.  In the first case a Lisp thread
+/// is parked in each way a thread parks (thread-yield, mutex-lock,
+/// condition-wait, thread-join, sleep-for), in native code, in the
+/// evaluator and in byte code, each holding a list and a string that
+/// nothing else holds as the evaluated arguments of a pending call, and
+/// the main thread collects, allocates and collects.  Native code's
+/// arguments are found by the parked stack's scan and again among its
+/// suspended native words; the evaluator's are words of the parked
+/// machine stack and nothing else; byte code's are on the byte-code
+/// stack.  In the second case three native calls are nested, an
+/// interpreted and a byte-compiled function between them, and the
+/// innermost collects; each then reads what its own frame holds and its
+/// special binding.  The weak table's count there is compared as a
+/// bound: how many keys of the rounds before are still in it depends on
+/// the words those rounds left on the machine stack, in GNU Emacs too.
+#[test]
+fn collections_keep_what_parked_threads_and_outer_native_calls_hold() {
+    let cases = [
+        (
+            "parked-kinds",
+            include_str!("fixtures/thread-native-parked-kinds.el"),
+            None,
+            concat!(
+                "((native interpreted byte-code) 15)\n",
+                "(0 1 \"aaaaaaaaaaaaaaaaaaaa\" 0 waited)\n",
+                "(1 2 \"bbbbbbbbbbbbbbbbbbbbb\" 1 waited)\n",
+                "(2 3 \"cccccccccccccccccccccc\" 2 waited)\n",
+                "(3 4 \"ddddddddddddddddddddddd\" 3 waited)\n",
+                "(4 5 \"eeeeeeeeeeeeeeeeeeeeeeee\" 4 waited)\n",
+                "(5 6 \"fffffffffffffffffffffffff\" 5 waited)\n",
+                "(6 7 \"gggggggggggggggggggggggggg\" 6 waited)\n",
+                "(7 8 \"hhhhhhhhhhhhhhhhhhhhhhhhhhh\" 7 waited)\n",
+                "(8 9 \"iiiiiiiiiiiiiiiiiiiiiiiiiiii\" 8 waited)\n",
+                "(9 10 \"jjjjjjjjjjjjjjjjjjjjjjjjjjjjj\" 9 waited)\n",
+                "(10 11 \"kkkkkkkkkkkkkkkkkkkkkkkkkkkkkk\" 10 waited)\n",
+                "(11 12 \"lllllllllllllllllllllllllllllll\" 11 waited)\n",
+                "(12 13 \"mmmmmmmmmmmmmmmmmmmmmmmmmmmmmmmm\" 12 waited)\n",
+                "(13 14 \"nnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnnn\" 13 waited)\n",
+                "(14 15 \"oooooooooooooooooooooooooooooooooo\" 14 waited)\n",
+            ),
+        ),
+        (
+            "nested-collect",
+            include_str!("fixtures/thread-native-nested-collect.el"),
+            None,
+            concat!(
+                "(t t t top (",
+                r#"((1 "ooooooooooooooooooooo") outer 1 (2 "mmmmmmmmmmmmmmmmmmmmmm" middle 2 "#,
+                r#"(3 "iiiiiiiiiiiiiiiiiiiiiii" inner 3 t))) "#,
+                r#"((1 "ooooooooooooooooooooo") outer 1 (2 "mmmmmmmmmmmmmmmmmmmmmm" middle 2 "#,
+                r#"(3 "iiiiiiiiiiiiiiiiiiiiiii" inner 3 t))) "#,
+                r#"((1 "ooooooooooooooooooooo") outer 1 (2 "mmmmmmmmmmmmmmmmmmmmmm" middle 2 "#,
+                r#"(3 "iiiiiiiiiiiiiiiiiiiiiii" inner 3 t)))"#,
+                "))\n"
+            ),
+        ),
+    ];
+    run_cases("native-collection-windows", &cases, true);
+}
+
 /// Each case's Lisp run by GNU Emacs and by Emaxx, each in a directory of
 /// its own under one named PREFIX, with the standard output compared
 /// with the case's expectation.  VERIFY sets `EMAXX_GC_VERIFY'.
