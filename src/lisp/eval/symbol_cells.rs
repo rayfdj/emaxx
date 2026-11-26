@@ -71,9 +71,14 @@ impl SymbolCells {
         self.symbols.len()
     }
 
-    /// DOOBARRAY's advance in the initial obarray (`ObarrayIter').
-    pub(crate) fn first_initial_bucket_from(&self, index: usize) -> Option<(usize, SymbolName)> {
-        self.symbols.first_bucket_from(index)
+    /// DOOBARRAY's advance in the initial obarray past a chain's end
+    /// (`ObarrayIter'); true at the walk's end.
+    #[inline]
+    pub(crate) fn advance_initial_walk(
+        &self,
+        it: &mut crate::lisp::types::obarray::ObarrayIter,
+    ) -> bool {
+        self.symbols.advance_walk(it)
     }
 
     /// data.c's C variable symbols_with_pos_enabled, this editor's.

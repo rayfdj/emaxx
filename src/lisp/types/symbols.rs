@@ -1148,10 +1148,17 @@ impl SymbolOwner {
         self.0.names.borrow().count() as usize
     }
 
-    /// The initial obarray's first nonempty bucket at or after INDEX, with
-    /// its first symbol: DOOBARRAY's advance, on the buckets as they are.
-    pub(crate) fn first_bucket_from(&self, index: usize) -> Option<(usize, SymbolName)> {
-        self.0.names.borrow().first_from(index)
+    /// DOOBARRAY's advance of IT in the initial obarray past a chain's
+    /// end, on the buckets as they are; true at the walk's end.
+    #[inline]
+    pub(crate) fn advance_walk(&self, it: &mut super::obarray::ObarrayIter) -> bool {
+        // SAFETY: the buckets are read, and the reference dropped, before
+        // anything can intern or unintern (no Lisp runs in the scan); a
+        // mutable borrow in force is refused.
+        match unsafe { self.0.names.try_borrow_unguarded() } {
+            Ok(names) => names.advance(it),
+            Err(_) => self.0.names.borrow().advance(it),
+        }
     }
 
     pub(crate) fn contains(&self, name: &str) -> bool {

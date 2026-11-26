@@ -91,14 +91,30 @@ impl WalkedObarray {
         interp.find_record(id).and_then(private_obarray_slots)
     }
 
-    /// obarray_iter_at_end of IT over this obarray's buckets now.
-    #[inline]
+    /// obarray_iter_at_end of IT over this obarray's buckets now: within a
+    /// chain it answers at once, past a chain's end it reads the buckets.
+    #[inline(always)]
     pub(crate) fn at_end(&self, interp: &Interpreter, it: &mut obarray::ObarrayIter) -> bool {
-        it.at_end(|index| match self {
-            Self::Initial => interp.standard_obarray_first_bucket_from(index),
-            Self::Record(obarray) => Self::record_slots(interp, obarray)
-                .and_then(|slots| obarray::RecordBucketsRef(slots).first_from(index)),
-            Self::Empty => None,
+        if it.in_chain() {
+            return false;
+        }
+        match self {
+            Self::Initial => interp.standard_obarray_advance_walk(it),
+            Self::Record(obarray) => Self::next_record_chain(interp, obarray, it),
+            Self::Empty => true,
+        }
+    }
+
+    /// obarray_iter_at_end past a chain's end in a private obarray.
+    #[inline(never)]
+    fn next_record_chain(
+        interp: &Interpreter,
+        obarray: &Value,
+        it: &mut obarray::ObarrayIter,
+    ) -> bool {
+        it.at_end(|index| {
+            Self::record_slots(interp, obarray)
+                .and_then(|slots| obarray::RecordBucketsRef(slots).first_from(index))
         })
     }
 
@@ -126,13 +142,12 @@ impl WalkedObarray {
     }
 }
 
-/// A symbol of an obarray as Lisp sees it: `nil' and `t' are Qnil and Qt.
+/// A symbol of an obarray as Lisp sees it: the built-in `nil' and `t'
+/// are Qnil and Qt (the Value constructor's test of the cell), and every
+/// other symbol is itself, a private obarray's `nil' among them.
+#[inline]
 pub(crate) fn obarray_symbol_value(symbol: SymbolName) -> Value {
-    match symbol.as_str() {
-        "nil" => Value::Nil,
-        "t" => Value::T,
-        _ => Value::Symbol(symbol),
-    }
+    Value::Symbol(symbol)
 }
 
 pub(crate) fn clear_obarray(interp: &mut Interpreter, obarray: &Value) -> Result<Value, LispError> {

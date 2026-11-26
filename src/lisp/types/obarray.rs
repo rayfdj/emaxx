@@ -151,6 +151,13 @@ pub(crate) struct ObarrayIter {
 }
 
 impl ObarrayIter {
+    /// Whether the walk is within a chain: obarray_iter_at_end's first
+    /// test, which answers without reading the obarray.
+    #[inline(always)]
+    pub(crate) fn in_chain(&self) -> bool {
+        self.symbol.is_some()
+    }
+
     /// obarray_iter_at_end, FIRST_FROM giving the first nonempty bucket at
     /// or after an index of the obarray as it is now, with its first
     /// symbol.
@@ -363,6 +370,25 @@ impl StandardBuckets {
 impl Default for StandardBuckets {
     fn default() -> Self {
         Self::new(INITIAL_BITS)
+    }
+}
+
+impl StandardBuckets {
+    /// obarray_iter_at_end of IT past a chain's end, over the buckets as
+    /// they are: IT at the next nonempty bucket's first symbol, or at its
+    /// end (true).
+    #[inline]
+    pub(crate) fn advance(&self, it: &mut ObarrayIter) -> bool {
+        let start = it.next_bucket;
+        if let Some(rest) = self.buckets.get(start..)
+            && let Some(offset) = rest.iter().position(Option::is_some)
+        {
+            it.next_bucket = start + offset + 1;
+            it.symbol = rest[offset];
+            return false;
+        }
+        it.next_bucket = usize::MAX;
+        true
     }
 }
 
