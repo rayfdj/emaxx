@@ -1696,10 +1696,11 @@ fn byte_code_activations_entered_from_c_end_as_exec_byte_code_ends_them() {
     // through two activations; activations nested through mapc, mapcar
     // and apply; a callee whose code string a function it calls stores
     // into; the byte-code stack's overflow where C enters a frame, and
-    // the calls after it; a dynamic-binding callee; a loop long enough
-    // for the quit check; a collection; and frames marked for the
-    // debugger at their exit.  The backtrace is as deep after each as
-    // before.  The run with Emaxx's trace of byte-code errors latched,
+    // the calls after it, for a frame the verified loop enters and for
+    // one too deep for verification; a dynamic-binding callee; a loop
+    // long enough for the quit check; a collection; and frames marked
+    // for the debugger at their exit.  The backtrace is as deep after
+    // each as before.  The run with Emaxx's trace of byte-code errors latched,
     // where every Bcall takes its full arm, gives the same answers and
     // writes nothing for an error a handler takes.
     let corpus = Corpus::new();
@@ -1807,21 +1808,24 @@ fn byte_code_activations_entered_from_c_end_as_exec_byte_code_ends_them() {
 (defalias 'zz-patched-bc (make-byte-code 257 zz-code [zz-patch-bc old new] 3))
 (zz-probe (setq zz-patch-byte #o302) (list (mapcar #'zz-patched-bc '(1 2)) (zz-patched-bc 3) (append zz-code nil)))
 (zz-probe (setq zz-patch-byte #o301) (list (mapcar #'zz-patched-bc '(1 2)) (append zz-code nil)))
-;; 20-23: the byte-code stack's overflow where C enters a frame.
+;; 20-27: the byte-code stack's overflow where C enters a frame, for
+;; frames of 60000 words and of 100000.
 (defvar zz-levels 0)
 (defun zz-deep (n) (setq zz-levels (1+ zz-levels)) (if (= n 0) 'bottom (car (mapcar #'zz-deep (list (1- n))))))
 (byte-compile 'zz-deep)
-(let ((f (symbol-function 'zz-deep)))
-  (defalias 'zz-deep (make-byte-code (aref f 0) (aref f 1) (aref f 2) 100000)))
-(zz-probe (setq zz-levels 0) (list (zz-deep 3) zz-levels))
-(zz-probe (setq zz-levels 0) (zz-same-depth (list (condition-case e (zz-deep 20) (error (list 'caught e))) zz-levels)))
-(zz-probe (setq zz-levels 0) (list (condition-case e (mapcar #'zz-deep '(20)) (error (list 'caught e))) zz-levels))
-(zz-probe (setq zz-levels 0) (list (zz-deep 3) (mapcar #'zz-deep '(1 2)) zz-levels))
-;; 24-25: a dynamic-binding callee, its formals bound around the frame.
+(defvar zz-deep-code (symbol-function 'zz-deep))
+(dolist (depth '(60000 100000))
+  (defalias 'zz-deep
+    (make-byte-code (aref zz-deep-code 0) (aref zz-deep-code 1) (aref zz-deep-code 2) depth))
+  (zz-probe (setq zz-levels 0) (list (zz-deep 3) zz-levels))
+  (zz-probe (setq zz-levels 0) (zz-same-depth (list (condition-case e (zz-deep 20) (error (list 'caught e))) zz-levels)))
+  (zz-probe (setq zz-levels 0) (list (condition-case e (mapcar #'zz-deep '(20)) (error (list 'caught e))) zz-levels))
+  (zz-probe (setq zz-levels 0) (list (zz-deep 3) (mapcar #'zz-deep '(1 2)) zz-levels)))
+;; 28-29: a dynamic-binding callee, its formals bound around the frame.
 (defvar zz-dyn-reader (byte-compile (eval '(lambda (zz-dyn) (list zz-dyn (symbol-value 'zz-dyn))) nil)))
 (zz-probe (list (byte-code-function-p zz-dyn-reader) (aref zz-dyn-reader 0)))
 (zz-probe (zz-same-depth (list (mapcar zz-dyn-reader '(1 2)) (funcall zz-dyn-reader 3) zz-dyn)))
-;; 26-28: a loop long enough for the quit check, a collection, and a frame
+;; 30-32: a loop long enough for the quit check, a collection, and a frame
 ;; marked for the debugger at its exit, inside an activation C entered.
 (defun zz-loop (n) (let ((i 0) (s 0)) (while (< i n) (setq s (+ s i) i (1+ i))) s))
 (defun zz-gc (x) (garbage-collect) (list x (make-string 3 ?a)))
@@ -1896,7 +1900,9 @@ fn a_dynamic_binding_functions_formals_are_bound_before_its_frame_is_entered() {
     // frame: when the byte-code stack has no room for it, the formal is
     // bound already, and the signal's unwinding undoes the binding.  A
     // watcher of the formal hears the `let' and the `unlet' of the call
-    // that overflows, as it hears those of the calls that fit.
+    // that overflows, as it hears those of the calls that fit, whether
+    // the frame is one the verified loop enters or one too deep for
+    // verification.
     let corpus = Corpus::new();
     let program = corpus.write(
         "dynamic-overflow.el",
@@ -1906,18 +1912,25 @@ fn a_dynamic_binding_functions_formals_are_bound_before_its_frame_is_entered() {
 (defvar zz-wlog nil)
 (defvar zz-dyn 'global)
 (defvar zz-levels 0)
-(add-variable-watcher 'zz-dyn (lambda (sym new op where) (push (list op new) zz-wlog)))
-(defvar zz-dyn-deep
-  (let ((f (byte-compile (eval '(lambda (zz-dyn)
-                                  (setq zz-levels (1+ zz-levels))
-                                  (if (= zz-dyn 0) 'bottom (car (mapcar zz-dyn-deep (list (1- zz-dyn))))))
-                               nil))))
-    (make-byte-code (aref f 0) (aref f 1) (aref f 2) 100000)))
-(princ (format "1 %S\n" (list (funcall zz-dyn-deep 2) zz-levels (reverse zz-wlog) zz-dyn)))
-(setq zz-wlog nil zz-levels 0)
-(princ (format "2 %S\n" (list (condition-case e (funcall zz-dyn-deep 20) (error e)) zz-levels (reverse zz-wlog) zz-dyn)))
-(setq zz-wlog nil zz-levels 0)
-(princ (format "3 %S\n" (list (mapcar zz-dyn-deep '(1)) zz-levels (reverse zz-wlog) zz-dyn)))
+(defvar zz-dyn-deep nil)
+(add-variable-watcher 'zz-dyn (lambda (_sym new op _where) (push (list op new) zz-wlog)))
+(defvar zz-dyn-code
+  (byte-compile (eval '(lambda (zz-dyn)
+                         (setq zz-levels (1+ zz-levels))
+                         (if (= zz-dyn 0) 'bottom (car (mapcar zz-dyn-deep (list (1- zz-dyn))))))
+                      nil)))
+;; Frames of 60000 words, and of 100000.
+(dolist (depth '(60000 100000))
+  (setq zz-dyn-deep
+        (make-byte-code (aref zz-dyn-code 0) (aref zz-dyn-code 1) (aref zz-dyn-code 2) depth))
+  (setq zz-wlog nil zz-levels 0)
+  (princ (format "%d 1 %S\n" depth (list (funcall zz-dyn-deep 2) zz-levels (reverse zz-wlog) zz-dyn)))
+  (setq zz-wlog nil zz-levels 0)
+  (princ (format "%d 2 %S\n" depth
+                 (list (condition-case e (funcall zz-dyn-deep 20) (error e))
+                       zz-levels (reverse zz-wlog) zz-dyn)))
+  (setq zz-wlog nil zz-levels 0)
+  (princ (format "%d 3 %S\n" depth (list (mapcar zz-dyn-deep '(1)) zz-levels (reverse zz-wlog) zz-dyn))))
 "##,
     );
     assert_same(&corpus, &["--batch", "-Q", "-l", &program]);

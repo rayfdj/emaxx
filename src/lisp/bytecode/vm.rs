@@ -6474,7 +6474,8 @@ fn an_activation_entered_from_rust_leaves_the_threads_stacks_as_it_found_them() 
     // frame, the specpdl and the handlers its catcher saved.  An
     // activation entered from Rust under a caller's frame with operands
     // on it: whether it returns a value, signals from its own frame or
-    // from one it called, finds no room for its frame, or returns with a
+    // from one it called, finds no room for its frame (one the verified
+    // loop enters, and one too deep for verification), or returns with a
     // binding it never undid, the byte-code stack's frame, base and top,
     // the suspended frames, the handlers, the specpdl, the backtrace and
     // the evaluation depth are as they were before the call.
@@ -6515,6 +6516,10 @@ fn an_activation_entered_from_rust_leaves_the_threads_stacks_as_it_found_them() 
             Err("wrong-type-argument"),
         ),
         (
+            "(make-byte-code 257 (unibyte-string #o207) [] 60000)",
+            Err("error"),
+        ),
+        (
             "(make-byte-code 257 (unibyte-string #o207) [] 600000)",
             Err("error"),
         ),
@@ -6525,9 +6530,10 @@ fn an_activation_entered_from_rust_leaves_the_threads_stacks_as_it_found_them() 
         ),
     ];
     interp.bc_stack.ensure_allocated();
+    // The caller's frame leaves room for a few small frames above it.
     interp
         .bc_stack
-        .enter_frame(8, Value::Nil, 0)
+        .enter_frame(BC_STACK_WORDS - 4096, Value::Nil, 0)
         .expect("the caller's frame");
     interp.bc_stack.push(Value::Integer(1)).expect("an operand");
     interp.bc_stack.push(Value::Integer(2)).expect("an operand");
