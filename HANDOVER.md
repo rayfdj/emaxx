@@ -206,6 +206,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   bit of the dump's two bitsets and the image is never swept, at 24%
   more instructions an explicit collection (33.8M against GNU's
   54.5M).
+  Round 402: the second half's first part; a symbol's mark is its
+  gcmarkbit and a large vector's its header's flag, the sweep clears
+  them, and neither pays the collection's number at its allocation
+  (an explicit collection 33.1M); strings follow.
 - **In progress: A2.5, A4.7, C5.1, C5.3 and D43** (runtime ownership
   and thread access; the plan: docs/plans/runtime-ownership.md, stages
   0 to 9).  Round 388: stages 0 to 2; the runtime lock names its
@@ -21809,6 +21813,86 @@ setup_process_coding_systems's check now refuses). A 13-form
   no other note.  Two commits of the branch are folded into others
   here: the stop's test landed with round 398, and the review's
   strengthening of the two stress programs is in their own commit.
+- **Round 402: a symbol's mark is its gcmarkbit and a large vector's its
+  header's flag, cleared by the sweep, as alloc.c's (M2, stage R16 of
+  A4.1 and A4.2, second half, first part; none closed).**  **Before**: a
+  symbol and a large vector kept the number of the collection that
+  marked them in a mark word of their own, written at every allocation
+  and compared at every test; round 399 put the mapped image's marks in
+  the dump's bitsets, after which nothing needed that number but habit.
+  **Large vectors**: the mark is ARRAY_MARK_FLAG, bit 63 of the header's
+  size word, and sweep_vectors clears it before it counts.  The word
+  that followed each large vector is gone from the heap, the image's
+  writer and its loader, and a load writes nothing into a mapped large
+  vector.  A vector's length is ASIZE, with lisp.h's eassume as a debug
+  assertion that no marked size is read outside the collector; the trace
+  reads gc_asize.  The empty vector is never marked and always survives,
+  as GNU's pure zero_vector.  **Symbols**: the mark is gcmarkbit, a bit
+  of the symbol's own bits; the mark word is gone and the cell keeps its
+  size.  A free cell is one whose function is dead_object (), which the
+  sweep, a fresh block and the loader (for the unused cells of the
+  image's last block) write, and which live_symbol_holding's test reads;
+  no Lisp value equals it.  The symbol blocks an image load rebuilds are
+  swept at every collection, as GNU sweeps everything outside its dump,
+  and the side count that let the sweep skip them is gone with its
+  update on every mark.  **The number** is now a count of collections,
+  read by the handler search's memo and by tests; strings alone still
+  carry it, until the next part.  **One arm**: the collector marks a
+  vectorlike by its header before it looks at its type, as mark_object
+  tests vector_marked_p; nineteen arms of the same code are one.
+  **Cost** (before = round 399's build, instructions): an explicit
+  collection 33,820,602 to 33,128,170 (GNU 54,503,808); `make-symbol'
+  1,390.9 to 1,369.7 (1,964.6), and without collections 416.9 to 413.9
+  (405.0); a 300-slot vector 48,824.5 to 47,793.0 (78,035.0), without
+  collections 2,209.0 to 2,202.1 (3,553.3); a 4-slot vector 1,410.0 to
+  1,397.3 (1,596.6), and without collections 497.0 to 500.5 (479.9), the
+  one probe that rose, by an alignment instruction the compiler put in
+  the free list's scan; a cons loop 2,390.4 to 2,385.9 (2,461.2), a
+  float 609.9 to 606.5 (656.5), a multibyte `concat' 2,713.8 to 2,685.4
+  (3,172.0).  The rebuilt symbol blocks cost a collection about 20,000
+  instructions, 2,499 cells at 8.  The tracer's count moves about 2%
+  with the layout of its code alone: before the last commit the same
+  tree measured 34.47M, above the round's start, so a difference of that
+  size in the collection's figure is not a finding.  Private memory
+  around the first collection is unchanged.  **Lisp sees nothing
+  change.**  **Still to do, the next part**: strings (the mark in the
+  size word, strings swept first as gc_sweep sweeps them, a free string
+  a null data pointer, the rebuilt string blocks swept), and a symbol
+  block's cells left uninitialized as GNU leaves them.  **The
+  independent review** (the one question: does the round cheat or break
+  something) found the six commits clean.  It compared this build, round
+  399's and GNU on weak tables of the four kinds keyed and valued by 23
+  kinds of object (symbols interned, uninterned and dumped; vectors of 3
+  to 5,000 slots; records, closures, bool-vectors, a char-table, hash
+  tables, markers, an overlay, a finalizer, a bignum); symbols whose
+  function cells hold nil, a cons, the symbol itself, a subr, fixnums,
+  an empty string and vectors; 10,000 symbols interned and uninterned
+  with collections between; and a dump, a load, mutation, churn, five
+  collections and a second dump and load: the same answers, with and
+  without the collector's verifier.  It found no read of a flagged size
+  inside a collection (four raw readers of the size word have no
+  assertion and are reached only outside one), no way for a live
+  symbol's function to equal the dead marker, the single arm equivalent
+  to the nineteen, the seven changed assertions each converted to an
+  equal or stronger one, and the figures above from its own measurement.
+  It explained the one mutation the implementer had not: with the flag
+  left set the census adds a flagged size and overflows, and the test
+  that guards the clearing fails by three of its own assertions besides.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,702 passed, 0 failed, 2 ignored (eight
+  library tests more); cli 30, cli_parity 191, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 4,
+  package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The machine restarted while
+  cli_parity ran, and the integration targets were run again whole.
+  The implementer's run of the whole library at one test thread and
+  at four: 3,701 passed, 0 failed, each time.  The round audit reports
+  no hard finding, 1,472 changed lines with 8 tests and 65 assertions
+  added; its seven notes of a changed assertion are the layout and
+  placement checks of the two mark words that are gone, each replaced
+  by an equal or stronger one, as the review read them.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -25525,6 +25609,25 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 402 and its review), within the
+  plan's later stages or outside the round.**  One line each: a fresh
+  symbol block is initialized cell by cell, where GNU initializes none
+  and tests the block's index (the next part's); GNU chains large
+  vectors through a link, and here the sweep takes them from the block
+  registry at 53,600 instructions a collection; small vectors are marked
+  in their block's bitmap, so every vector's mark computes its footprint
+  to tell a large one, and a mapped bool-vector's mark test is 35
+  instructions, 100,698 times a collection; the free lists are scanned
+  3.46 steps for a small vector in the probe; the first collection
+  dirties 424 kB where GNU's dirties 4; four raw readers of a vector's
+  size word (sxhash, the dumper's footprint, the sweep's cleanup and its
+  count) have no assertion that the size is unmarked, and none is
+  reached in a collection today; a stale stack word keeps the last large
+  bool-vector of a weak-key batch alive in about a third of runs, here
+  and in round 399's build, never in GNU; two builds installed under
+  different paths differ by a few string bytes in the census; the
+  round's two test commits each fail at their own commit, by design, and
+  the second leaves the runtime poisoned for the tests after it there.
 - **Found after the scope lock (round 401 and its review), within the
   plan's later stages or outside the round.**  One line each: a SIGTERM
   that arrives before a blocking `open' is lost (the signal is recorded
