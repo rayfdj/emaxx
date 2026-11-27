@@ -1937,6 +1937,122 @@ fn a_dynamic_binding_functions_formals_are_bound_before_its_frame_is_entered() {
 }
 
 #[test]
+fn a_frame_that_does_not_fit_signals_under_its_functions_bindings_and_leaves_none() {
+    // eval.c:funcall_lambda specbinds a dynamic-binding function's formals
+    // and then calls `exec_byte_code (fun, 0, 0, NULL)': when the
+    // byte-code stack has no room for the frame, `error' is called with
+    // the formals bound, so a `handler-bind' handler, the signal hook and
+    // the debugger see the arguments, and the unwinding to the catcher
+    // undoes the bindings, so the catcher sees the values from before
+    // the call.  The catcher here is directly above the call, with no
+    // byte-code activation between them to undo what the callee left: an
+    // interpreted `condition-case' around a call by `funcall', by the
+    // evaluator, by `mapcar' and by `apply', an `unwind-protect', and C's
+    // own catcher of the mode line's `:eval'.  The formal is a plain
+    // special variable, one of `&optional' and `&rest' formals with
+    // watchers, and a buffer-local one; the frame is one the verified
+    // loop enters (60000 words) and one too deep for verification
+    // (100000).  funcall_lambda's arity signals come from inside the
+    // bindings made before them in the same way.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "frame-overflow.el",
+        r##";;; -*- lexical-binding: t -*-
+;; Dynamic-binding byte-code functions whose frames do not fit, called by
+;; interpreted code above eight 60000-word frames.
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defvar zz-log nil)
+(defvar zz-dyn 'global)
+(defvar zz-a 'ga)
+(defvar zz-b 'gb)
+(defvar zz-r 'gr)
+(defvar-local zz-bl 'default)
+(dolist (v '(zz-a zz-b zz-r zz-bl))
+  (add-variable-watcher v (lambda (sym new op _where) (push (list op sym new) zz-log))))
+(defun zz-big (form depth)
+  (let ((c (byte-compile (eval form nil))))
+    (make-byte-code (aref c 0) (aref c 1) (aref c 2) depth)))
+(defun zz-fill (n thunk)
+  (if (> n 0)
+      (funcall (make-byte-code 514 (unibyte-string #o300 #o002 #o002 #o042 #o207)
+                               (vector #'zz-fill) 60000)
+               (1- n) thunk)
+    (funcall thunk)))
+(defmacro zz-at-full (&rest body) `(zz-fill 8 (lambda () ,@body)))
+(defmacro zz-caught (&rest body)
+  `(condition-case e (progn ,@body) (error (list 'caught (car e) zz-dyn zz-a zz-b zz-r))))
+(defmacro zz-row (n &rest body)
+  `(progn (setq zz-log nil)
+          (let ((value (progn ,@body)))
+            (princ (format "%d %d %S %S\n" depth ,n value (reverse zz-log))))))
+(dolist (depth '(60000 100000))
+  (let ((zz-deep (zz-big '(lambda (zz-dyn) zz-dyn) depth))
+        (zz-three (zz-big '(lambda (zz-a &optional zz-b &rest zz-r) (list zz-a zz-b zz-r)) depth))
+        (zz-two (zz-big '(lambda (zz-a zz-b) (list zz-a zz-b)) depth))
+        (zz-local (zz-big '(lambda (zz-bl) zz-bl) depth)))
+    (defalias 'zz-deep-named zz-deep)
+    ;; 1: the catcher directly above the call, under a let of the formal.
+    (zz-row 1 (let ((zz-dyn 'outer))
+                (list (zz-at-full
+                       (let ((lx 'lexical))
+                         (list (zz-caught (funcall zz-deep 'inner)) zz-dyn
+                               (zz-caught (zz-deep-named 'inner)) zz-dyn
+                               lx (special-variable-p 'zz-dyn))))
+                      zz-dyn)))
+    ;; 2: called by mapcar and apply, under an unwind-protect, and under
+    ;; C's own catcher (the mode line's :eval).
+    (zz-row 2 (let ((zz-dyn 'outer))
+                (zz-at-full
+                 (list (zz-caught (mapcar zz-deep '(inner))) zz-dyn
+                       (zz-caught (apply zz-deep '(inner))) zz-dyn
+                       (zz-caught (unwind-protect (funcall zz-deep 'inner)
+                                    (push (list 'unwind zz-dyn) zz-log)))
+                       (format-mode-line '(:eval (funcall zz-deep 'inner))) zz-dyn))))
+    ;; 3: what runs at the signal sees the formal bound: a handler-bind
+    ;; handler, the signal hook, the debugger.
+    (zz-row 3 (let ((zz-dyn 'outer))
+                (zz-at-full
+                 (list (zz-caught
+                        (handler-bind ((error (lambda (err) (push (list 'handler (car err) zz-dyn) zz-log))))
+                          (funcall zz-deep 'inner)))
+                       (zz-caught
+                        (let ((signal-hook-function
+                               (lambda (sym _data) (push (list 'hook sym zz-dyn) zz-log))))
+                          (funcall zz-deep 'inner)))
+                       (zz-caught
+                        (setq internal-when-entered-debugger -1)
+                        (let ((debug-on-error t) (debug-on-signal t)
+                              (debugger (lambda (&rest args) (push (list 'debugger (car args) zz-dyn) zz-log))))
+                          (funcall zz-deep 'inner)))
+                       zz-dyn))))
+    ;; 4: &optional and &rest formals: the calls that fit, then the arity
+    ;; signal before any frame and the overflow after the bindings.
+    (zz-row 4 (list (funcall zz-three 1 2 3 4) (funcall zz-three 1)))
+    (zz-row 5 (zz-at-full (list (zz-caught (funcall zz-three))
+                                (zz-caught (funcall zz-three 1 2 3))
+                                (zz-caught (funcall zz-three 1))
+                                zz-a zz-b zz-r)))
+    ;; 6: a buffer-local formal.
+    (zz-row 6 (with-temp-buffer
+                (setq zz-bl 'local)
+                (list (zz-at-full (list (condition-case e (funcall zz-local 'arg) (error (list (car e) zz-bl)))
+                                        zz-bl))
+                      zz-bl (default-value 'zz-bl))))
+    ;; 7: an arity signal sees the formals bound before it.
+    (zz-row 7 (let ((handler (lambda (err) (push (list 'handler (car err) zz-a zz-b) zz-log))))
+                (list (zz-caught (handler-bind ((error handler)) (funcall zz-two 1)))
+                      (zz-caught (handler-bind ((error handler)) (funcall zz-two 1 2 3)))
+                      (zz-caught (funcall zz-two 1)) zz-a zz-b)))
+    ;; 8: the calls after all of it.
+    (zz-row 8 (list (funcall zz-deep 'fits) (zz-deep-named 'fits) (funcall zz-three 5 6 7)
+                    (funcall zz-two 8 9) zz-dyn zz-a zz-b zz-r))))
+"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
 fn byte_code_returning_to_c_with_a_binding_left_is_undone_where_gnu_is_undefined() {
     // Hand-made byte code that returns to C with a Bvarbind it never
     // unbinds.  bytecode.c's Breturn does not look at the specpdl, so

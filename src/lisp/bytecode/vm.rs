@@ -6644,7 +6644,10 @@ fn an_activation_entered_from_rust_leaves_the_threads_stacks_as_it_found_them() 
     // loop enters, and one too deep for verification), or returns with a
     // binding it never undid, the byte-code stack's frame, base and top,
     // the suspended frames, the handlers, the specpdl, the backtrace and
-    // the evaluation depth are as they were before the call.
+    // the evaluation depth are as they were before the call.  The same
+    // for a dynamic-binding function, whose formal funcall_lambda binds
+    // before exec_byte_code looks for the frame's room: the binding is
+    // undone when the frame fits and when it does not.
     fn eval(interp: &mut Interpreter, env: &mut Env, text: &str) -> Value {
         let form = crate::lisp::read_next_load_form(interp, text, &mut 0, env)
             .expect("read form")
@@ -6693,6 +6696,22 @@ fn an_activation_entered_from_rust_leaves_the_threads_stacks_as_it_found_them() 
             "(make-byte-code 257 (unibyte-string #o301 #o030 #o207) \
                [emaxx-test-left bound] 2)",
             Ok(7),
+        ),
+        // varref 0; return, of the formal.
+        (
+            "(make-byte-code '(emaxx-test-left) (unibyte-string #o010 #o207) \
+               [emaxx-test-left] 2)",
+            Ok(7),
+        ),
+        (
+            "(make-byte-code '(emaxx-test-left) (unibyte-string #o010 #o207) \
+               [emaxx-test-left] 60000)",
+            Err("error"),
+        ),
+        (
+            "(make-byte-code '(emaxx-test-left) (unibyte-string #o010 #o207) \
+               [emaxx-test-left] 600000)",
+            Err("error"),
         ),
     ];
     interp.bc_stack.ensure_allocated();
