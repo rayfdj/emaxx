@@ -666,12 +666,27 @@ unsafe fn invoke_platform(invocation: *mut NativeInvocation) -> Result<bool, Str
 }
 
 struct ActiveCall {
-    interpreter: *mut Interpreter,
-    /// A call nested in this one names its own environment here while it
-    /// runs (`invoke_nested_fixed'), the helpers of either reading it.
+    /// A call nested in this one names its own interpreter and
+    /// environment here while it runs (`invoke_nested'), the helpers of
+    /// either reading them.  The interpreter is the same one by another
+    /// pointer, the nested call's own (S-DERIVED).
+    interpreter: Cell<*mut Interpreter>,
     environment: Cell<*mut Env>,
     runtime: *mut NativeRuntime,
 }
+
+// S-DERIVED.  A `&mut' parameter is protected for its callee's whole frame:
+// while the frame lasts, its bytes may be reached only through pointers
+// derived from it.  The evaluator's and the byte-code machine's frames
+// take the interpreter as `&mut Interpreter', and a thread switch writes
+// the interpreter's shell (the state taken and stored).  So what a helper
+// of native code makes its reference from must be derived from the Rust
+// frame that entered that native code, not from an outer call's record.
+// GNU has no such rule: every frame reads the global current_thread.
+// Keeps: at a native call nested in an active call (`invoke_nested'), the
+// load of the record's interpreter pointer, the store of the entering
+// frame's own and the store back when the callee returns (3; the address
+// stored is the one loaded, the derivation is what differs).
 
 #[cfg(target_os = "macos")]
 fn current_native_stack_bottom() -> *const NativeWord {
@@ -792,7 +807,7 @@ pub(crate) fn with_active_call<R>(
     // not used again while the call lasts: every reference a helper makes
     // from them is derived from this frame's.
     let mut active = ActiveCall {
-        interpreter,
+        interpreter: Cell::new(interpreter),
         environment: Cell::new(environment),
         runtime,
     };
@@ -838,7 +853,7 @@ fn is_nested_call(
     !previous.is_null()
         && unsafe {
             std::ptr::eq((*previous).runtime, runtime)
-                && std::ptr::eq((*previous).interpreter, interpreter)
+                && std::ptr::eq((*previous).interpreter.get(), interpreter)
         }
 }
 
@@ -857,7 +872,7 @@ impl NestedCall {
         let previous = ACTIVE_CALL.get();
         // SAFETY: a non-null active call is live for its synchronous
         // extent, which contains this one.
-        (!previous.is_null() && unsafe { std::ptr::eq((*previous).interpreter, interpreter) })
+        (!previous.is_null() && unsafe { std::ptr::eq((*previous).interpreter.get(), interpreter) })
             .then_some(Self(previous))
     }
 
@@ -1923,7 +1938,7 @@ impl NativeRuntime {
         let previous = ACTIVE_CALL.get();
         let (word, escaped) = if is_nested_call(previous, self, interpreter) {
             let mut active = ActiveCall {
-                interpreter,
+                interpreter: Cell::new(interpreter),
                 environment: Cell::new(environment),
                 runtime: self,
             };
@@ -2039,16 +2054,23 @@ impl NativeRuntime {
         let buffer = std::ptr::from_mut(&mut escape);
         let frame = NativeCallFrame::new(self.call, buffer.cast(), depths.0, depths.1);
         self.link_call_frame(&frame);
-        // The active call already names this interpreter and runtime: the
-        // callee's record is that one naming ENVIRONMENT, written in place
-        // while the callee runs, the active call being suspended in it.
+        // The active call already names this runtime: the callee's record
+        // is that one naming this frame's INTERPRETER and ENVIRONMENT,
+        // written in place while the callee runs, the active call being
+        // suspended in it.  The interpreter is the one it named, by this
+        // frame's own pointer (S-DERIVED).
         // SAFETY: as `NestedCall::of's read.
-        let slot = unsafe { &(*nested.0).environment };
-        let outer = slot.replace(environment);
+        let record = unsafe { &*nested.0 };
+        let outer_environment = record.environment.replace(environment);
+        let outer_interpreter = record.interpreter.replace(interpreter);
         // SAFETY: the caller's; the frame linked above holds BUFFER until
         // it is unlinked below.
         let (word, escaped) = unsafe { call.call(buffer) };
-        slot.set(outer);
+        // Every call nested in the callee put this frame's pointers back.
+        debug_assert!(std::ptr::eq(record.interpreter.get(), interpreter));
+        debug_assert!(std::ptr::eq(record.environment.get(), environment));
+        record.interpreter.set(outer_interpreter);
+        record.environment.set(outer_environment);
         if escaped {
             return self.finish_escaped_frame(interpreter, &frame, false);
         }
@@ -2726,7 +2748,7 @@ fn invoke_other_subr(
     subroutine.note_full_arity_entry(arguments.len(), direct);
     // SAFETY: generated code passes live Lisp_Object words.
     let values = unsafe { live_values(arguments) };
-    match direct(unsafe { &mut *active.interpreter }, values, unsafe {
+    match direct(unsafe { &mut *active.interpreter.get() }, values, unsafe {
         &mut *active.environment.get()
     }) {
         Ok(value) => value.word(),
@@ -2752,7 +2774,7 @@ fn invoke_direct_subr(
     }
     // SAFETY: generated code passes live Lisp_Object words.
     let values = unsafe { live_values(arguments) };
-    match direct(unsafe { &mut *active.interpreter }, values, unsafe {
+    match direct(unsafe { &mut *active.interpreter.get() }, values, unsafe {
         &mut *active.environment.get()
     }) {
         Ok(value) => value.word(),
@@ -2770,7 +2792,7 @@ fn invoke_other_subr_slow(
 ) -> NativeWord {
     with_active(|active| {
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
@@ -2815,7 +2837,7 @@ fn invoke_variable_subr(index: usize, kind: DirectSubr, arguments: &[NativeWord]
         .and_then(|word| unsafe { Value::from_word(*word) }.symbol_cell());
     with_active(|active| {
         if let Some(symbol) = &symbol {
-            let interpreter = unsafe { &*active.interpreter };
+            let interpreter = unsafe { &*active.interpreter.get() };
             let plain = || interpreter.plain_variable_value(symbol);
             match (kind, &arguments[1..]) {
                 (DirectSubr::DefaultValue, []) => {
@@ -2847,7 +2869,7 @@ fn invoke_variable_subr(index: usize, kind: DirectSubr, arguments: &[NativeWord]
         symbol
             .and_then(|symbol| {
                 native_variable_subr(
-                    unsafe { &mut *active.interpreter },
+                    unsafe { &mut *active.interpreter.get() },
                     kind,
                     &symbol,
                     arguments,
@@ -2913,7 +2935,7 @@ fn entered_subr(active: &ActiveCall, index: usize) -> Option<&'static super::abi
         return None;
     };
     if let Err(error) =
-        unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+        unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
     {
         remember_helper_error(active, error);
         return None;
@@ -2995,7 +3017,8 @@ fn invoke_word_level_subr(index: usize, kind: DirectSubr, arguments: &[NativeWor
             match (kind, arguments) {
                 (DirectSubr::Eq, [left, right])
                     if left == right
-                        || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
+                        || !unsafe { &*active.interpreter.get() }
+                            .symbols_with_positions_enabled() =>
                 {
                     return native_boolean(left == right);
                 }
@@ -3007,7 +3030,8 @@ fn invoke_word_level_subr(index: usize, kind: DirectSubr, arguments: &[NativeWor
                 }
                 (DirectSubr::Symbolp, [value])
                     if *value & TAG_MASK == TAG_SYMBOL
-                        || !unsafe { &*active.interpreter }.symbols_with_positions_enabled() =>
+                        || !unsafe { &*active.interpreter.get() }
+                            .symbols_with_positions_enabled() =>
                 {
                     return native_boolean(*value & TAG_MASK == TAG_SYMBOL);
                 }
@@ -3130,7 +3154,7 @@ fn invoke_subr_entry(
 ) -> NativeWord {
     // SAFETY: generated code passes live Lisp_Object words.
     let values = unsafe { live_values(arguments) };
-    match subroutine.call(unsafe { &mut *active.interpreter }, values, unsafe {
+    match subroutine.call(unsafe { &mut *active.interpreter.get() }, values, unsafe {
         &mut *active.environment.get()
     }) {
         Ok(value) => value.word(),
@@ -3232,7 +3256,7 @@ pub(super) extern "C" fn direct_native_functionp(object: NativeWord) -> NativeWo
         // SAFETY: the caller's argument word is live.
         let object = unsafe { Value::from_word(object) };
         native_boolean(crate::lisp::primitives::function_value_p(
-            unsafe { &*active.interpreter },
+            unsafe { &*active.interpreter.get() },
             &object,
             unsafe { &*active.environment.get() },
         ))
@@ -3461,7 +3485,7 @@ pub(super) extern "C" fn direct_native_keywordp(object: NativeWord) -> NativeWor
     // SAFETY: the caller's argument word is live.
     let object = unsafe { Value::from_word(object) };
     native_boolean(predicates::keywordp(&object, || {
-        with_active(|active| unsafe { &*active.interpreter }.symbols_with_positions_enabled())
+        with_active(|active| unsafe { &*active.interpreter.get() }.symbols_with_positions_enabled())
     }))
 }
 
@@ -3489,7 +3513,7 @@ pub(super) fn direct_native_nth(index: usize, n: NativeWord, list: NativeWord) -
 /// so the next general entry reconciles it, as it would have here.
 #[inline(always)]
 fn native_context_entry(read: impl FnOnce(&Interpreter) -> Value) -> NativeWord {
-    with_active(|active| read(unsafe { &*active.interpreter }).word())
+    with_active(|active| read(unsafe { &*active.interpreter.get() }).word())
 }
 
 /// editfns.c:Fpoint.
@@ -3561,7 +3585,7 @@ pub(super) extern "C" fn direct_native_selected_frame() -> NativeWord {
 #[inline(always)]
 pub(super) fn direct_native_purecopy(index: usize, obj: NativeWord) -> NativeWord {
     let unpurified = with_active(|active| {
-        crate::lisp::primitives::purify_flag(unsafe { &*active.interpreter }).is_nil()
+        crate::lisp::primitives::purify_flag(unsafe { &*active.interpreter.get() }).is_nil()
     });
     if unpurified {
         obj
@@ -3658,7 +3682,7 @@ pub(super) extern "C" fn direct_native_gethash(
     default: NativeWord,
 ) -> NativeWord {
     with_active(|active| {
-        let interpreter = unsafe { &mut *active.interpreter };
+        let interpreter = unsafe { &mut *active.interpreter.get() };
         let result = unsafe { &mut *active.runtime }
             .sync_handlers(interpreter)
             .and_then(|()| {
@@ -3692,7 +3716,7 @@ pub(super) extern "C" fn direct_native_puthash(
     table: NativeWord,
 ) -> NativeWord {
     with_active(|active| {
-        let interpreter = unsafe { &mut *active.interpreter };
+        let interpreter = unsafe { &mut *active.interpreter.get() };
         let result = unsafe { &mut *active.runtime }
             .sync_handlers(interpreter)
             .and_then(|()| {
@@ -3778,7 +3802,7 @@ pub(super) extern "C" fn direct_native_symbol_value(symbol: NativeWord) -> Nativ
     }
     with_active(|active| {
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
@@ -3804,8 +3828,8 @@ pub(super) unsafe extern "C" fn direct_native_funcall(
         // the pointer was checked above.
         let words = unsafe { std::slice::from_raw_parts(arguments, argument_count as usize) };
         let direct = with_active(|active| {
-            if let Err(error) =
-                unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            if let Err(error) = unsafe { &mut *active.runtime }
+                .sync_handlers(unsafe { &mut *active.interpreter.get() })
             {
                 remember_helper_error(active, error);
                 return Some(0);
@@ -3878,7 +3902,7 @@ pub(super) unsafe extern "C" fn direct_native_list(
     };
     with_active(|active| {
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
@@ -3909,7 +3933,7 @@ pub(super) unsafe extern "C" fn direct_native_nconc(
     };
     with_active(|active| {
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
@@ -3917,7 +3941,7 @@ pub(super) unsafe extern "C" fn direct_native_nconc(
         // SAFETY: generated code passes live Lisp_Object words.
         let values = unsafe { live_values(values) };
         match crate::lisp::primitives::nconc_values(values, || {
-            unsafe { &mut *active.interpreter }
+            unsafe { &mut *active.interpreter.get() }
                 .maybe_quit(unsafe { &mut *active.environment.get() })
         }) {
             Ok(value) => value.word(),
@@ -3932,7 +3956,7 @@ pub(super) unsafe extern "C" fn direct_native_nconc(
 pub(super) extern "C" fn direct_native_memq(element: NativeWord, list: NativeWord) -> NativeWord {
     with_active(|active| {
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
@@ -3944,7 +3968,7 @@ pub(super) extern "C" fn direct_native_memq(element: NativeWord, list: NativeWor
 pub(super) extern "C" fn direct_native_assq(key: NativeWord, list: NativeWord) -> NativeWord {
     with_active(|active| {
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
@@ -3956,7 +3980,7 @@ pub(super) extern "C" fn direct_native_assq(key: NativeWord, list: NativeWord) -
 pub(super) extern "C" fn direct_native_get(symbol: NativeWord, property: NativeWord) -> NativeWord {
     with_active(|active| {
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
@@ -3968,7 +3992,7 @@ pub(super) extern "C" fn direct_native_get(symbol: NativeWord, property: NativeW
 pub(super) extern "C" fn direct_native_nreverse(sequence: NativeWord) -> NativeWord {
     with_active(|active| {
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
@@ -3981,7 +4005,7 @@ pub(super) extern "C" fn direct_native_nreverse(sequence: NativeWord) -> NativeW
 pub(super) extern "C" fn direct_native_length(sequence: NativeWord) -> NativeWord {
     with_active(|active| {
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
@@ -3998,7 +4022,7 @@ pub(super) extern "C" fn direct_native_plist_member(
 ) -> NativeWord {
     with_active(|active| {
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
@@ -4020,7 +4044,7 @@ pub(super) unsafe extern "C" fn direct_native_make_closure(
     let arguments = unsafe { std::slice::from_raw_parts(arguments, argument_count) };
     with_active(|active| {
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
@@ -4098,7 +4122,7 @@ impl DirectFuncallTarget {
             // caller, which keeps each Lisp_Object live, as XUNTAG reads it
             // without a reverse map.
             let values = unsafe { live_values(arguments) };
-            let result = unsafe { &mut *active.interpreter }.execute_bytecode_funcall_body(
+            let result = unsafe { &mut *active.interpreter.get() }.execute_bytecode_funcall_body(
                 closure,
                 values,
                 unsafe { &mut *active.environment.get() },
@@ -4268,7 +4292,7 @@ fn plain_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Option
     let function = unsafe { Value::from_word(function_word) };
     // SAFETY: the activation's pointees outlive this call.
     let result = invoke_plain_native_funcall(
-        unsafe { &mut *active.interpreter },
+        unsafe { &mut *active.interpreter.get() },
         unsafe { &mut *active.runtime },
         unsafe { &mut *active.environment.get() },
         function,
@@ -4429,17 +4453,18 @@ fn invoke_plain_bytecode_funcall(
         .closure_ref()
         .filter(|closure| closure.is_bytecode())?;
     // SAFETY: the activation's pointees outlive this call.
-    if !unsafe { &*active.interpreter }.plain_bcall_entry(name)
+    if !unsafe { &*active.interpreter.get() }.plain_bcall_entry(name)
         || !unsafe { &*active.runtime }.heap.collection_cannot_be_due()
     {
         return None;
     }
-    let depth = unsafe { &mut *active.interpreter }.enter_plain_native_funcall(function, arguments);
+    let depth =
+        unsafe { &mut *active.interpreter.get() }.enter_plain_native_funcall(function, arguments);
     // SAFETY: Ffuncall's argument vector belongs to the native caller,
     // which keeps each word live until the call returns.
     let values = unsafe { live_values(arguments) };
     let result = crate::lisp::bytecode::vm::funcall_closure_in_place(
-        unsafe { &mut *active.interpreter },
+        unsafe { &mut *active.interpreter.get() },
         closure,
         values,
         unsafe { &mut *active.environment.get() },
@@ -4448,14 +4473,15 @@ fn invoke_plain_bytecode_funcall(
     // record the innermost, which a value not marked for the debugger
     // takes off at once.
     if let Ok(value) = result
-        && unsafe { &mut *active.interpreter }.leave_innermost_funcall(depth)
+        && unsafe { &mut *active.interpreter.get() }.leave_innermost_funcall(depth)
     {
         return Some(Ok(value.word()));
     }
     // The exit debugger, which a marked record calls, runs Lisp too.
-    let result = unsafe { &mut *active.interpreter }
-        .settle_call_result(depth, result, unsafe { &mut *active.environment.get() });
-    unsafe { &mut *active.interpreter }.leave_plain_funcall(depth);
+    let result =
+        unsafe { &mut *active.interpreter.get() }
+            .settle_call_result(depth, result, unsafe { &mut *active.environment.get() });
+    unsafe { &mut *active.interpreter.get() }.leave_plain_funcall(depth);
     Some(result.map(|value| value.word()))
 }
 
@@ -4496,8 +4522,11 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
     // own from the same pointers, and a thread switch there writes the
     // interpreter's shell.  After such a call it is made again from the
     // pointer, as `emaxx_native_gc_collect' makes its own.
-    let (interpreter_pointer, environment_pointer, runtime_pointer) =
-        (active.interpreter, active.environment.get(), active.runtime);
+    let (interpreter_pointer, environment_pointer, runtime_pointer) = (
+        active.interpreter.get(),
+        active.environment.get(),
+        active.runtime,
+    );
     let runtime = unsafe { &mut *runtime_pointer };
     let interpreter = unsafe { &mut *interpreter_pointer };
     let environment = unsafe { &mut *environment_pointer };
@@ -4615,7 +4644,7 @@ fn invoke_native_apply(active: &ActiveCall, arguments: &[NativeWord]) -> Option<
         && let Some(&function) = fixed.first()
     {
         let padded = apply_padded_count(
-            unsafe { &*active.interpreter },
+            unsafe { &*active.interpreter.get() },
             unsafe { &*active.environment.get() },
             // SAFETY: the caller's function word, live in its activation.
             unsafe { Value::from_word(function) },
@@ -4714,7 +4743,7 @@ fn invoke_native_mapcar(active: &ActiveCall, arguments: &[NativeWord]) -> Option
         // handlers brought to the ABI's state, then the direct path.
         let words = [*function, item];
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             results.release(active);
             remember_helper_error(active, error);
@@ -4780,7 +4809,7 @@ impl NativeWords {
         let array = crate::lisp::eval::LispArray::new(count);
         let address = array.as_mut_ptr().cast::<NativeWord>();
         unsafe { &mut *active.runtime }.record_unwind(
-            unsafe { &mut *active.interpreter },
+            unsafe { &mut *active.interpreter.get() },
             UnwindAction::Array(std::mem::ManuallyDrop::new(array)),
         );
         Self {
@@ -4819,7 +4848,7 @@ impl NativeWords {
     #[cold]
     #[inline(never)]
     fn release_specpdl(active: &ActiveCall, address: *mut NativeWord) {
-        let interpreter = unsafe { &mut *active.interpreter };
+        let interpreter = unsafe { &mut *active.interpreter.get() };
         let innermost = interpreter.specpdl_index().checked_sub(1);
         if innermost.is_none()
             || interpreter.array_entry_depth(address.cast::<Value>().cast_const()) != innermost
@@ -4850,19 +4879,19 @@ fn hash_table_native_hash(
         let key = unsafe { Value::from_word(key) };
         if let Some(test) = standard {
             return crate::lisp::primitives::standard_hash_code(
-                unsafe { &*active.interpreter },
+                unsafe { &*active.interpreter.get() },
                 test,
                 &key,
             );
         }
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
         }
         match crate::lisp::primitives::hash_table_hash_code(
-            unsafe { &mut *active.interpreter },
+            unsafe { &mut *active.interpreter.get() },
             table,
             &key,
             unsafe { &mut *active.environment.get() },
@@ -4911,13 +4940,13 @@ fn hash_table_native_compare(
         let left = unsafe { Value::from_word(left) };
         let right = unsafe { Value::from_word(right) };
         if let Err(error) =
-            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter })
+            unsafe { &mut *active.runtime }.sync_handlers(unsafe { &mut *active.interpreter.get() })
         {
             remember_helper_error(active, error);
             return 0;
         }
         match crate::lisp::primitives::hash_table_key_matches(
-            unsafe { &mut *active.interpreter },
+            unsafe { &mut *active.interpreter.get() },
             table,
             &left,
             &right,
@@ -5046,7 +5075,7 @@ fn invoke_native_make_closure(active: &ActiveCall, arguments: &[NativeWord]) -> 
                 Ok(())
             })
             .and_then(|()| {
-                unsafe { &mut *active.interpreter }.make_closure(&prototype, &decoded_vars)
+                unsafe { &mut *active.interpreter.get() }.make_closure(&prototype, &decoded_vars)
             })
     };
     let closure = match closure {
@@ -5167,7 +5196,7 @@ fn native_proper_list_length(active: &ActiveCall, list: NativeWord) -> Result<Op
         if !compare_tortoise {
             // lisp.h:maybe_quit: probably_quit only for a quit or a
             // signal pending.
-            if !unsafe { &*active.interpreter }.quit_check_clear() {
+            if !unsafe { &*active.interpreter.get() }.quit_check_clear() {
                 runtime_maybe_quit();
                 if native_call_has_pending_error(active) {
                     return Err(());
@@ -5195,7 +5224,7 @@ fn native_symbolp(active: &ActiveCall, word: NativeWord) -> Result<bool, LispErr
     if word & TAG_MASK == TAG_SYMBOL {
         return Ok(true);
     }
-    if !unsafe { &*active.interpreter }.symbols_with_positions_enabled() {
+    if !unsafe { &*active.interpreter.get() }.symbols_with_positions_enabled() {
         return Ok(false);
     }
     let value = decode_word(active, word)?;
@@ -5236,11 +5265,12 @@ fn invoke_native_symbol_value(active: &ActiveCall, word: NativeWord) -> Option<N
     } else {
         unsafe { (&*active.runtime).heap.bare_symbol_value_state(word) }?
     };
-    if let Some(value) = unsafe { &*active.interpreter }.plain_global_binding_value_symbol(&symbol)
+    if let Some(value) =
+        unsafe { &*active.interpreter.get() }.plain_global_binding_value_symbol(&symbol)
     {
         return Some(value.word());
     }
-    let value = unsafe { &*active.interpreter }.symbol_value_cell_symbol(&symbol);
+    let value = unsafe { &*active.interpreter.get() }.symbol_value_cell_symbol(&symbol);
     let value = value.map_err(|error| match error.kind() {
         // data.c:Fsymbol_value uses the original SYMBOL in xsignal1,
         // not the name of the final cell reached through a variable alias.
@@ -5313,7 +5343,7 @@ fn native_eq_word(active: &ActiveCall, left: NativeWord, right: NativeWord) -> b
     if left == right {
         return true;
     }
-    if !unsafe { &*active.interpreter }.symbols_with_positions_enabled() {
+    if !unsafe { &*active.interpreter.get() }.symbols_with_positions_enabled() {
         return false;
     }
     if left & TAG_MASK != TAG_VECTORLIKE && right & TAG_MASK != TAG_VECTORLIKE {
@@ -5372,9 +5402,9 @@ fn native_eql(active: &ActiveCall, left: NativeWord, right: NativeWord) -> Resul
             &left_value,
             &right_value,
         ))
-    } else if unsafe { &*active.interpreter }.symbols_with_positions_enabled() {
+    } else if unsafe { &*active.interpreter.get() }.symbols_with_positions_enabled() {
         Ok(crate::lisp::primitives::values_eq_in_env(
-            unsafe { &*active.interpreter },
+            unsafe { &*active.interpreter.get() },
             &left_value,
             &right_value,
             unsafe { &*active.environment.get() },
@@ -5568,7 +5598,7 @@ fn native_get_symbol_name(
 
     let value = decode_word(active, symbol)?;
     crate::lisp::primitives::checked_symbol_identity(
-        unsafe { &*active.interpreter },
+        unsafe { &*active.interpreter.get() },
         &value,
         unsafe { &*active.environment.get() },
     )
@@ -5586,7 +5616,7 @@ fn invoke_native_get(active: &ActiveCall, symbol: NativeWord, property: NativeWo
         }
     };
 
-    let interpreter = unsafe { &*active.interpreter };
+    let interpreter = unsafe { &*active.interpreter.get() };
     if !interpreter.overriding_plist_environment_is_nil() {
         let entry = native_assq(
             active,
@@ -5609,7 +5639,7 @@ fn invoke_native_get(active: &ActiveCall, symbol: NativeWord, property: NativeWo
     // Fassq's maybe_quit can run the debugger for a quit, and Lisp run
     // there may switch threads, which writes the interpreter's shell: the
     // reference made above ends at that call, and this is another.
-    let interpreter = unsafe { &*active.interpreter };
+    let interpreter = unsafe { &*active.interpreter.get() };
     native_plist_get(
         active,
         interpreter.symbol_plist_symbol(&symbol_name).word(),
@@ -5793,14 +5823,14 @@ fn remember_helper_error(active: &ActiveCall, error: LispError) {
     // signal_or_quit runs handler-bind before unwind_to_catch removes the
     // signaling activations. Native helpers can signal without entering
     // Ffuncall, so settling only at that outer boundary loses their frames.
-    let interpreter = unsafe { &mut *active.interpreter };
+    let interpreter = unsafe { &mut *active.interpreter.get() };
     let environment = unsafe { &mut *active.environment.get() };
     let error = match unsafe { &mut *active.runtime }.sync_handlers(interpreter) {
         Ok(()) => interpreter.signal_or_quit(error, environment),
         Err(error) => error,
     };
     let jump_buffer = unsafe { &mut *active.runtime }.prepare_nonlocal_exit(
-        unsafe { &mut *active.interpreter },
+        unsafe { &mut *active.interpreter.get() },
         unsafe { &mut *active.environment.get() },
         error,
     );
@@ -5866,7 +5896,7 @@ extern "C" fn runtime_push_handler(match_value: NativeWord, kind: i32) -> *mut N
     with_active(|active| {
         let result = (|| {
             let match_value = decode_word(active, match_value)?;
-            let interpreter = unsafe { &mut *active.interpreter };
+            let interpreter = unsafe { &mut *active.interpreter.get() };
             let runtime = unsafe { &mut *active.runtime };
             runtime.sync_handlers(interpreter)?;
             let registration = match kind {
@@ -5916,7 +5946,7 @@ extern "C" fn runtime_push_handler(match_value: NativeWord, kind: i32) -> *mut N
 
 extern "C" fn runtime_record_unwind_protect_excursion() {
     with_active(|active| {
-        let interpreter = unsafe { &mut *active.interpreter };
+        let interpreter = unsafe { &mut *active.interpreter.get() };
         let saved = interpreter.save_excursion_state();
         unsafe { &mut *active.runtime }.record_unwind(interpreter, UnwindAction::Excursion(saved));
     });
@@ -5932,7 +5962,7 @@ extern "C" fn runtime_unbind_n(count: NativeWord) -> NativeWord {
             let count = usize::try_from(count).map_err(|_| {
                 super::lisp::native_ice("native byte-unbind received a negative count")
             })?;
-            let interpreter = unsafe { &mut *active.interpreter };
+            let interpreter = unsafe { &mut *active.interpreter.get() };
             // eval.c:unbind_to (SPECPDL_INDEX () - COUNT): the call's own
             // entries on the specpdl, innermost first.  A plain binding's
             // unbind is a store that runs nothing.
@@ -5959,7 +5989,7 @@ extern "C" fn runtime_unbind_n(count: NativeWord) -> NativeWord {
 /// Lisp: a watcher, a cleanup, or a store more than plain.
 #[inline(never)]
 fn unbind_n_running(active: &ActiveCall, count: usize) -> Result<(), LispError> {
-    let interpreter = unsafe { &mut *active.interpreter };
+    let interpreter = unsafe { &mut *active.interpreter.get() };
     let runtime = unsafe { &mut *active.runtime };
     // helper_unbind_n can call an interpreted cleanup without crossing
     // invoke_subr or NativeRuntime::invoke. Retire handlers already popped
@@ -5970,7 +6000,7 @@ fn unbind_n_running(active: &ActiveCall, count: usize) -> Result<(), LispError> 
         // native code makes its own references from these pointers and
         // which may switch threads: each entry is undone through
         // references of its own.
-        let interpreter = unsafe { &mut *active.interpreter };
+        let interpreter = unsafe { &mut *active.interpreter.get() };
         let environment = unsafe { &mut *active.environment.get() };
         let runtime = unsafe { &mut *active.runtime };
         if !interpreter.unbind_plain_innermost() {
@@ -5982,7 +6012,7 @@ fn unbind_n_running(active: &ActiveCall, count: usize) -> Result<(), LispError> 
 
 extern "C" fn runtime_save_restriction() {
     with_active(|active| {
-        let interpreter = unsafe { &mut *active.interpreter };
+        let interpreter = unsafe { &mut *active.interpreter.get() };
         let saved = interpreter.save_restriction_state();
         unsafe { &mut *active.runtime }
             .record_unwind(interpreter, UnwindAction::Restriction(Box::new(saved)));
@@ -6018,7 +6048,7 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
         let result = (|| {
             let value = decode_word(active, value)?;
             let kind = decode_word(active, kind)?;
-            let interpreter = unsafe { &mut *active.interpreter };
+            let interpreter = unsafe { &mut *active.interpreter.get() };
             let environment = unsafe { &mut *active.environment.get() };
             if !interpreter
                 .symbol_value_key(cached_symbol!("comp-sanitizer-active"))
@@ -6033,7 +6063,7 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
             // Each call below runs Lisp, whose native code makes its own
             // references from the active call's pointers and which may
             // switch threads: the references end at it and are made again.
-            let interpreter = unsafe { &mut *active.interpreter };
+            let interpreter = unsafe { &mut *active.interpreter.get() };
             let environment = unsafe { &mut *active.environment.get() };
             let _ = super::lisp::call_c_primitive(
                 interpreter,
@@ -6045,7 +6075,7 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
                     kind,
                 ],
             )?;
-            let interpreter = unsafe { &mut *active.interpreter };
+            let interpreter = unsafe { &mut *active.interpreter.get() };
             let environment = unsafe { &mut *active.environment.get() };
             let _ = super::lisp::call(interpreter, environment, "backtrace", &[])?;
             Err(LispError::SignalValue(Value::list([
@@ -6066,7 +6096,7 @@ extern "C" fn runtime_sanitizer_assert(value: NativeWord, kind: NativeWord) -> N
 
 extern "C" fn runtime_record_unwind_current_buffer() {
     with_active(|active| {
-        let interpreter = unsafe { &mut *active.interpreter };
+        let interpreter = unsafe { &mut *active.interpreter.get() };
         let buffer_id = interpreter.current_buffer_id();
         unsafe { &mut *active.runtime }
             .record_unwind(interpreter, UnwindAction::CurrentBuffer(buffer_id));
@@ -6102,7 +6132,7 @@ extern "C" fn runtime_set_internal(
                 ));
             }
             // GNU's native code calls set_internal itself, not Fset by name.
-            let interpreter = unsafe { &mut *active.interpreter };
+            let interpreter = unsafe { &mut *active.interpreter.get() };
             let environment = unsafe { &mut *active.environment.get() };
             let symbol = crate::lisp::primitives::checked_symbol_identity(
                 interpreter,
@@ -6123,14 +6153,14 @@ extern "C" fn runtime_unwind_protect(value: NativeWord) {
         let result = (|| {
             let value = decode_word(active, value)?;
             let function = crate::lisp::primitives::call(
-                unsafe { &mut *active.interpreter },
+                unsafe { &mut *active.interpreter.get() },
                 "functionp",
                 std::slice::from_ref(&value),
                 unsafe { &mut *active.environment.get() },
             )?
             .is_truthy();
             unsafe { &mut *active.runtime }.record_unwind(
-                unsafe { &mut *active.interpreter },
+                unsafe { &mut *active.interpreter.get() },
                 UnwindAction::Cleanup { function, value },
             );
             Ok(())
@@ -6143,7 +6173,7 @@ extern "C" fn runtime_unwind_protect(value: NativeWord) {
 
 extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
     with_active(|active| {
-        let interpreter = unsafe { &mut *active.interpreter };
+        let interpreter = unsafe { &mut *active.interpreter.get() };
         // The binding's record goes on the specpdl, where the call's
         // entries begin at the depth noted at its first.
         unsafe { &*active.runtime }.note_specpdl_push(interpreter);
@@ -6159,7 +6189,7 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
         let result = (|| {
             let symbol = decode_word(active, symbol)?;
             let value = decode_word(active, value)?;
-            let interpreter = unsafe { &mut *active.interpreter };
+            let interpreter = unsafe { &mut *active.interpreter.get() };
             let environment = unsafe { &mut *active.environment.get() };
             match symbol.symbol_cell() {
                 Some(name) => {
@@ -6184,8 +6214,13 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
 extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
     // Do not hold an ActiveCall or NativeRuntime reference across callbacks:
     // finalizers/hooks can reenter native Lisp in this same activation.
-    let (interpreter, environment, runtime) =
-        with_active(|active| (active.interpreter, active.environment.get(), active.runtime));
+    let (interpreter, environment, runtime) = with_active(|active| {
+        (
+            active.interpreter.get(),
+            active.environment.get(),
+            active.runtime,
+        )
+    });
     let due = {
         // SAFETY: the synchronous native activation owns these pointers. This
         // scope ends before compact_buffers can invoke Lisp.
@@ -6248,7 +6283,7 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
 
 extern "C" fn runtime_maybe_quit() {
     with_active(|active| {
-        if let Err(error) = unsafe { &mut *active.interpreter }
+        if let Err(error) = unsafe { &mut *active.interpreter.get() }
             .maybe_quit(unsafe { &mut *active.environment.get() })
         {
             remember_helper_error(active, error);
@@ -7558,7 +7593,7 @@ mod tests {
                 runtime.heap.collect(
                     std::ptr::from_ref(&word),
                     &[],
-                    unsafe { &mut *active.interpreter },
+                    unsafe { &mut *active.interpreter.get() },
                     unsafe { &*active.environment.get() },
                 );
                 if runtime
@@ -7894,7 +7929,7 @@ mod tests {
     extern "C" fn eval_form_triggers_maybe_gc() -> NativeWord {
         with_active(|active| {
             let runtime = unsafe { &mut *active.runtime };
-            let interpreter = unsafe { &mut *active.interpreter };
+            let interpreter = unsafe { &mut *active.interpreter.get() };
             runtime
                 .heap
                 .gc
@@ -7913,7 +7948,7 @@ mod tests {
     extern "C" fn garbage_collect_maybe_uses_gnu_factor() -> NativeWord {
         with_active(|active| {
             let runtime = unsafe { &mut *active.runtime };
-            let interpreter = unsafe { &mut *active.interpreter };
+            let interpreter = unsafe { &mut *active.interpreter.get() };
             let environment = unsafe { &mut *active.environment.get() };
             runtime
                 .heap
@@ -19212,7 +19247,7 @@ mod tests {
                     assert!(words.in_specpdl);
                     // SAFETY: the active call's interpreter, used for one
                     // statement, as the helpers use it.
-                    let interpreter = unsafe { &mut *active.interpreter };
+                    let interpreter = unsafe { &mut *active.interpreter.get() };
                     let innermost = interpreter.specpdl_index() - 1;
                     assert_eq!(
                         interpreter.array_entry_depth(words.address.cast::<Value>().cast_const()),
@@ -19227,7 +19262,10 @@ mod tests {
                     words.release(active);
                     assert_eq!(part, "balanced", "SAFE_FREE returned");
                     // SAFETY: as above.
-                    assert_eq!(unsafe { &*active.interpreter }.specpdl_index(), innermost);
+                    assert_eq!(
+                        unsafe { &*active.interpreter.get() }.specpdl_index(),
+                        innermost
+                    );
                 });
             });
             runtime
