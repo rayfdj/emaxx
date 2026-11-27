@@ -4393,20 +4393,7 @@ pub(crate) fn funcall_closure_recorded(
                 args,
                 env,
                 (unwinds, record + 1),
-                |interp, env, end| match end {
-                    // SAFETY: the backtrace was just seen RECORD + 1 long.
-                    ActivationEnd::Returned(value)
-                        if unsafe { interp.leave_returned_funcall(record) } =>
-                    {
-                        Ok(value)
-                    }
-                    ActivationEnd::Returned(value) => {
-                        leave_recorded_call(interp, record, Ok(value), env)
-                    }
-                    ActivationEnd::Finished(result) => {
-                        leave_recorded_call(interp, record, result, env)
-                    }
-                },
+                RecordedCall { record },
             );
         }
         _ => funcall_closure_otherwise(interp, closure, entry, args, env),
@@ -4415,17 +4402,22 @@ pub(crate) fn funcall_closure_recorded(
 }
 
 /// Ffuncall's exit of a call whose record is at RECORD, after any end of
-/// its activation but the fast return of a value to an unmarked record:
-/// the debugger of a marked record (`settle_call_result'), the signal's
-/// settling, and the record's pop.
-#[cold]
-#[inline(never)]
+/// its activation but the verified loop's fast return: on a value, the
+/// record left at once unless the debugger is to see it
+/// (`leave_innermost_funcall'); otherwise the debugger of a marked record
+/// (`settle_call_result'), the signal's settling, and the record's pop.
+#[inline(always)]
 fn leave_recorded_call(
     interp: &mut Interpreter,
     record: usize,
     result: Result<Value, LispError>,
     env: &mut Env,
 ) -> Result<Value, LispError> {
+    if let Ok(value) = result
+        && interp.leave_innermost_funcall(record)
+    {
+        return Ok(value);
+    }
     let result = interp.settle_call_result(record, result, env);
     interp.leave_plain_funcall(record);
     result
@@ -4565,37 +4557,90 @@ fn run_entered_above(
         args,
         env,
         (unwinds, backtrace),
-        |_, _, end| match end {
-            ActivationEnd::Returned(value) => Ok(value),
-            ActivationEnd::Finished(result) => result,
-        },
+        AsResult,
     )
 }
 
-/// How an activation entered from Rust ended (`run_entered_then').
-enum ActivationEnd {
-    /// The entry frame's Breturn of the value, with the specpdl and the
+/// What the caller of `run_entered_then' makes of each end of the
+/// activation, inline where it ends.
+trait ActivationEnds {
+    type Output;
+    /// The entry frame's Breturn of VALUE, with the specpdl and the
     /// backtrace as long as the activation is to leave them, as just
     /// tested.
-    Returned(Value),
+    fn returned(self, interp: &mut Interpreter, env: &mut Env, value: Value) -> Self::Output;
     /// Any other end, the activation's end (`finish_activation') made.
-    Finished(Result<Value, LispError>),
+    fn finished(
+        self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        result: Result<Value, LispError>,
+    ) -> Self::Output;
+}
+
+/// The ends of `run_entered_above': its result.
+struct AsResult;
+
+impl ActivationEnds for AsResult {
+    type Output = Result<Value, LispError>;
+    #[inline(always)]
+    fn returned(self, _: &mut Interpreter, _: &mut Env, value: Value) -> Self::Output {
+        Ok(value)
+    }
+    #[inline(always)]
+    fn finished(
+        self,
+        _: &mut Interpreter,
+        _: &mut Env,
+        result: Result<Value, LispError>,
+    ) -> Self::Output {
+        result
+    }
+}
+
+/// The ends of a call whose record is at RECORD
+/// (`funcall_closure_recorded'), with Ffuncall's exit of it.
+struct RecordedCall {
+    record: usize,
+}
+
+impl ActivationEnds for RecordedCall {
+    type Output = Result<Value, LispError>;
+    #[inline(always)]
+    fn returned(self, interp: &mut Interpreter, env: &mut Env, value: Value) -> Self::Output {
+        // SAFETY: the backtrace was just seen RECORD + 1 long.
+        if unsafe { interp.leave_returned_funcall(self.record) } {
+            return Ok(value);
+        }
+        let result = interp.settle_call_result(self.record, Ok(value), env);
+        interp.leave_plain_funcall(self.record);
+        result
+    }
+    #[inline(always)]
+    fn finished(
+        self,
+        interp: &mut Interpreter,
+        env: &mut Env,
+        result: Result<Value, LispError>,
+    ) -> Self::Output {
+        leave_recorded_call(interp, self.record, result, env)
+    }
 }
 
 /// `run_entered_above', its ends apart for the caller to take each its
-/// own way: END takes how the activation ended, LEAVES the lengths of
+/// own way: ENDS takes how the activation ended, LEAVES the lengths of
 /// the specpdl and the backtrace it is to leave behind (UNWINDS and
 /// BACKTRACE of `run_entered_above').
 #[inline(always)]
-fn run_entered_then<R>(
+fn run_entered_then<E: ActivationEnds>(
     interp: &mut Interpreter,
     program: std::ptr::NonNull<super::verify::EntryProgram>,
     function: Value,
     args: &[Value],
     env: &mut Env,
     leaves: (usize, usize),
-    end: impl FnOnce(&mut Interpreter, &mut Env, ActivationEnd) -> R,
-) -> R {
+    ends: E,
+) -> E::Output {
     let (unwinds, backtrace) = leaves;
     // SAFETY: the caller's program, copied before anything runs Lisp: a
     // later entry of another closure may take its place in the cache.
@@ -4633,10 +4678,10 @@ fn run_entered_then<R>(
         // and nothing of the activation is on the frames' or the
         // handlers' lists.
         if vm.interp.specpdl_index() == unwinds && vm.interp.backtrace_frames_len() == backtrace {
-            return end(vm.interp, vm.env, ActivationEnd::Returned(value));
+            return ends.returned(vm.interp, vm.env, value);
         }
         let result = finish_returned(vm.interp, vm.env, value, unwinds, backtrace);
-        return end(vm.interp, vm.env, ActivationEnd::Finished(result));
+        return ends.finished(vm.interp, vm.env, result);
     }
     let activation = Activation {
         program: running,
@@ -4649,7 +4694,7 @@ fn run_entered_then<R>(
     // SAFETY: the loop answered None, having written its exit.
     let exit = unsafe { left.assume_init() };
     let result = run_unfinished(interp, env, activation, exit, unwinds, backtrace);
-    end(interp, env, ActivationEnd::Finished(result))
+    ends.finished(interp, env, result)
 }
 
 /// The end of an activation whose entry frame returned VALUE (the
