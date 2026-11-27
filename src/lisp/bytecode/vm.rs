@@ -133,6 +133,30 @@ impl BcStack {
         header.saved_pc
     }
 
+    /// The frame, base and top of the caller of the activation whose
+    /// frames are the active one and those below it down to the one its
+    /// entry from Rust made: what unwind_to_catch's `set_act_rec' gives
+    /// back from the catcher's saved frame.  The entry's frame is the one
+    /// whose header saves pc 0 (bytecode.c's NULL `saved_pc' and
+    /// `saved_top' of a frame entered from C); a call in the loop saves
+    /// the offset after its instruction, which is never 0.
+    fn below_activation(&self) -> (usize, usize, usize) {
+        let mut frame = self.frame;
+        loop {
+            assert_ne!(frame, 0, "no frame entered from Rust on the bytecode stack");
+            let header = self.header(frame);
+            if header.saved_pc == 0 {
+                let base = if header.saved_frame == 0 {
+                    0
+                } else {
+                    self.header(header.saved_frame).saved_frame + BC_HEADER_WORDS
+                };
+                return (header.saved_frame, base, header.saved_top);
+            }
+            frame = header.saved_frame;
+        }
+    }
+
     #[cfg(test)]
     fn frame_count(&self) -> usize {
         let (mut frame, mut count) = (self.frame, 0);
@@ -1541,6 +1565,9 @@ enum FastExit {
     Continued(usize),
     /// The instruction's signal, raised after its own work (a Bcall's).
     Raised(super::Instr, LispError),
+    /// The verified loop's entry from Rust found no room for the frame
+    /// (exec_byte_code's "Bytecode stack overflow"): nothing was entered.
+    Overflow,
 }
 
 /// exec_byte_code's dispatch loop for the ops that need nothing but the
@@ -1965,12 +1992,23 @@ fn run_fast(
 /// (`op_in_place'), may do both, and the loop then re-reads the frame's
 /// code and its verification, as after a frame switch.
 ///
-/// The answer is the value the function returned to the loop's caller
-/// (exec_byte_code's `return val', which comes back in registers), or
-/// None with every other exit written to LEFT.  The stack's top is stored
-/// on each way out but a raised signal's and a frame to resume.  LEFT is
-/// the first argument, where the pointer to a result returned in memory
-/// was: the loop's values keep the registers they had.
+/// With ENTRY, the program `verify::entry_program' answered for FUNCTION
+/// with nothing run since, whose packed list takes ARGS, this is
+/// exec_byte_code called from C: it enters the function's frame above
+/// the caller's (setup_frame), pushes the arguments and the optionals'
+/// nils, and runs from pc 0; VM holds that program already.  Without
+/// ENTRY the frame is in place and the loop goes on from VM's pc (FUNCTION
+/// and ARGS are not read): `run_loop's way back in.
+///
+/// The answer is the value the activation's entry frame returned
+/// (exec_byte_code's `exit:', `bc->fp = bc->fp->saved_fp' and `return
+/// result', which comes back in registers): that frame is left, the
+/// caller's is the active one again, and no frame or handler of the
+/// activation remains.  Every other exit is written to LEFT and the
+/// answer is None; the stack's top is stored on each of those but a
+/// raised signal's, a frame to resume and `Overflow', which entered
+/// nothing.  LEFT is the first argument, where the pointer to a result
+/// returned in memory was: the loop's values keep the registers they had.
 // The opcode match names its bytes one by one where a range would read
 // better: see the comment on its catch-all arm.
 #[allow(clippy::manual_range_patterns)]
@@ -1978,12 +2016,10 @@ fn run_fast(
 fn run_verified(
     left: &mut std::mem::MaybeUninit<FastExit>,
     vm: &mut VmFrames<'_>,
-    code: &[u8],
-    words: *mut Value,
-    top: usize,
+    entry: Option<std::ptr::NonNull<super::verify::EntryProgram>>,
+    function: Value,
+    args: &[Value],
 ) -> Option<Value> {
-    let mut code = code;
-    let mut top = top;
     // Every exit but the function's return: the exit written to LEFT.
     macro_rules! leave {
         ($exit:expr) => {{
@@ -1991,6 +2027,36 @@ fn run_verified(
             return None;
         }};
     }
+    let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
+    if let Some(entry) = entry {
+        // SAFETY: the caller's program, which stays in place while nothing
+        // enters a closure or collects: nothing does before its two
+        // depths are read here.
+        let (stack_depth, entry_depth) = unsafe {
+            let entry = entry.as_ref();
+            (entry.stack_depth, entry.entry_depth)
+        };
+        state.bc_stack.ensure_allocated();
+        if state
+            .bc_stack
+            .enter_frame(stack_depth, function, 0)
+            .is_err()
+        {
+            leave!(FastExit::Overflow);
+        }
+        // SAFETY: the caller's `takes' admits at most the list's
+        // ENTRY_DEPTH arguments, which `entry_program' gives only a
+        // program whose STACK_DEPTH holds them, and `enter_frame' has
+        // just put the frame's footer that depth above its first slot.
+        unsafe { state.bc_stack.push_arguments_within(args, entry_depth) };
+    }
+    let words = state.bc_stack.words.as_mut_ptr().cast::<Value>();
+    let mut top = state.bc_stack.top;
+    // SAFETY: the loop runs no Lisp, collects nothing and stores into no
+    // string while it reads the bytes, which both callers found current
+    // and verified for this pc and these operands with no code changed
+    // since: they are read as `bytes_unchanged' reads them, SDATA alone.
+    let mut code = unsafe { vm.program.code.bytes_unchanged() };
     // One pass of the inner loop runs one frame; a call or return that
     // switches frames starts the next pass on the new frame's program.
     loop {
@@ -2590,10 +2656,31 @@ fn run_verified(
                 0o207 => {
                     let value = *slot!(0);
                     drop_values!(1);
+                    let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
+                    if state.bc_frames.len() <= vm.frames_base {
+                        // No caller frame in this activation: the frame is
+                        // the one its entry made (bytecode.c's NULL
+                        // `saved_top').  A handler the frame pushed and
+                        // never popped must not outlive it (GNU's would
+                        // keep a jmp_buf into the dead frame): the full
+                        // return takes it off.
+                        if state.bc_handlers.len() != vm.handlers_base {
+                            // SAFETY: sp lies within the active frame.
+                            state.bc_stack.top = unsafe { sp.offset_from(words) as usize } + 1;
+                            leave!(FastExit::Return(value));
+                        }
+                        // exec_byte_code's `exit:', its return to its C
+                        // caller: `bc->fp = bc->fp->saved_fp', and the value
+                        // in registers.
+                        // SAFETY: the active frame is the one the
+                        // activation's entry made.
+                        unsafe { state.bc_stack.leave_entered_frame() };
+                        return Some(value);
+                    }
                     // SAFETY: sp lies within the active frame.
                     let top = unsafe { sp.offset_from(words) as usize } + 1;
-                    // With no caller frame here (or unwinding to do), the
-                    // return leaves the loop, the top stored as any exit's.
+                    // With unwinding to do, the return leaves the loop, the
+                    // top stored as any exit's.
                     if let Some((resume, top, depth, unchanged)) =
                         return_to_bytecode_frame(vm, top, value)
                     {
@@ -2621,9 +2708,7 @@ fn run_verified(
                         vm.state.pc = resume;
                         break 'run FastExit::Switched(top, depth);
                     }
-                    // exec_byte_code's `return val' to its C caller: the
-                    // value in registers, the top stored above.
-                    return Some(value);
+                    leave!(FastExit::Return(value));
                 }
                 // Bnot.
                 0o077 => {
@@ -4225,10 +4310,12 @@ pub fn execute_closure(
     // The fields as Bcall's frame entry decoded and verified them (see
     // `entry_program'), when its packed list takes the arguments.
     if let Some(program) = super::verify::entry_program(closure) {
-        // SAFETY: nothing runs Lisp or collects before the copy below.
-        let program = unsafe { program.as_ref() };
+        // SAFETY: nothing runs Lisp or collects while the program is read
+        // here, nor before the entry or the copy below reads it.
+        let entry = program;
+        let program = unsafe { entry.as_ref() };
         if program.takes(args.len()) {
-            return run_entered(interp, *program, Value::Closure(closure), args, env);
+            return run_entered(interp, entry, Value::Closure(closure), args, env);
         }
         if let Some(arguments) = program.arguments {
             return run_dynamic(interp, *program, arguments, closure, args, env, false);
@@ -4270,9 +4357,9 @@ pub(crate) fn funcall_closure_in_place(
 ) -> Result<Value, LispError> {
     let entry = super::verify::entry_program(closure);
     match entry {
-        // SAFETY: nothing runs Lisp or collects before the copy.
+        // SAFETY: nothing runs Lisp or collects before the entry reads the
+        // program.
         Some(program) if unsafe { program.as_ref() }.takes(args.len()) => {
-            let program = unsafe { *program.as_ref() };
             run_entered_inline(interp, program, Value::Closure(closure), args, env)
         }
         _ => funcall_closure_otherwise(interp, closure, entry, args, env),
@@ -4348,13 +4435,13 @@ fn run(
 
 /// `run' for a closure whose fields and verification the frame entry
 /// cache holds (`entry_program'), with arguments its packed list takes:
-/// setup_frame's pushes and then the verified loop at once, as
-/// exec_byte_code goes from its prologue to the first op. A return from
-/// the entry frame finishes here; any other exit goes on in `run_loop'.
+/// exec_byte_code called from C, which the verified loop's entry is
+/// (`run_verified').  PROGRAM is what `entry_program' answered for
+/// FUNCTION, with nothing run since.
 #[inline(never)]
 fn run_entered(
     interp: &mut Interpreter,
-    program: super::verify::EntryProgram,
+    program: std::ptr::NonNull<super::verify::EntryProgram>,
     function: Value,
     args: &[Value],
     env: &mut Env,
@@ -4365,43 +4452,171 @@ fn run_entered(
 #[inline(always)]
 fn run_entered_inline(
     interp: &mut Interpreter,
-    program: super::verify::EntryProgram,
+    program: std::ptr::NonNull<super::verify::EntryProgram>,
     function: Value,
     args: &[Value],
     env: &mut Env,
 ) -> Result<Value, LispError> {
-    // The arguments' pushes are inline in the caller's frame, Ffuncall's
-    // for `funcall_closure_in_place', as setup_frame's are in
-    // exec_byte_code.
-    run_entered_with(
+    // The call is inline in the caller's frame, Ffuncall's for
+    // `funcall_closure_in_place', which funcall_general and
+    // funcall_lambda leave for exec_byte_code by tail jumps.
+    let unwinds = interp.specpdl_index();
+    let backtrace = interp.backtrace_frames_len();
+    run_entered_above(interp, program, function, args, env, unwinds, backtrace)
+}
+
+/// exec_byte_code (FUNCTION, ...) for PROGRAM, what `entry_program'
+/// answered for it, current and verified for its entry with nothing
+/// changed since, and ARGS its packed list takes: the verified loop enters
+/// the frame, pushes the arguments and returns the value with the
+/// caller's frame restored.  UNWINDS and BACKTRACE are the lengths of the
+/// specpdl and of the backtrace the activation leaves behind: its
+/// caller's on entry (funcall_lambda's `count' for a dynamic-binding
+/// function, whose formals are bound above it).  GNU does not look at
+/// either on return; here a binding left above UNWINDS (the formals', or
+/// one malformed byte code never undid) is undone, and a record left
+/// above BACKTRACE dropped, before the value is the caller's.  Any other
+/// exit of the loop goes on in `run_unfinished'.
+#[inline(always)]
+fn run_entered_above(
+    interp: &mut Interpreter,
+    program: std::ptr::NonNull<super::verify::EntryProgram>,
+    function: Value,
+    args: &[Value],
+    env: &mut Env,
+    unwinds: usize,
+    backtrace: usize,
+) -> Result<Value, LispError> {
+    // SAFETY: the caller's program, copied before anything runs Lisp: a
+    // later entry of another closure may take its place in the cache.
+    let (mut running, entry_depth) = unsafe {
+        let program = program.as_ref();
+        (Running::entered(program), program.entry_depth)
+    };
+    debug_assert!(
+        running.code.string().code_state() == crate::lisp::alloc::CodeState::Current
+            && running
+                .verified
+                .is_some_and(|verified| verified.admits(0, entry_depth))
+    );
+    // Where the activation's suspended frames and handlers begin: the
+    // loop's Breturn tells its entry frame by the first, and a handler
+    // left above the second must not outlive the frame.
+    let frames_base = interp.bc_frames.len();
+    let handlers_base = interp.bc_handlers.len();
+    let mut state = LoopState {
+        pc: 0,
+        op_error_frames: 0,
+        quitcounter: 1,
+    };
+    let mut left = std::mem::MaybeUninit::uninit();
+    let mut vm = VmFrames {
         interp,
-        program,
-        function,
         env,
-        false,
-        #[inline(always)]
-        |interp, _| {
-            // SAFETY: the caller's `takes' admits at most the list's
-            // ENTRY_DEPTH arguments, which `entry_program' gives only a
-            // program whose STACK_DEPTH holds them, and `enter_frame' has
-            // just put the frame's footer that depth above its first slot.
-            unsafe {
-                interp
-                    .bc_stack
-                    .push_arguments_within(args, program.entry_depth)
-            };
-            Ok(())
-        },
-    )
+        program: &mut running,
+        frames_base,
+        handlers_base,
+        state: &mut state,
+        trace_errors: trace_load_errors(),
+    };
+    if let Some(value) = run_verified(&mut left, &mut vm, Some(program), function, args) {
+        // exec_byte_code returned: the caller's frame is the active one
+        // and nothing of the activation is on the frames' or the
+        // handlers' lists.
+        if vm.interp.specpdl_index() == unwinds && vm.interp.backtrace_frames_len() == backtrace {
+            return Ok(value);
+        }
+        return finish_returned(vm.interp, vm.env, value, unwinds, backtrace);
+    }
+    let activation = Activation {
+        program: running,
+        pc: state.pc,
+        frames_base,
+        handlers_base,
+        op_error_frames: state.op_error_frames,
+        quitcounter: state.quitcounter,
+    };
+    // SAFETY: the loop answered None, having written its exit.
+    let exit = unsafe { left.assume_init() };
+    run_unfinished(interp, env, activation, exit, unwinds, backtrace)
+}
+
+/// The end of an activation whose entry frame returned VALUE (the
+/// caller's frame is restored) with entries above UNWINDS on the specpdl
+/// or records above BACKTRACE: funcall_lambda's `unbind_to (count, val)'
+/// of a dynamic-binding function's formals, and the same for what
+/// malformed byte code left (see `run_entered_above').
+#[cold]
+#[inline(never)]
+fn finish_returned(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    value: Value,
+    unwinds: usize,
+    backtrace: usize,
+) -> Result<Value, LispError> {
+    let marks = EntryMarks {
+        unwinds,
+        backtrace,
+        ..EntryMarks::of(interp)
+    };
+    finish_activation(interp, env, Ok(value), marks)
+}
+
+/// The rest of an activation the verified loop left by EXIT before its
+/// entry frame returned a value: the dispatch loop from ACTIVATION's
+/// state, then the activation's end (`finish_activation'), back to
+/// UNWINDS on the specpdl and BACKTRACE on the backtrace.  With no room
+/// for the entry's frame nothing was entered, and the signal is
+/// exec_byte_code's.
+#[cold]
+#[inline(never)]
+fn run_unfinished(
+    interp: &mut Interpreter,
+    env: &mut Env,
+    activation: Activation,
+    exit: FastExit,
+    unwinds: usize,
+    backtrace: usize,
+) -> Result<Value, LispError> {
+    let exit = match exit {
+        FastExit::Overflow => return Err(stack_overflow()),
+        FastExit::Resume => None,
+        exit => Some(exit),
+    };
+    let (suspended, handlers) = (activation.frames_base, activation.handlers_base);
+    let result = run_loop(interp, env, activation, exit);
+    // A value is the entry frame's, left as it returned; a signal left
+    // the activation's remaining frames, whose entry's header names the
+    // caller's.  The stack goes back to it after the unwinding, as the
+    // catcher's frame does in unwind_to_catch.
+    let stack = if result.is_ok() {
+        EntryMarks::of(interp).stack
+    } else {
+        interp.bc_stack.below_activation()
+    };
+    let marks = EntryMarks {
+        stack,
+        unwinds,
+        backtrace,
+        suspended,
+        handlers,
+    };
+    finish_activation(interp, env, result, marks)
 }
 
 /// funcall_lambda for a dynamic-binding byte-code function whose fields
 /// and verification the frame entry cache holds: the formal ARGUMENTS
-/// bound (`bind_dynamic_arguments') and the code run with an empty frame,
-/// as `exec_byte_code (fun, 0, 0, NULL)'; the activation's exit is the
+/// bound (`bind_dynamic_arguments'), then the code run with no
+/// arguments, as `exec_byte_code (fun, 0, 0, NULL)', which enters the
+/// frame after the bindings are made; the activation's exit is the
 /// unbind_to of the bindings.  With LEXENV, funcall_lambda's, the
 /// environment is bound to the function's nil lexenv after the formals
 /// (`bind_nil_environment'); Fbyte_code's exec_byte_code binds none.
+/// Binding can run Lisp (a variable watcher of a formal), which may store
+/// into the code string: the code is tested again after it, and runs in
+/// the verified loop only if it is still current and verified for its
+/// entry.
 #[inline(never)]
 fn run_dynamic(
     interp: &mut Interpreter,
@@ -4413,135 +4628,38 @@ fn run_dynamic(
     lexenv: bool,
 ) -> Result<Value, LispError> {
     let function = Value::Closure(closure);
-    run_entered_with(interp, program, function, env, true, |interp, env| {
-        bind_dynamic_arguments(interp, function, arguments, args, env)?;
-        if lexenv {
-            interp.bind_nil_environment(env);
-        }
-        Ok(())
-    })
-}
-
-/// `run_entered' with the frame's first slots set up by SETUP (the
-/// arguments pushed, or bound dynamically) in the entered frame.
-/// SETUP_RUNS_LISP says whether SETUP can run Lisp (a variable watcher of
-/// a bound argument), which may store into the code string: the code is
-/// then tested again, where otherwise it is as `entry_program' found it,
-/// current and verified with the entry's operands, and the verified loop
-/// takes it as its own call does (`enter_closure_frame').
-#[inline(always)]
-fn run_entered_with(
-    interp: &mut Interpreter,
-    program: super::verify::EntryProgram,
-    function: Value,
-    env: &mut Env,
-    setup_runs_lisp: bool,
-    setup: impl FnOnce(&mut Interpreter, &mut Env) -> Result<(), LispError>,
-) -> Result<Value, LispError> {
-    let entry_depth = program.entry_depth;
-    interp.bc_stack.ensure_allocated();
     let marks = EntryMarks::of(interp);
-    let (frames_base, handlers_base) = (marks.suspended, marks.handlers);
-    let result = 'entry: {
-        if let Err(error) = interp
-            .bc_stack
-            .enter_frame(program.stack_depth, function, 0)
-        {
-            break 'entry Err(error);
-        }
-        if let Err(error) = setup(interp, env) {
-            break 'entry Err(error);
-        }
-        let mut program = Running::entered(&program);
-        let mut state = LoopState {
-            pc: 0,
-            op_error_frames: 0,
-            quitcounter: 1,
-        };
-        // SAFETY: as in `run_loop': the verified loop runs no Lisp, collects
-        // nothing and stores into no string while it reads the bytes.  When
-        // SETUP ran no Lisp, nothing has run since `entry_program' found
-        // them current with no code changed (its `code_changes' test), and
-        // they are read as `bytes_unchanged' reads them, SDATA alone; their
-        // state is then read only by the assertion below.
-        let (code, current) = if setup_runs_lisp {
-            unsafe { program.code.bytes_unguarded() }
-        } else {
-            (
-                unsafe { program.code.bytes_unchanged() },
-                program.code.string().code_state() == crate::lisp::alloc::CodeState::Current,
-            )
-        };
-        let admitted = || {
-            current
-                && program
-                    .verified
-                    .is_some_and(|verified| verified.admits(0, entry_depth))
-        };
-        debug_assert!(setup_runs_lisp || admitted());
-        let exit = if !setup_runs_lisp || admitted() {
-            let words = interp.bc_stack.words.as_mut_ptr().cast::<Value>();
-            let top = interp.bc_stack.top;
-            let mut left = std::mem::MaybeUninit::uninit();
-            let returned = run_verified(
-                &mut left,
-                &mut VmFrames {
-                    interp,
-                    env,
-                    program: &mut program,
-                    frames_base,
-                    handlers_base,
-                    state: &mut state,
-                    trace_errors: trace_load_errors(),
-                },
-                code,
-                words,
-                top,
-            );
-            match returned {
-                Some(value)
-                    if interp.bc_frames.len() == frames_base
-                        && interp.bc_handlers.len() == handlers_base =>
-                {
-                    // Nothing recorded above the entry's marks: only the
-                    // caller's frame to restore, as exec_byte_code's return
-                    // to its caller restores bc->fp.
-                    if interp.backtrace_frames_len() == marks.backtrace
-                        && interp.specpdl_index() == marks.unwinds
-                    {
-                        let state: &mut crate::lisp::eval::InterpreterState = interp;
-                        (
-                            state.bc_stack.frame,
-                            state.bc_stack.base,
-                            state.bc_stack.top,
-                        ) = marks.stack;
-                        return Ok(value);
-                    }
-                    break 'entry Ok(value);
-                }
-                Some(value) => Some(FastExit::Return(value)),
-                // SAFETY: the loop answered None, having written its exit.
-                None => match unsafe { left.assume_init() } {
-                    FastExit::Resume => None,
-                    exit => Some(exit),
-                },
-            }
-        } else {
-            None
-        };
-        run_loop(
+    if let Err(error) = bind_dynamic_arguments(interp, function, arguments, args, env) {
+        return finish_activation(interp, env, Err(error), marks);
+    }
+    if lexenv {
+        interp.bind_nil_environment(env);
+    }
+    // SAFETY: only the string's state is read.
+    let (_, current) = unsafe { program.code.bytes_unguarded() };
+    if current && program.verified.admits(0, program.entry_depth) {
+        return run_entered_above(
+            interp,
+            std::ptr::NonNull::from(&program),
+            function,
+            &[],
+            env,
+            marks.unwinds,
+            marks.backtrace,
+        );
+    }
+    interp.bc_stack.ensure_allocated();
+    let result = match interp
+        .bc_stack
+        .enter_frame(program.stack_depth, function, 0)
+    {
+        Ok(()) => run_loop(
             interp,
             env,
-            Activation {
-                program,
-                pc: state.pc,
-                frames_base,
-                handlers_base,
-                op_error_frames: state.op_error_frames,
-                quitcounter: state.quitcounter,
-            },
-            exit,
-        )
+            Activation::new(Running::entered(&program), marks.suspended, marks.handlers),
+            None,
+        ),
+        Err(error) => Err(error),
     };
     finish_activation(interp, env, result, marks)
 }
@@ -4743,6 +4861,17 @@ fn run_frames(
     env: &mut Env,
     lexenv: bool,
 ) -> Result<Value, LispError> {
+    // Old-style dynamic bytecode: funcall_lambda specbinds each formal
+    // (honoring &optional/&rest) and then calls exec_byte_code with no
+    // arguments, which enters the frame: the formals are bound when a
+    // frame that does not fit signals.  The exit balance in `run' is
+    // GNU's unbind_to.
+    if let ArgSpec::Legacy(arglist) = &program.argspec {
+        bind_dynamic_arguments(interp, function, *arglist, args, env)?;
+        if lexenv {
+            interp.bind_nil_environment(env);
+        }
+    }
     interp.bc_stack.enter_frame(
         program.stack_depth,
         if function.is_nil() {
@@ -4782,15 +4911,8 @@ fn run_frames(
                 }
             }
         }
-        // Old-style dynamic bytecode: funcall_lambda specbinds each
-        // formal (honoring &optional/&rest) and runs the body with an
-        // empty stack; the exit balance below is GNU's unbind_to.
-        ArgSpec::Legacy(arglist) => {
-            bind_dynamic_arguments(interp, function, *arglist, args, env)?;
-            if lexenv {
-                interp.bind_nil_environment(env);
-            }
-        }
+        // The body runs with an empty stack.
+        ArgSpec::Legacy(_) => {}
     }
     // The verifier's result for this code lets the fast loop run it
     // without per-op checks.
@@ -4853,7 +4975,10 @@ impl Activation {
 
 /// exec_byte_code's loop for an activation whose frame and arguments are
 /// in place, from ACTIVATION's state; ENTRY_EXIT is an exit the verified
-/// loop took before this began, which the loop takes up first.
+/// loop took before this began, which the loop takes up first.  A value
+/// is the entry frame's, which is left by then; after a signal the
+/// frames it did not leave are still on the stack, the entry's among
+/// them.
 #[inline(never)]
 fn run_loop(
     interp: &mut Interpreter,
@@ -4912,8 +5037,9 @@ fn run_loop(
     }
 
     // Breturn: with a frame below, the value replaces the callee's slot
-    // and the caller's program and state.pc resume; at the entry frame it
-    // leaves the activation.
+    // and the caller's program and pc resume; at the entry frame it
+    // leaves that frame and the activation, as exec_byte_code's `exit:'
+    // (and the verified loop's return of a value) does.
     macro_rules! breturn {
         ($value:expr) => {{
             let value = $value;
@@ -4958,7 +5084,10 @@ fn run_loop(
                     push!(value);
                     continue;
                 }
-                None => return Ok(value),
+                None => {
+                    interp.bc_stack.leave_frame();
+                    return Ok(value);
+                }
             }
         }};
     }
@@ -4983,8 +5112,6 @@ fn run_loop(
                         .is_some_and(|verified| verified.admits(state.pc, interp.bc_stack.len()));
                 let exit = match program.verified {
                     Some(_) if verified_run => {
-                        let words = interp.bc_stack.words.as_mut_ptr().cast::<Value>();
-                        let top = interp.bc_stack.top;
                         let mut left = std::mem::MaybeUninit::uninit();
                         let returned = run_verified(
                             &mut left,
@@ -4997,12 +5124,13 @@ fn run_loop(
                                 state: &mut state,
                                 trace_errors,
                             },
-                            code,
-                            words,
-                            top,
+                            None,
+                            Value::Nil,
+                            &[],
                         );
                         match returned {
-                            Some(value) => FastExit::Return(value),
+                            // The entry frame returned and is left.
+                            Some(value) => return Ok(value),
                             // SAFETY: the loop answered None, having
                             // written its exit.
                             None => unsafe { left.assume_init() },
@@ -5072,8 +5200,11 @@ fn run_loop(
                     last_instruction = Some(instr);
                     return Err(error);
                 }
-                FastExit::Resume | FastExit::Switched(..) | FastExit::Continued(_) => {
-                    unreachable!("a frame switch resumes above")
+                FastExit::Resume
+                | FastExit::Switched(..)
+                | FastExit::Continued(_)
+                | FastExit::Overflow => {
+                    unreachable!("a frame switch resumes above, and the frame is entered")
                 }
             };
             last_instruction = Some(instr);
