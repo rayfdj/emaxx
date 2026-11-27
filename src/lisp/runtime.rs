@@ -843,7 +843,7 @@ mod tests {
     }
 
     /// This thread's newest cons: its cell, the cell its frontier gives
-    /// next, the live conses and the collections begun.
+    /// next, the live conses and the collections done.
     fn cons_here() -> (usize, Option<usize>, usize, u32) {
         let cell = Value::cons(Value::Nil, Value::Nil);
         let Kind::Cons(cell) = cell.kind() else {
@@ -853,7 +853,7 @@ mod tests {
             cell.as_ptr() as usize,
             crate::lisp::alloc::next_cons_cell(),
             crate::lisp::alloc::live_conses(),
-            crate::lisp::types::collections_begun(),
+            crate::lisp::types::gcs_done(),
         )
     }
 

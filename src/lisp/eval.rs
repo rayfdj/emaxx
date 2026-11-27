@@ -7458,8 +7458,9 @@ pub(crate) struct HandlerSearch {
     error: usize,
     condition: usize,
     generation: u64,
-    /// The collections begun when the search was made: a collection since
-    /// may have freed the condition's symbol and made another in its cell.
+    /// The collections done when the search was made (`gcs_done'): a
+    /// collection since may have freed the condition's symbol and made
+    /// another in its cell.
     collections: u32,
     /// The innermost module boundary or matching entry; the search stops
     /// at the innermost matching `condition-case'.

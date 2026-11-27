@@ -277,12 +277,12 @@ fn a_collection_is_counted_when_it_ends() {
         let _runtime = crate::Runtime::lock();
         let mut interp = Interpreter::new();
         let mut env = Env::new();
-        let before = crate::lisp::types::collections_begun();
+        let before = crate::lisp::types::gcs_done();
         crate::lisp::types::begin_mark_phase();
-        let begun = crate::lisp::types::collections_begun();
+        let begun = crate::lisp::types::gcs_done();
         crate::test_support::eval_lisp(&mut interp, &mut env, "(garbage-collect)")
             .expect("a collection");
-        (before, begun, crate::lisp::types::collections_begun())
+        (before, begun, crate::lisp::types::gcs_done())
     };
     assert_eq!(begun, before, "the mark phase's start counts nothing");
     assert_eq!(done, before + 1, "a collection is counted once, at its end");

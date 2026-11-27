@@ -68,16 +68,23 @@ impl Hasher for IdentityHasher {
 
 pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
 
-/// The collections begun in the process, as alloc.c's `gcs_done' counts
-/// the ones done: a count, the process's as alloc.c's is.  No object
-/// carries it, and nothing reads it while a collection runs.
-static GC_MARK_EPOCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// alloc.c's `gcs_done': the collections done in the process, a count
+/// that no object carries, raised when a collection's sweeps are done.
+static GCS_DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// The collections begun so far: two reads agree when no collection
-/// began between them.
+/// alloc.c's `gcs_done': two reads agree when no collection ended between
+/// them.
 #[inline]
-pub(crate) fn collections_begun() -> u32 {
-    GC_MARK_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
+pub(crate) fn gcs_done() -> u32 {
+    GCS_DONE.load(std::sync::atomic::Ordering::Relaxed)
+}
+
+/// alloc.c:garbage_collect's `gcs_done++', which follows gc_sweep.
+pub(crate) fn count_collection_done() {
+    GCS_DONE.store(
+        gcs_done().wrapping_add(1),
+        std::sync::atomic::Ordering::Relaxed,
+    );
 }
 
 /// Between a mark phase and the end of its sweeps (a checked build's
@@ -90,16 +97,12 @@ pub(crate) fn set_sweep_pending(pending: bool) {
     GC_SWEEP_PENDING.store(pending, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// A collection's mark phase begins: the collection is counted, and no
-/// object of the heap is marked, as the last one's sweeps left them.
+/// A collection's mark phase begins: no object of the heap is marked, as
+/// the last collection's sweeps left them.
 pub(crate) fn begin_mark_phase() {
     debug_assert!(
         !GC_SWEEP_PENDING.load(std::sync::atomic::Ordering::Relaxed),
         "a mark phase began while the previous one's sweep is pending"
-    );
-    GC_MARK_EPOCH.store(
-        collections_begun().wrapping_add(1),
-        std::sync::atomic::Ordering::Relaxed,
     );
     crate::lisp::alloc::begin_image_marks();
 }

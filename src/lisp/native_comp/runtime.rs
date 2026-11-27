@@ -6637,7 +6637,12 @@ impl NativeHeap {
         crate::lisp::alloc::clear_dump_marks();
         crate::lisp::types::set_sweep_pending(false);
         interpreter.note_sweeps_free_counts(free_strings, free_vector_slots);
-        // The collection is complete.
+        // The collection is complete, and counted: alloc.c's `gcs_done++',
+        // which follows gc_sweep.  Before any Lisp runs again (alloc.c
+        // counts after run_finalizers, and nothing of its reads the count
+        // in between): the handlers' memo reads it to learn that no sweep
+        // has freed the symbol it names.
+        crate::lisp::types::count_collection_done();
         std::mem::forget(underway);
     }
 
@@ -11794,7 +11799,7 @@ mod tests {
         // The collector is inactive between native calls.  Give it a real
         // call/stack boundary and prove it swept an unreachable allocation;
         // simply calling begin_garbage_collection here was a no-op.
-        let collections_before = crate::lisp::types::collections_begun();
+        let collections_before = crate::lisp::types::gcs_done();
         runtime.heap.begin_call();
         let stack_marker = 0;
         runtime
@@ -11811,7 +11816,7 @@ mod tests {
         );
         assert!(!hidden_cons_is_live(&runtime.heap, unreachable));
         assert_ne!(
-            crate::lisp::types::collections_begun(),
+            crate::lisp::types::gcs_done(),
             collections_before,
             "collection must run the shared marker"
         );
@@ -17648,7 +17653,7 @@ mod tests {
             environment: &Env,
             stack_marker: *const NativeWord,
         ) {
-            let collections = crate::lisp::types::collections_begun();
+            let collections = crate::lisp::types::gcs_done();
             let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
                 heap.collect(stack_marker, &[], interpreter, environment);
             }));
@@ -17658,9 +17663,13 @@ mod tests {
                 Some(&"cannot collect while a string is mutably borrowed")
             );
             assert_eq!(
-                crate::lisp::types::collections_begun(),
+                crate::lisp::types::gcs_done(),
                 collections,
-                "rejected before the collection begins"
+                "no collection was done"
+            );
+            assert!(
+                crate::lisp::alloc::every_mark_bit_clear(),
+                "rejected before the collection begins: nothing is marked"
             );
         }
 

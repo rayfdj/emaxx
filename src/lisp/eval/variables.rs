@@ -3829,7 +3829,7 @@ impl Interpreter {
         let error_symbol = error.condition_symbol();
         let identity = error.identity();
         let condition = error_symbol.identity_ptr();
-        let collections = crate::lisp::types::collections_begun();
+        let collections = crate::lisp::types::gcs_done();
         let depth = self.active_handlers.len();
         if let Some(memo) = self.handler_search_memo
             && memo.error == identity
