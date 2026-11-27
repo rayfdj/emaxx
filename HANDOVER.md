@@ -277,6 +277,9 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   from C enters its own frame, as exec_byte_code does; a `mapc'
   callback 331.7 against 288.9, a closure called by `mapatoms' 451.3,
   under GNU's 458.6 again.
+  Round 405: the trace latch read where an error is traced and
+  Ffuncall's exit taking the record its callee just tested; a `mapc'
+  callback 315.7 against 288.9.
 
 ## Where things stand — 15 October 2026
 
@@ -22069,6 +22072,75 @@ setup_process_coding_systems's check now refuses). A 13-form
   changed assertion are each converted (a string's purity read from
   its origin byte, two bounds read through the length) or gone with
   the skip of the rebuilt blocks that they guarded.
+- **Round 405: the trace latch read only where an error is traced, and
+  Ffuncall's exit takes the record its callee's return just tested (M2,
+  D17, the plan of the call paths; none closed).**  **The latch**: the
+  diagnostic trace of byte-code errors (EMAXX_TRACE_LOAD_ERRORS) was
+  read at each entry of the byte-code loop and on each plain call from
+  byte code; it is now read only on the paths that trace an error, and
+  the plain arms report an error as the failed call operation, as the
+  full arm does.  **The exit**: GNU's Ffuncall pops its backtrace record
+  after funcall_lambda returns, with no second test of its place.  Here
+  the byte-code call from Rust tested the backtrace's length on its fast
+  return and then popped the record with a second bounds test; the
+  activation now hands its fast return and its other ends to the caller
+  apart, so the fast return pops the record it has just tested without
+  testing again, and every other end (a signal, a throw, a quit, a
+  record marked for the debugger, a value returned with bindings or
+  records left, a dynamic-binding callee, a `&rest' one, a closure the
+  entry table does not hold) leaves as before, inline.  A first form of
+  that split sent those other ends through an out-of-line exit, and the
+  review measured them dearer (a dynamic-binding `mapc' callback 903.5
+  to 931.5, a `&rest' one 1,112.0 to 1,140.2); the form landed keeps
+  their inline exit, behind a small trait whose methods are forced
+  inline, and the two shapes are guard probes from this round on.
+  **Counts** (before = round 403's build, instructions a call): a
+  byte-compiled `mapc' callback 331.7 to 315.7 (GNU 288.9), of
+  `mapatoms' 332.4 to 316.4 (298.9), of `maphash' 333.9 to 317.9
+  (291.1), a closure called by `mapatoms' 451.3 to 435.3 (458.6), native
+  `funcall' of byte code 444.1 to 433.1 (316.0), byte code to a subr
+  345.7 to 337.6 (339.0), `process-name' 395.6 to 387.6 (371.0), byte
+  code to native 326.6 to 324.6 (337.0); a dynamic-binding `mapc'
+  callback 910.7 to 903.7 (871.9) and a `&rest' one 1,035.2 to 1,019.2
+  (889.7) at the new probes' counts.  The guards did not move but one,
+  `mapc' of a subr, 193.7 to 195.7, one instruction more besides
+  alignment.  Three forms were tried and dropped: the trace read inside
+  the plain arms (it kept a value alive across the closure arm: the
+  lexical recursion 10 more), the two results merged (native `funcall' 5
+  more), and the frame's room test as one checked add (no gain).  **What
+  is left** of the `mapc' callback's 26.8: the record the loop's helpers
+  take, built by the caller and unpacked at the loop's head, about 45,
+  which GNU keeps as exec_byte_code's locals; the frame's room test, 8
+  instructions against 1 or 2; the profiler's tests at the record's push
+  and pop, about 6; the fast return's tests of the specpdl and the
+  backtrace, about 6; and the map loop's extra parameters, about 5;
+  against which the one function doing the work of GNU's three saves
+  about 37.  **Lisp sees nothing change.**  **The independent reviews**
+  (the one question: does the round cheat or break something) found both
+  steps correct: the record popped without the test is always the one
+  just tested, built in one place right after the length test, and every
+  other end reaches the checked path; 69 programs ending in every way a
+  call can end (values, signals, throws, quits through `quit-flag', the
+  debugger at exit with records marked and unmarked and marked inside a
+  thread, `debug-on-next-call', thread switches, nested activations,
+  collections, the depth limit, a callback that redefines itself, both
+  profilers), from `mapc', `mapcar', `maphash', `mapatoms', `apply',
+  `funcall', `sort', the hooks, `mapconcat', a timer, a process filter
+  and sentinel, `signal-hook-function' and `handler-bind', gave GNU's
+  answers, with and without the collector's verifier and with the trace
+  on.  The first review found the dearer ends; the second found them
+  back at their cost and the rest unchanged.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,715 passed, 0 failed, 2 ignored; cli
+  30, cli_parity 196, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 4, package_lifecycle 5,
+  runtime_ownership 7 and runtime_forgotten_handle 1; the doctests,
+  three passing and three that must fail to compile; the harness's
+  own tests 59; clippy `-D warnings' and rustfmt clean.  The
+  implementer's run of the library at one test thread and at four:
+  every group passed.  The round audit reports no hard finding, 252
+  changed lines with 1 assertion added; its one note is a line of a
+  comment that names the oracle, rewrapped and not changed.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -25832,6 +25904,18 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 405 and its reviews), within the
+  plan's later stages or outside the round.**  One line each:
+  `(byte-compile (lambda () (funcall 'car 1 2)))' makes code of stack
+  depth 0 that ends the process with "validated bytecode never
+  underflows" and loses its buffered output, where GNU returns nil; byte
+  code whose declared depth is too small for its own pushes aborts the
+  process from a function that cannot unwind; lexical `&rest' callbacks
+  from C run in the unverified loop, about 1,130 instructions against
+  GNU's 885; the trace of an error a full call makes ("bytecode call ...
+  failed") is reached by no input found, its kind being GNU's signal by
+  then; the trace prints a subr as `#<builtin car>' where GNU prints
+  `#<subr car>'.
 - **Found after the scope lock (round 404 and its review), within the
   plan's later stages or outside the round.**  One line each: `gcs-done'
   is 1 at the start of a batch session in GNU and 0 here;
