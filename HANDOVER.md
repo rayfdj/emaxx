@@ -252,6 +252,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   runs while a quit is handled, as eval.c; four native helpers keep
   no local reference across a call into Lisp; the references passed
   as arguments along the native call path are the next round's.
+  Round 406: the plain and nested native paths hold no reference the
+  aliasing rules forbid (a model of them passes both of Rust's
+  models), and round 401's assertion states the real condition, so
+  the library passes at four test threads again.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -22141,6 +22145,97 @@ setup_process_coding_systems's check now refuses). A 13-form
   every group passed.  The round audit reports no hard finding, 252
   changed lines with 1 assertion added; its one note is a line of a
   comment that names the oracle, rewrapped and not changed.
+- **Round 406: the native call path holds no reference Rust's aliasing
+  rules forbid on its plain and nested paths, and a collection's view of
+  another state asserts the real condition (M2, A2.5, the first round of
+  the native call's context; none closed).**  **The rules**: a Rust
+  reference to memory is invalidated by an access through another path,
+  and a function's `&mut' argument is protected for the whole call;
+  GNU's C reaches the interpreter through current_thread and the C
+  globals by plain pointers and has no such rule.  The design
+  (/home/user/emaxx-work/m2/aliasing/a2-design.md, the working copy)
+  found the native call path undefined under both of Rust's models on
+  ordinary paths, not only at a thread switch: the record of an active
+  native call was made from references that were used again after it,
+  the heap's and the collector's pointers were made through the shared
+  native state's Box, which every later access and a thread switch
+  re-made, `invoke_nested' wrote through its `&mut self' before a callee
+  read the same memory, and a nested call's helpers made their
+  references from the outer call's record.  **Now**: the shared native
+  state is owned by its allocation's raw pointer, as the editor state
+  already was, one generic owner for both; a call's pointers are made
+  once, from the caller's own reference, which is not used again until
+  the call returns; a native call nested in another stores its own
+  interpreter's pointer in the record and puts the outer one back on
+  every exit, the escape included, which is the one cost (the
+  requirement is named S-DERIVED in the code: a load, a save, a store, a
+  reload and a store back where the nested call is made, 5
+  instructions); the plain funcall's arms and the nested entry pass raw
+  pointers, not references, across the callee, and the exit debugger
+  takes the three pointers and makes its reference after the debugger.
+  **A model**: a model of these shapes outside the tree
+  (/home/user/emaxx-work/m2/aliasing/model/, 147 lines) was run under
+  Miri with Stacked Borrows and Tree Borrows, on a nightly toolchain
+  used for that run only: today's shape was reported undefined in all
+  six findings under the first and five of six under the second, and the
+  design passed all twelve.  A model checks the reading of the rules,
+  not the code, and it leaves out the environment, the collection
+  trampoline, the thread driver's writes and the non-local exit.  **The
+  assertion of round 401 corrected**: it took a viewed state's
+  evaluation depth of 0 to mean that interpreter runs no Lisp, and three
+  groups of the library aborted on it at four test threads: interpreters
+  on other OS threads waiting in the middle of their Lisp for a test's
+  permit, with the runtime given back.  It now asserts the hazard
+  itself, that every native call active on this thread is the collecting
+  interpreter's, through a link from each call's record to the one it
+  nests in (the link the record's guard held before).  Two tests fail on
+  the old condition: a collection viewing an interpreter that waits
+  mid-evaluation on another thread, and the hazard built in a child
+  process, which stops at the new assertion.  The library passes whole
+  at four test threads again, twice.  **Counts** (before = round 401's
+  code, instructions): native `funcall' 458.2 to 453.1 (GNU 316.0),
+  native `apply' 717.2 to 712.1 (545.0), an element of native `mapcar'
+  597.1 to 591.6 (550.5), byte-code calls 443.6 to 440.6, the lexical
+  recursion 359.1 to 356.1, a `mapc' callback 351.7 to 350.7; byte code
+  to native 328.6 to 334.6 (337.0) and interpreted code to native
+  1,968.0 to 1,973.0 (1,801.0), five of each the requirement's.  **Lisp
+  sees nothing change.**  **The independent review** (the one question:
+  does the round cheat or break something) found the seven commits
+  clean: with gdb on the parked stacks of the fixtures, the converted
+  frames are there (the plain arms, the byte-code arm, the nested
+  entries from byte code and from the evaluator, the exit debugger);
+  nine programs of native, interpreted and byte-compiled calls nested up
+  to six deep, with yields at each level on four threads, errors, throws
+  and quits through the nestings, the exit debugger for each kind of
+  callee and collections with a `post-gc-hook' that yields gave the same
+  output as the build before and as GNU but for a count of collections
+  that differed from GNU before as after; it rebuilt the old condition
+  and saw both new tests fail; and its numbers are those above.  It
+  found two places the design had not listed, both the next round's: a
+  collection that starts from the evaluator or the byte-code loop under
+  an active native call makes its references from the outer record while
+  evaluator frames hold protected references (undefined in the first
+  model at once and in the second at a thread switch in `post-gc-hook'),
+  and the thread's pointer handed to generated code is ended by later
+  writes through its Box before generated code reads it.
+  Validation of the round's commits, recreated on round 405 (gate
+  profile, one test thread a process): the last commit's change to
+  eval.rs was merged by hand, the collector's new argument kept with
+  round 404's calls that take no epoch, and one doc line it brought,
+  past the column limit, rewrapped; nothing else differs from the
+  reviewed commits.  The grouped gate 3,717 passed, 0 failed, 2 ignored;
+  cli 30, cli_parity 196, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 4, package_lifecycle 5, runtime_ownership
+  7 and runtime_forgotten_handle 1; the doctests, three passing and
+  three that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementer's run of the library
+  at one test thread and at four, twice: every group passed.  The round
+  audit reports no hard finding, 1,015 changed lines with 2 tests and 15
+  assertions added; its notes are three assertions rewritten with the
+  same or a stronger condition (round 401's, which now states that every
+  native call active on the thread is the collector's, and two in tests
+  that read the interpreter through the record's pointer) and one
+  process spawned, the new test's child.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -25918,6 +26013,21 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 406 and its review), within the
+  plan's later stages or outside the round.**  One line each, the next
+  round's first: the collection trampoline (`maybe_gc' from the
+  evaluator and the byte-code loop under an active native call) makes
+  `&mut' references from the outer call's record while evaluator frames
+  hold protected references derived from the same memory; the thread
+  pointer published to generated code at a call's start is ended by the
+  next write through the thread's Box (a handler's push, a non-local
+  exit's preparation); the interpreter half of the nested entry's
+  put-back assertion compares addresses, which every pointer to the one
+  interpreter shares, so it cannot fail; the new assertion would not see
+  a second interpreter evaluating interpreted code on this thread with
+  no native call between, which only test code could do; the trampolines
+  for suspension and collection carry no unwinding information, so
+  debuggers' backtraces through them are guesses.
 - **Found after the scope lock (round 405 and its reviews), within the
   plan's later stages or outside the round.**  One line each:
   `(byte-compile (lambda () (funcall 'car 1 2)))' makes code of stack
