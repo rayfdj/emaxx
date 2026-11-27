@@ -2229,13 +2229,31 @@ impl Value {
     #[inline]
     pub(crate) fn symbol_name_by_tag(&self) -> Option<&str> {
         if self.0 & TAG_MASK == TAG_SYMBOL && !matches!(self.0, 0 | 48 | 96) {
-            // SAFETY: a symbol-tagged word names a symbol cell; symbol
-            // cells are swept after the vectors and the conses. Its host
+            // SAFETY: a symbol-tagged word names a symbol cell. Its host
             // key, once written, is immutable and the borrow cannot
             // outlive this handle.  A pending key is built from the name,
-            // a string, and strings are swept after the symbols.
+            // a string: not for a sweep, which reads
+            // `built_symbol_key_by_tag'.
             let cell = unsafe { &*(self.0 as *const crate::lisp::alloc::SymbolCell) };
             Some(host_text(cell))
+        } else {
+            None
+        }
+    }
+
+    /// The key of the symbol a word names when its tag is the symbol tag
+    /// and the key is already built, read from the word and the cell's
+    /// key alone.  Nothing of the symbol's name, a string, is read and no
+    /// key is built, so the vector sweep may ask it of a dead record's
+    /// field whatever the strings' sweep has freed.
+    #[inline]
+    pub(crate) fn built_symbol_key_by_tag(&self) -> Option<&str> {
+        if self.0 & TAG_MASK == TAG_SYMBOL && !matches!(self.0, 0 | 48 | 96) {
+            // SAFETY: a symbol-tagged word names a symbol cell, and symbol
+            // cells are swept after the vectors.  A key, once written, is
+            // immutable and the borrow cannot outlive this handle.
+            let cell = unsafe { &*(self.0 as *const crate::lisp::alloc::SymbolCell) };
+            cell.internal.get()
         } else {
             None
         }

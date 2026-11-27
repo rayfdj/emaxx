@@ -492,8 +492,9 @@ fn all_buffers() -> std::sync::MutexGuard<'static, BufferHeaders> {
         .unwrap_or_else(std::sync::PoisonError::into_inner)
 }
 
-/// A record the sweep freed: whose id space, which id, and the symbol
-/// its type tag named (the type index's key), read before the drop.
+/// A record the sweep freed: whose id space, which id, and the key of
+/// the symbol its type tag named (the type index's key) when that key
+/// was built, read before the drop.
 pub(crate) struct FreedRecord {
     pub(crate) owner: u32,
     pub(crate) id: u64,
@@ -1639,7 +1640,7 @@ unsafe fn cleanup_vector(header: *mut VectorHeader) {
                     owner: (*record).owner,
                     id: (*record).id,
                     identity: header as usize,
-                    type_name: (*record).symbol_type_name_by_tag().map(Box::from),
+                    type_name: (*record).built_symbol_type_name_by_tag().map(Box::from),
                 });
                 std::ptr::drop_in_place(record);
             }

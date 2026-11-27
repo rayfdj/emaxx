@@ -1462,9 +1462,12 @@ impl RecordState {
 
     /// `symbol_type_name' for the sweep, which must not read the type
     /// tag's object: a dead record's type may be a class record the same
-    /// sweep has already freed.  The word's tag alone decides.
-    pub(crate) fn symbol_type_name_by_tag(&self) -> Option<&str> {
-        self.type_tag.symbol_name_by_tag()
+    /// sweep has already freed.  The word's tag alone decides, and the
+    /// name is the symbol's key as it stands: the registry files an id
+    /// under a key it had built, and a key not yet built would be made
+    /// from the symbol's name, a string, which a sweep must not read.
+    pub(crate) fn built_symbol_type_name_by_tag(&self) -> Option<&str> {
+        self.type_tag.built_symbol_key_by_tag()
     }
 
     pub(crate) fn has_symbol_type(&self, name: &str) -> bool {
@@ -5415,13 +5418,21 @@ impl Interpreter {
                 }
                 _ => continue,
             }
-            if let Some(type_name) = record.type_name.as_deref()
-                && let Some(ids) = self.record_ids_by_type_index.get_mut(type_name)
-            {
-                ids.remove(&id);
-                if ids.is_empty() {
-                    self.record_ids_by_type_index.remove(type_name);
+            match record.type_name.as_deref() {
+                Some(type_name) => {
+                    if let Some(ids) = self.record_ids_by_type_index.get_mut(type_name) {
+                        ids.remove(&id);
+                        if ids.is_empty() {
+                            self.record_ids_by_type_index.remove(type_name);
+                        }
+                    }
                 }
+                // The sweep read no name for it: the id leaves whichever
+                // name it was filed under.
+                None => self.record_ids_by_type_index.retain(|_, ids| {
+                    ids.remove(&id);
+                    !ids.is_empty()
+                }),
             }
             // The side tables that know an object by id go with it: the
             // sqlite handle (sqlite.c's finalizer closes the database),
