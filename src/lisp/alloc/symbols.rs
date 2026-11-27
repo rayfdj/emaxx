@@ -1518,7 +1518,10 @@ pub(crate) fn free_symbols() -> usize {
 
 #[cfg(test)]
 mod tests {
-    use super::{SYMBOL_BUMP_END, abandon_allocation_frontier};
+    use super::{
+        SYMBOL_BUMP_END, SYMBOL_BUMP_NEXT, SYMBOL_CELL_SIZE, abandon_allocation_frontier,
+        bump_symbol, set_free,
+    };
     use crate::lisp::alloc::SYMBOLS_PER_BLOCK;
     use crate::lisp::eval::Interpreter;
     use crate::lisp::types::{Env, Kind, Value};
@@ -1732,5 +1735,146 @@ mod tests {
             !scan_finds(symbol),
             "live_symbol_holding refuses the freed cell"
         );
+    }
+
+    /// lisp.h's dead_object: the string tag on a null pointer.
+    const DEAD_OBJECT: usize = 4;
+
+    /// The cells of this thread's frontier block that no symbol has been
+    /// made in, as the complements of their addresses.
+    #[inline(never)]
+    fn unused_frontier_cells() -> Vec<usize> {
+        (SYMBOL_BUMP_NEXT.get()..SYMBOL_BUMP_END.get())
+            .step_by(SYMBOL_CELL_SIZE)
+            .map(|cell| !cell)
+            .collect()
+    }
+
+    /// Store WORD in the function slot of the cell whose address's
+    /// complement is COMPLEMENT.
+    #[inline(never)]
+    fn write_function(complement: usize, word: usize) {
+        let cell = !complement as *mut super::SymbolCell;
+        // SAFETY: a cell of a registered symbol block that holds no symbol;
+        // the slot is a word.
+        unsafe {
+            std::ptr::addr_of_mut!((*cell).function)
+                .cast::<usize>()
+                .write(word)
+        };
+    }
+
+    /// A word no free cell's function holds and no symbol of these tests':
+    /// what a block's memory may hold before a symbol is made in it.
+    fn stale_word() -> usize {
+        Value::Integer(0x5a5a).word()
+    }
+
+    #[test]
+    fn a_cell_past_the_frontier_is_no_symbol_whatever_it_holds() {
+        // alloc.c's Fmake_symbol takes the cells of a new symbol_block one
+        // at a time, by symbol_block_index, and nothing writes a cell
+        // before a symbol is made in it; live_symbol_holding refuses "one
+        // of the unused cells in the current symbol block" by that index
+        // (`b != symbol_block || offset / sizeof b->symbols[0] <
+        // symbol_block_index'), whatever the cell holds.
+        let (unused, found) = {
+            let _runtime = crate::Runtime::lock();
+            let mut interpreter = Interpreter::new();
+            abandon_allocation_frontier();
+            make_symbols(&mut interpreter, 1);
+            let unused = unused_frontier_cells();
+            for &cell in &unused {
+                write_function(cell, stale_word());
+            }
+            // A collection reads the block to its index and no further.
+            primitives::call(&mut interpreter, "garbage-collect", &[], &mut Env::new())
+                .expect("collect");
+            let found = unused.iter().filter(|&&cell| scan_finds(cell)).count();
+            // Where a fresh block's cells are made free ones, these are
+            // free ones again.
+            for &cell in &unused {
+                write_function(cell, DEAD_OBJECT);
+            }
+            (unused.len(), found)
+        };
+        assert_eq!(unused, SYMBOLS_PER_BLOCK - 1, "a new block's other cells");
+        assert_eq!(found, 0, "an unused cell of the current block is a symbol");
+    }
+
+    #[test]
+    fn the_cells_an_abandoned_block_leaves_are_free_cells() {
+        // alloc.c leaves its symbol_block only when it is full.  An image's
+        // load leaves the current one with cells no symbol was made in
+        // (`ImageRegion'), and the block, no longer the current one, is
+        // then read whole by live_symbol_holding and sweep_symbols: the
+        // cells left become free cells there, their function
+        // dead_object ().
+        let (unused, found, stale) = {
+            let _runtime = crate::Runtime::lock();
+            let mut interpreter = Interpreter::new();
+            abandon_allocation_frontier();
+            make_symbols(&mut interpreter, 1);
+            let unused = unused_frontier_cells();
+            for &cell in &unused {
+                write_function(cell, stale_word());
+            }
+            abandon_allocation_frontier();
+            let found = unused.iter().filter(|&&cell| scan_finds(cell)).count();
+            let stale = unused
+                .iter()
+                .filter(|&&cell| function_word(cell) != DEAD_OBJECT)
+                .count();
+            for &cell in &unused {
+                write_function(cell, DEAD_OBJECT);
+            }
+            (unused.len(), found, stale)
+        };
+        assert_eq!(unused, SYMBOLS_PER_BLOCK - 1, "a new block's other cells");
+        assert_eq!(found, 0, "a cell the abandoned block left is a symbol");
+        assert_eq!(stale, 0, "a cell the abandoned block left is not free");
+    }
+
+    #[test]
+    fn a_thread_that_takes_the_runtime_for_a_symbol_frees_the_block_it_leaves() {
+        // A thread without the runtime has no frontier: its first symbol
+        // takes the runtime, which gives it the frontier, and goes in a
+        // new block all the same (`alloc::Frontier').  The block the
+        // frontier named is left like an abandoned one, and its unused
+        // cells are free cells from then on.
+        let unused = std::thread::spawn(|| {
+            crate::lisp::runtime::ensure_held();
+            abandon_allocation_frontier();
+            // SAFETY: the cell just taken holds no symbol.
+            unsafe { set_free(bump_symbol()) };
+            let unused = unused_frontier_cells();
+            for &cell in &unused {
+                write_function(cell, stale_word());
+            }
+            unused
+        })
+        .join()
+        .expect("the thread that leaves the runtime a frontier");
+        let (cells, stale) = std::thread::spawn(move || {
+            // This thread's first allocation of any kind.
+            // SAFETY: the cell just taken holds no symbol.
+            unsafe { set_free(bump_symbol()) };
+            // A cell another thread made a symbol in meanwhile holds
+            // neither word; one left as it was is not a free cell.
+            let stale = unused
+                .iter()
+                .filter(|&&cell| function_word(cell) == stale_word() && scan_finds(cell))
+                .count();
+            for &cell in &unused {
+                if function_word(cell) == stale_word() {
+                    write_function(cell, DEAD_OBJECT);
+                }
+            }
+            (unused.len(), stale)
+        })
+        .join()
+        .expect("the thread whose first allocation is a symbol");
+        assert_eq!(cells, SYMBOLS_PER_BLOCK - 1, "a new block's other cells");
+        assert_eq!(stale, 0, "a cell of the block the thread left is a symbol");
     }
 }
