@@ -266,6 +266,28 @@ fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
     );
 }
 
+#[test]
+fn a_collection_is_counted_when_it_ends() {
+    // alloc.c:garbage_collect counts a collection once its sweeps are done
+    // (`gcs_done++', after gc_sweep): the start of a mark phase counts
+    // nothing, and a whole collection counts one.  The counts are read
+    // with the runtime held, so that no other thread's collection is among
+    // them, and judged once it is given back.
+    let (before, begun, done) = {
+        let _runtime = crate::Runtime::lock();
+        let mut interp = Interpreter::new();
+        let mut env = Env::new();
+        let before = crate::lisp::types::collections_begun();
+        crate::lisp::types::begin_mark_phase();
+        let begun = crate::lisp::types::collections_begun();
+        crate::test_support::eval_lisp(&mut interp, &mut env, "(garbage-collect)")
+            .expect("a collection");
+        (before, begun, crate::lisp::types::collections_begun())
+    };
+    assert_eq!(begun, before, "the mark phase's start counts nothing");
+    assert_eq!(done, before + 1, "a collection is counted once, at its end");
+}
+
 // A record nothing holds, of a type the symbol in `zz-pending-type' names,
 // made in a frame of its own so that no word of the test's names it.
 #[inline(never)]
