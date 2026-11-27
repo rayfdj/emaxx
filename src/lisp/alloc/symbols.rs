@@ -1304,16 +1304,24 @@ fn free_unused_cells() {
 }
 
 /// alloc.c's `symbol_block->symbols[symbol_block_index++]', after a new
-/// symbol_block when the current one is full.  Nothing is written in a
-/// new block: its cells are told from symbols by the index
-/// (`live_symbol_holding').
+/// symbol_block when the current one is full (`symbol_in_new_block').
 fn bump_symbol() -> *mut SymbolCell {
     let next = SYMBOL_BUMP_NEXT.get();
-    let end = SYMBOL_BUMP_END.get();
-    if next < end {
+    if next < SYMBOL_BUMP_END.get() {
         SYMBOL_BUMP_NEXT.set(next + SYMBOL_CELL_SIZE);
         return next as *mut SymbolCell;
     }
+    symbol_in_new_block()
+}
+
+/// Fmake_symbol's `symbol_block_index == SYMBOL_BLOCK_SIZE' arm, out of
+/// line as Fcons's is (`alloc::allocate_cons_in_new_block'), so that what
+/// a symbol's allocation puts in line is the free list and the index.
+/// Nothing is written in the new block: its cells are told from symbols
+/// by the index (`live_symbol_holding').
+#[cold]
+#[inline(never)]
+fn symbol_in_new_block() -> *mut SymbolCell {
     let block = new_block(BlockKind::Symbol);
     // A thread without the runtime took it in `new_block', and its
     // frontier with it (`alloc::Frontier'): the block that names is left
