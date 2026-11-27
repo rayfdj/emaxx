@@ -665,14 +665,24 @@ unsafe fn invoke_platform(invocation: *mut NativeInvocation) -> Result<bool, Str
     Ok(unsafe { native_call_trampoline(invocation) } != 0)
 }
 
+/// The active call's record: what native code's helpers reach the
+/// thread through, as GNU's reach it through current_thread.
+///
+/// The fields are laid out as written, the runtime between the two a
+/// nested call writes.  Side by side, the two stores of `invoke_nested'
+/// are merged into one of 16 bytes, whose operand (the interpreter and
+/// the environment as a pair) the byte-code machine then assembles in
+/// its frame each time it is entered, for a native call it may never
+/// make.
+#[repr(C)]
 struct ActiveCall {
     /// A call nested in this one names its own interpreter and
     /// environment here while it runs (`invoke_nested'), the helpers of
     /// either reading them.  The interpreter is the same one by another
     /// pointer, the nested call's own (S-DERIVED).
     interpreter: Cell<*mut Interpreter>,
-    environment: Cell<*mut Env>,
     runtime: *mut NativeRuntime,
+    environment: Cell<*mut Env>,
 }
 
 // S-DERIVED.  A `&mut' parameter is protected for its callee's whole frame:
@@ -686,7 +696,11 @@ struct ActiveCall {
 // Keeps: at a native call nested in an active call (`invoke_nested'), the
 // load of the record's interpreter pointer, the store of the entering
 // frame's own and the store back when the callee returns (3; the address
-// stored is the one loaded, the derivation is what differs).
+// stored is the one loaded, the derivation is what differs), and, no
+// register being free across the callee, the outer pointer's save in the
+// frame and its reload (2).  Measured: 5 at eval's call of a native
+// function (interp-to-native), 6 at the byte-code machine's
+// (bc-to-native).
 
 #[cfg(target_os = "macos")]
 fn current_native_stack_bottom() -> *const NativeWord {
