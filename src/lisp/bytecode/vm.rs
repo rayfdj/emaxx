@@ -4465,6 +4465,12 @@ fn run(
     } else {
         run_frames(interp, program, function, args, env, lexenv)
     };
+    // A signal funcall_lambda or exec_byte_code makes before the loop
+    // runs (the formals' arity, no room for the frame) is made with the
+    // formals bound so far still bound: what runs at the signal
+    // (`signal_or_quit') runs before the unwinding to its catcher undoes
+    // them.  The loop made its own signals where they arose.
+    let result = interp.settle_frame_result(result, env);
     finish_activation(interp, env, result, marks)
 }
 
@@ -4603,7 +4609,10 @@ fn finish_returned(
 /// state, then the activation's end (`finish_activation'), back to
 /// UNWINDS on the specpdl and BACKTRACE on the backtrace.  With no room
 /// for the entry's frame nothing was entered, and the signal is
-/// exec_byte_code's.
+/// exec_byte_code's `error ("Bytecode stack overflow")': it is made
+/// with what funcall_lambda bound above UNWINDS still bound (a
+/// dynamic-binding function's formals), and the unwinding to its
+/// catcher undoes that, as it does after any other signal.
 #[cold]
 #[inline(never)]
 fn run_unfinished(
@@ -4614,12 +4623,22 @@ fn run_unfinished(
     unwinds: usize,
     backtrace: usize,
 ) -> Result<Value, LispError> {
+    let (suspended, handlers) = (activation.frames_base, activation.handlers_base);
     let exit = match exit {
-        FastExit::Overflow => return Err(stack_overflow()),
+        FastExit::Overflow => {
+            let marks = EntryMarks {
+                stack: EntryMarks::of(interp).stack,
+                unwinds,
+                backtrace,
+                suspended,
+                handlers,
+            };
+            let error = interp.signal_or_quit(stack_overflow(), env);
+            return finish_activation(interp, env, Err(error), marks);
+        }
         FastExit::Resume => None,
         exit => Some(exit),
     };
-    let (suspended, handlers) = (activation.frames_base, activation.handlers_base);
     let result = run_loop(interp, env, activation, exit);
     // A value is the entry frame's, left as it returned; a signal left
     // the activation's remaining frames, whose entry's header names the
@@ -4645,9 +4664,12 @@ fn run_unfinished(
 /// bound (`bind_dynamic_arguments'), then the code run with no
 /// arguments, as `exec_byte_code (fun, 0, 0, NULL)', which enters the
 /// frame after the bindings are made; the activation's exit is the
-/// unbind_to of the bindings.  With LEXENV, funcall_lambda's, the
-/// environment is bound to the function's nil lexenv after the formals
-/// (`bind_nil_environment'); Fbyte_code's exec_byte_code binds none.
+/// unbind_to of the bindings.  A signal made on the way (the formals'
+/// arity, no room for the frame) is made with the formals bound so far
+/// still bound, before the unwinding undoes them.  With LEXENV,
+/// funcall_lambda's, the environment is bound to the function's nil
+/// lexenv after the formals (`bind_nil_environment'); Fbyte_code's
+/// exec_byte_code binds none.
 /// Binding can run Lisp (a variable watcher of a formal), which may store
 /// into the code string: the code is tested again after it, and runs in
 /// the verified loop only if it is still current and verified for its
@@ -4665,6 +4687,7 @@ fn run_dynamic(
     let function = Value::Closure(closure);
     let marks = EntryMarks::of(interp);
     if let Err(error) = bind_dynamic_arguments(interp, function, arguments, args, env) {
+        let error = interp.signal_or_quit(error, env);
         return finish_activation(interp, env, Err(error), marks);
     }
     if lexenv {
@@ -4694,7 +4717,7 @@ fn run_dynamic(
             Activation::new(Running::entered(&program), marks.suspended, marks.handlers),
             None,
         ),
-        Err(error) => Err(error),
+        Err(error) => Err(interp.signal_or_quit(error, env)),
     };
     finish_activation(interp, env, result, marks)
 }
