@@ -270,7 +270,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   native code's `funcall' of byte code enters it in place (548.1 to
   458.2 instructions against GNU's 316.0) and `apply' has its own
   entry (915.1 to 717.1 against 545.0); a `mapc' callback is 351.7
-  against 288.9 until the next stage.
+  against 288.9 until the next stage.  Round 403: byte code entered
+  from C enters its own frame, as exec_byte_code does; a `mapc'
+  callback 331.7 against 288.9, a closure called by `mapatoms' 451.3,
+  under GNU's 458.6 again.
 
 ## Where things stand — 15 October 2026
 
@@ -21893,6 +21896,92 @@ setup_process_coding_systems's check now refuses). A 13-form
   added; its seven notes of a changed assertion are the layout and
   placement checks of the two mark words that are gone, each replaced
   by an equal or stronger one, as the review read them.
+- **Round 403: byte code entered from C enters its own frame, as
+  exec_byte_code does (M2, D17, stage 2 of the plan of the call paths;
+  none closed).**  **GNU**: Ffuncall and funcall_lambda bind a
+  dynamic-binding function's formals and call exec_byte_code, which
+  takes its frame on the byte-code stack, pushes the arguments, runs,
+  and returns at the entry frame's Breturn, with pc and the quit counter
+  its own locals.  **Before**: each caller from Rust marshalled the
+  activation, entering the frame and pushing the arguments before the
+  verified loop, which received pc and the quit counter as parameters
+  and a third word as a field of the record its helpers take.  **Step
+  1**: pc, the quit counter and the count of frames an operation's error
+  leaves are one record the helpers' record refers to once; the loop and
+  three of its helpers lose those parameters.  A first form made them
+  three fields of the helpers' record and was measured and dropped: the
+  helpers then wrote into that record, and the compiler reloaded the
+  interpreter, the environment and the frame bases through it in the hot
+  paths (the lexical recursion 365.1, the dynamic one 637.1, over GNU's
+  636.2).  **Step 2**: the verified loop enters the frame and pushes the
+  arguments itself, and the entry frame's Breturn leaves it and returns
+  the value; a dynamic-binding function's formals are bound before its
+  frame is entered, in funcall_lambda's order.  **Then** Ffuncall's own
+  record is passed down, so the activation's test of the backtrace is
+  against it and no mark is kept.  **A fix the review asked for**: with
+  the formals bound first, a frame that did not fit signalled from a
+  path that skipped the activation's end, so the bindings stayed on the
+  specpdl after the signal, which a catcher directly above the call saw
+  (an interpreted `condition-case' read the callee's argument where GNU
+  reads the outer value; through a process filter, the value after it
+  was the process).  The overflow is now signalled inside the bindings
+  and the activation ended, as GNU's unwinding to the catch unbinds
+  them.  **Counts** (before = round 400's build, instructions): a
+  byte-compiled `mapc' callback 351.7 to 331.7 (GNU 288.9), of
+  `mapatoms' 352.4 to 332.4 (298.9), of `maphash' 353.9 to 333.9
+  (291.1), a closure called by `mapatoms' 468.3 to 451.3 (458.6, under
+  GNU's again), native `funcall' of byte code 458.2 to 444.1 (316.0),
+  native `apply' 717.1 to 702.1 (545.0), an element of native `mapcar'
+  576.1 to 562.1 (550.5); the lexical recursion 359.1 to 349.1 (314.9),
+  byte-code calls 443.2 to 437.9 (468.0), the dynamic recursion 634.1 to
+  627.1 (636.2).  One guard rose, the byte-code loop's base, 97.6 to
+  100.6, by three alignment instructions on its path; its other
+  instructions are 96.6 before and after.  The plan expected 45 off the
+  `mapc' callback and this gave 20.  **What is left of it**, by GNU's
+  boundaries: Ffuncall's part is 17 under GNU's, the map loop 5.6 over,
+  and the activation 54 over (166 against exec_byte_code's 112): the
+  record the loop's helpers take, about 46, which GNU keeps as
+  exec_byte_code's locals; the trace latch 7; the marks and tests at the
+  return, 12; the tests of an Option and a Result, 8, about 4 of them
+  forced by Rust's errors as values; the frame's entry and exit, about
+  14 against 5; Ffuncall's exit, about 20 against 6.  The next stage
+  takes up the record as the loop's own locals, a form tried here (the
+  entry 23 instructions cheaper, the loop's own 25 dearer) and kept as a
+  lead.  **Lisp sees one change**, toward GNU: a dynamic-binding
+  byte-code function called from C whose frame does not fit has its
+  formals bound before the overflow and unbound by the unwinding, so a
+  watcher of a formal hears the let and the unlet, and a wrong number of
+  arguments is signalled before the overflow when the stack is full.
+  **The independent reviews** (the one question: does the round cheat or
+  break something) compared GNU 30.2 and the builds before and after
+  each step on activations ended by a value, a signal from the entry
+  frame and from a called frame, a throw through two activations, a
+  quit, the debugger at entry and at exit, the overflow at three frame
+  sizes, a code string changed by `aset' under the call, nested
+  activations, a thread switch and a collection with the collector's
+  verifier, from `mapc', `mapcar', `maphash', `mapatoms', `apply',
+  native `funcall', `sort''s predicate, hooks, a timer, a process filter
+  and threads; found no way into the unchecked loop with a frame that
+  was not sized, no reference held across a call into Lisp, and the
+  numbers above.  The first review found the break above; the second
+  found the fix clean against every early end of such an activation (a
+  wrong number of arguments, a constant or watched formal whose binding
+  signals or throws, an invalid argument list, a quit while binding, the
+  depth limit) with interpreted, byte-code and Rust catchers.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,703 passed, 0 failed, 2 ignored (one
+  library test more); cli 30, cli_parity 196 (five new cases),
+  ert_runner 3, native_comp_identity 1, native_thread_continuations 4,
+  package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementers' runs of the
+  library at one test thread and at four: every group passed.  The
+  round audit reports no hard finding, 1,308 changed lines with 6
+  tests and 25 assertions added; its six notes of a changed assertion
+  are five that read the frames' count of an error through the new
+  record, the same assertions, and the entry's assertion that a
+  caller is admitted, which no longer excuses the dynamic entry.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -25623,6 +25712,27 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 403 and its reviews), within the
+  plan's later stages or outside the round.**  One line each: GNU
+  signals `setting-constant' a second time while it unbinds the entry it
+  pushed for a `nil' or `t' formal, so a hook or handler runs twice
+  there, and Emaxx signals once; hand-made byte code that reads below
+  its frame (`(make-byte-code 257 "\001\207" [] 2)') panics on an index
+  out of bounds in the loop where GNU returns; a backtrace of a native
+  function with many optional arguments lacks GNU's trailing nils;
+  `(funcall #'car x x)' in a byte-compiled function compiles to a
+  function of stack depth 0, which GNU crashes on through `mapcar' and
+  Emaxx signals an overflow for; the byte-code error trace is silent
+  while an internal handler is active, which at top level of a dumped
+  session is always; a function whose declared stack depth is 65,535 or
+  more is never verified and runs in the unverified loop; the image
+  beside a relinked gate binary is not rebuilt by the ert runner's tests
+  as by the others; the comparison case of a mode line's `:eval' tests
+  nothing in batch, where `format-mode-line' returns ""; alignment
+  instructions inside the verified loop move by three or four on a probe
+  from one build to the next, so a guard's figure is read with its count
+  of other instructions; 86 lint suppressions remain in the tree from
+  before the rule against them (M3's A8.13).
 - **Found after the scope lock (round 402 and its review), within the
   plan's later stages or outside the round.**  One line each: a fresh
   symbol block is initialized cell by cell, where GNU initializes none
