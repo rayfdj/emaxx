@@ -209,7 +209,10 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   Round 402: the second half's first part; a symbol's mark is its
   gcmarkbit and a large vector's its header's flag, the sweep clears
   them, and neither pays the collection's number at its allocation
-  (an explicit collection 33.1M); strings follow.
+  (an explicit collection 33.1M); strings follow.  Round 404: a
+  string's mark is its size word's flag and strings are swept first,
+  so no heap object carries the collection's number and allocation
+  pays for no mark (an explicit collection 32.8M).
 - **In progress: A2.5, A4.7, C5.1, C5.3 and D43** (runtime ownership
   and thread access; the plan: docs/plans/runtime-ownership.md, stages
   0 to 9).  Round 388: stages 0 to 2; the runtime lock names its
@@ -21982,6 +21985,90 @@ setup_process_coding_systems's check now refuses). A 13-form
   are five that read the frames' count of an error through the new
   record, the same assertions, and the entry's assertion that a
   caller is admitted, which no longer excuses the dynamic entry.
+- **Round 404: a string's mark is in its size word and strings are swept
+  first, the count of collections is gcs_done, and a new symbol block is
+  not written (M2, stage R16 of A4.1 and A4.2, second half, second part;
+  none closed).**  **GNU**: alloc.c marks a string with ARRAY_MARK_FLAG
+  in its size, sweeps strings first in gc_sweep's order so that the
+  later sweeps read unmarked sizes, tells a free string by its null data
+  pointer (live_string_holding), raises gcs_done when a collection is
+  done, and leaves a symbol block's cells unwritten, telling a live
+  symbol by the block's index (live_symbol_holding's
+  symbol_block_index).  **Before**: a string kept the number of the
+  collection that marked it in a mark word of its own, written at each
+  allocation, the string blocks an image load rebuilt were skipped by
+  the sweep while a side count said none had died, the count of
+  collections was raised at the mark's start, and a new symbol block's
+  cells were all written before the first was handed out.  **Now**: the
+  string's mark is the flag in its size word, which is a Cell, since a
+  shared borrow of a string may be alive across a collection; a mapped
+  string's mark is the dump's bit and a pure string and the two
+  permanent empty strings are never marked, as PURE_P; the string sweep
+  runs first and unmarks before it counts; a free string's data pointer
+  is null; the rebuilt string blocks are swept at every collection, and
+  the side count, its update at every mark and the image-region test at
+  every allocation are gone; a checked build stops if a string is made
+  between the mark's start and the string sweep (GNU aborts while
+  gc_in_progress in signal_or_quit and module_assert_thread).  Before
+  strings could be swept first, the note a freed record leaves had to
+  stop reading its type's name: it now takes the type symbol's key only
+  if it is already built, and the purge drops an id it was given no name
+  for from every type's set.  The count of collections is gcs_done,
+  raised after the sweeps and before the finalizers run (alloc.c raises
+  it after run_finalizers; the handler search's memo, which GNU has not,
+  must see it before any Lisp runs; `gcs-done' is a separate cell and is
+  raised where it was).  A new symbol block is not written; the live
+  test reads the allocation frontier, and the two places where a block
+  stops being the current one before it is full (an image region opening
+  or closing, and the first allocation of a thread that did not hold the
+  runtime) free its unused cells.  The new block is taken out of line,
+  as a cons's is: inlined, it had made the symbol's allocation too large
+  to be inlined into `make-symbol', 27 instructions more.  **Counts**
+  (before = round 402's build, instructions): an explicit collection
+  33,128,027 to 32,764,850 (GNU 54,504,281), the tracer's string mark
+  now testing one byte where it tested two; `make-string' 1,695.2 to
+  1,679.1 (2,265.6), and without collections 641.8 to 635.8 (584.9); a
+  multibyte `concat' 2,685.4 to 2,665.7 (3,172.1), without collections
+  1,299.5 to 1,293.5 (944.3); `make-symbol' 1,369.7 to 1,358.1
+  (1,964.6), without collections 413.9 to 412.2 (405.0); a cons loop
+  2,385.9 to 2,384.2 (2,461.2); a float 606.5 to 604.7 (656.5); a
+  300-slot vector 47,816.2 to 47,383.6 (78,032.9).  No probe rose.
+  Private memory around the first collection is unchanged.  **Lisp sees
+  nothing change.**  With this round no heap object carries the
+  collection's number, and allocation pays for no mark at all, as in
+  GNU.  **The independent review** (the one question: does the round
+  cheat or break something) found the nine commits clean.  It compared
+  this build, round 402's and GNU on strings of every kind (unibyte,
+  multibyte, with properties, pure, the empty ones, mapped, read,
+  concatenated, sliced, formatted, made, widened by `aset', taken from a
+  buffer) as weak-table keys and values in all four weaknesses, 100,000
+  strings of mixed sizes made and dropped with the survivors read back,
+  symbol churn and Lisp threads allocating, six GNU files byte-compiled
+  to identical output, a stress of 6,000 steps with a collection every
+  50, `gcs-done' read from a finalizer, `post-gc-hook' and the code
+  after a collection, and a dump made by this build, loaded, mutated,
+  collected and dumped again, with and without the collector's verifier:
+  the same answers.  It found no read of a marked size in a release
+  build, nothing left unswept that keeps a mark in its own word, no
+  later sweep that reads a string, the frontier sound when the runtime
+  moves between OS threads, the seven changed assertions each converted
+  or gone with the skip they guarded, and the figures above from its own
+  measurement.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,715 passed, 0 failed, 2 ignored
+  (twelve library tests more); cli 30, cli_parity 196, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 4,
+  package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementer's run of the
+  library at one test thread and at four: 3,713 passed, 0 failed.  The
+  round audit reports no hard finding, 1,681 changed lines with 12
+  tests and 60 assertions added; its one note of new state is the
+  count of collections renamed gcs_done, and its seven notes of a
+  changed assertion are each converted (a string's purity read from
+  its origin byte, two bounds read through the length) or gone with
+  the skip of the rebuilt blocks that they guarded.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -25729,6 +25816,23 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 404 and its review), within the
+  plan's later stages or outside the round.**  One line each: `gcs-done'
+  is 1 at the start of a batch session in GNU and 0 here;
+  `memory-use-counts' at startup differs between two builds installed
+  under paths of different lengths, by a few strings and conses; the
+  error of `(length obarray)' prints the obarray's count as 18,554 and
+  the backtrace as 17,832; the checked build's guard counts ordinary
+  strings only, so it would not see a pure or image string made during a
+  collection (none is made there today); the purge's fallback for a
+  freed record whose note has no name walks every type's set; no test
+  pins the order of the sweeps itself, only its consequence that no
+  freed name is read; register_block costs 31.8 instructions a symbol in
+  `make-symbol' (a BTreeMap insert under a mutex, 668 a block of 21); a
+  thread that allocates without the runtime abandons the current block
+  for conses, floats, string cells and symbols, where GNU never leaves
+  its current block early; 107 lint suppressions remain in src from
+  before the rule against them (M3's A8.13).
 - **Found after the scope lock (round 403 and its reviews), within the
   plan's later stages or outside the round.**  One line each: GNU
   signals `setting-constant' a second time while it unbinds the entry it
