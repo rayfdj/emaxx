@@ -25878,6 +25878,20 @@ ert-tests as a whole 26,307 ms against 27,211.
   binaries' tests (63) and the doc stage, three doctests passing and
   three that must fail to compile, none failed.
 
+**On `e31075e`** (round 405): the frozen run (run 46076764762) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, the eglot race accepted again on GNU's side (37.9 s against
+  33.1 s in that file).  Setup 66.9 s against 59.4 s (1.127), test
+  bodies 262.9 s against 258.7 s (1.016), in all 1.037 (GNU's suite took
+  318 s); without the eglot file the bodies read 1.041.  The widest body
+  gaps are tramp-tests (18.6 s against 16.6 s), comp-tests (15.4 against
+  13.9), process-tests (3.02 against 1.79), mule-tests (2.49 against
+  1.75) and semantic-utest-ia (3.21 against 2.61).  The Rust gate (run
+  46076761610) passed: 3,722 library tests (as round 404's), the eight
+  integration targets (247), the binaries' tests (63) and the doc stage,
+  three doctests passing and three that must fail to compile, none
+  failed.
+
 **The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
   25 Nov by running the one test alone.
   `eglot-test-rust-completion-exit-function' connects twice
