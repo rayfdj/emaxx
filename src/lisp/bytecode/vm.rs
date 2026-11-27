@@ -6772,13 +6772,15 @@ fn an_activation_entered_from_rust_leaves_the_threads_stacks_as_it_found_them() 
     // activation entered from Rust under a caller's frame with operands
     // on it: whether it returns a value, signals from its own frame or
     // from one it called, finds no room for its frame (one the verified
-    // loop enters, and one too deep for verification), or returns with a
-    // binding it never undid, the byte-code stack's frame, base and top,
-    // the suspended frames, the handlers, the specpdl, the backtrace and
-    // the evaluation depth are as they were before the call.  The same
-    // for a dynamic-binding function, whose formal funcall_lambda binds
-    // before exec_byte_code looks for the frame's room: the binding is
-    // undone when the frame fits and when it does not.
+    // loop enters, one too deep for verification, and one deeper than
+    // 2^32 words, which GNU 30.2 finds no room for either), or returns
+    // with a binding it never undid, the byte-code stack's frame, base
+    // and top, the suspended frames, the handlers, the specpdl, the
+    // backtrace and the evaluation depth are as they were before the
+    // call.  The same for a dynamic-binding function, whose formal
+    // funcall_lambda binds before exec_byte_code looks for the frame's
+    // room: the binding is undone when the frame fits and when it does
+    // not.
     fn eval(interp: &mut Interpreter, env: &mut Env, text: &str) -> Value {
         let form = crate::lisp::read_next_load_form(interp, text, &mut 0, env)
             .expect("read form")
@@ -6824,6 +6826,10 @@ fn an_activation_entered_from_rust_leaves_the_threads_stacks_as_it_found_them() 
             Err("error"),
         ),
         (
+            "(make-byte-code 257 (unibyte-string #o207) [] (+ (expt 2 32) 1))",
+            Err("error"),
+        ),
+        (
             "(make-byte-code 257 (unibyte-string #o301 #o030 #o207) \
                [emaxx-test-left bound] 2)",
             Ok(7),
@@ -6842,6 +6848,11 @@ fn an_activation_entered_from_rust_leaves_the_threads_stacks_as_it_found_them() 
         (
             "(make-byte-code '(emaxx-test-left) (unibyte-string #o010 #o207) \
                [emaxx-test-left] 600000)",
+            Err("error"),
+        ),
+        (
+            "(make-byte-code '(emaxx-test-left) (unibyte-string #o010 #o207) \
+               [emaxx-test-left] (+ (expt 2 32) 1))",
             Err("error"),
         ),
     ];
