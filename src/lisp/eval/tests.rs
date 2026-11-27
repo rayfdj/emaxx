@@ -247,6 +247,82 @@ fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
     );
 }
 
+// A record nothing holds, of a type the symbol in `zz-pending-type' names,
+// made in a frame of its own so that no word of the test's names it.
+#[inline(never)]
+fn make_dead_record_of_pending_type(interp: &mut Interpreter) {
+    let type_tag = interp
+        .symbol_value_cell("zz-pending-type")
+        .expect("the type symbol");
+    let id = interp.alloc_record_id();
+    std::hint::black_box(crate::lisp::types::RecordRef::allocate(RecordState {
+        id,
+        owner: 0,
+        type_tag,
+        slots: Vec::new(),
+        kind: RecordKind::UserPointer,
+    }));
+}
+
+#[test]
+fn the_sweep_s_note_of_a_freed_record_reads_no_name_string() {
+    // alloc.c's sweep of a dead vector reads nothing of the objects it
+    // names.  The note the sweep here leaves of a freed record carries
+    // the key of its type's symbol only when that key is already built:
+    // it never builds one from the symbol's name, a string, which
+    // gc_sweep's order (sweep_strings first) may already have freed.
+    let _runtime = crate::Runtime::lock();
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    let symbol = crate::lisp::primitives::call(
+        &mut interp,
+        "make-symbol",
+        &[Value::String("zz-pending".into())],
+        &mut env,
+    )
+    .expect("a symbol");
+    let Kind::Symbol(name) = symbol.kind() else {
+        unreachable!("constructed symbol");
+    };
+    assert!(name.host_text_if_built().is_none(), "the key is pending");
+    interp.set_symbol_value_cell("zz-pending-type", symbol);
+    make_dead_record_of_pending_type(&mut interp);
+    crate::lisp::alloc::clobber_stack();
+    crate::test_support::eval_lisp(&mut interp, &mut env, "(garbage-collect)")
+        .expect("a collection");
+    assert!(
+        name.host_text_if_built().is_none(),
+        "the sweep built the type symbol's key from its name"
+    );
+}
+
+#[test]
+fn the_purge_drops_an_id_it_was_given_no_name_for() {
+    // The registry files a record's id under its type's name.  A freed
+    // record whose note carries no name (its type symbol's key was not
+    // built where the sweep read it) leaves the index all the same.
+    let mut interp = Interpreter::new();
+    let id = interp.alloc_record_id();
+    let record = interp.install_record(RecordState {
+        id,
+        owner: 0,
+        type_tag: Value::symbol("zz-purged-type"),
+        slots: Vec::new(),
+        kind: RecordKind::UserPointer,
+    });
+    assert_eq!(interp.record_ids_by_type("zz-purged-type"), vec![id]);
+    interp.purge_freed_records(&[crate::lisp::alloc::FreedRecord {
+        owner: record.owner,
+        id,
+        identity: record.identity(),
+        type_name: None,
+    }]);
+    assert!(
+        interp.record_ids_by_type("zz-purged-type").is_empty(),
+        "the id is still filed under its type's name"
+    );
+}
+
 fn panic_eval_error(interp: &mut Interpreter, error: LispError) -> ! {
     let rendered_error = match error.kind() {
         LispErrorKind::SignalValue(value) => crate::lisp::primitives::render_prin1_ephemeral(
