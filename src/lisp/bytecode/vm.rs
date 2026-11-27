@@ -569,7 +569,6 @@ struct VmFrames<'a> {
     frames_base: usize,
     handlers_base: usize,
     state: &'a mut LoopState,
-    trace_errors: bool,
 }
 
 /// What a full Bcall left: a new byte-code frame to run from pc 0, or the
@@ -599,7 +598,6 @@ fn bytecode_call(
         env,
         program,
         state,
-        trace_errors,
         ..
     } = vm;
     interp.bc_stack.top = top;
@@ -715,7 +713,6 @@ fn bytecode_call(
         }
         callee => callee,
     };
-    let trace_call = trace_errors.then(|| func.to_string());
     let result = match callee {
         crate::lisp::eval::BcallCallee::Native(native) => {
             crate::lisp::native_comp::call_function(interp, env, native, call_args)
@@ -729,16 +726,7 @@ fn bytecode_call(
     let value = match result {
         Ok(value) => value,
         Err(error) => {
-            // Expected conditions such as `scan-error' are routinely
-            // caught by compiled Lisp.  Logging every one makes a real VM
-            // dispatch failure disappear in megabytes of noise.
-            if matches!(error.kind(), LispErrorKind::WrongNumberOfArgs(_, _))
-                && let Some(func) = trace_call
-            {
-                crate::errprintln!(
-                    "bytecode call {func} failed at byte offset {offset}: {error:?}"
-                );
-            }
+            trace_call_error(func, offset, &error);
             return Err(error);
         }
     };
@@ -800,9 +788,6 @@ fn call_native_nested(
     let interp: &mut Interpreter = vm.interp;
     let env: &mut Env = vm.env;
     interp.bc_stack.top = top;
-    if vm.trace_errors {
-        return None;
-    }
     // `call_fixed_function's tests, for at most six arguments, in the
     // function's register counts (a target, lexical binding, the arity):
     // the general path takes any other call.
@@ -885,7 +870,7 @@ fn call_native_nested_by_count(
 
 /// Bcall into a native-compiled function or a subr when nothing else
 /// happens on the way in (`plain_bcall_callee'; maybe_gc would not
-/// collect; no error trace is asked for): Ffuncall's depth and frame
+/// collect): Ffuncall's depth and frame
 /// record, the call, the frame's settling and pop, and the value replacing
 /// the function and its arguments, as the full Call arm does them for
 /// that case. The answer is the stack's top and the frame's depth after
@@ -901,9 +886,6 @@ fn call_plain(
 ) -> Option<Result<(usize, usize), LispError>> {
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
-    if vm.trace_errors {
-        return None;
-    }
     let callee = state.plain_bcall_callee(func, function)?;
     if !crate::lisp::native_comp::collection_cannot_be_due(state) {
         return None;
@@ -1458,9 +1440,25 @@ pub(crate) struct Handler {
 
 /// Whether `EMAXX_TRACE_LOAD_ERRORS' asks for VM dispatch traces — the
 /// process-wide latch, taken before main() scrubs the variable from the
-/// environment so children and Lisp `getenv' stay oracle-clean.
+/// environment so children and Lisp `getenv' stay oracle-clean.  It is
+/// read where an error is traced, never on a path a value takes.
 fn trace_load_errors() -> bool {
     crate::lisp::trace_load_errors_enabled()
+}
+
+/// The full Call arm's trace (`bytecode_call') of a Bcall at byte OFFSET
+/// whose call of FUNC failed with a wrong number of arguments, when
+/// `trace_load_errors' asks for it; the plain arms leave their errors to
+/// the operation's trace in the dispatch loop.
+/// Expected conditions such as `scan-error' are routinely caught by
+/// compiled Lisp; logging every one would make a real VM dispatch
+/// failure disappear in megabytes of noise.
+#[cold]
+#[inline(never)]
+fn trace_call_error(func: Value, offset: usize, error: &LispError) {
+    if matches!(error.kind(), LispErrorKind::WrongNumberOfArgs(_, _)) && trace_load_errors() {
+        crate::errprintln!("bytecode call {func} failed at byte offset {offset}: {error:?}");
+    }
 }
 
 /// Feolp, Feobp, Fbolp or Fbobp, by its op (0o154 to 0o157).
@@ -4558,7 +4556,6 @@ fn run_entered_above(
         frames_base,
         handlers_base,
         state: &mut state,
-        trace_errors: trace_load_errors(),
     };
     if let Some(value) = run_verified(&mut left, &mut vm, Some(program), function, args) {
         // exec_byte_code returned: the caller's frame is the active one
@@ -5058,7 +5055,6 @@ fn run_loop(
         quitcounter,
     };
     let mut last_instruction = None;
-    let trace_errors = trace_load_errors();
 
     macro_rules! pop {
         () => {
@@ -5180,7 +5176,6 @@ fn run_loop(
                                 frames_base,
                                 handlers_base,
                                 state: &mut state,
-                                trace_errors,
                             },
                             None,
                             Value::Nil,
@@ -5220,7 +5215,6 @@ fn run_loop(
                     frames_base,
                     handlers_base,
                     state: &mut state,
-                    trace_errors,
                 };
                 match exit {
                     FastExit::Resume => {}
@@ -5322,7 +5316,6 @@ fn run_loop(
                         frames_base,
                         handlers_base,
                         state: &mut state,
-                        trace_errors,
                     };
                     if let CallOutcome::Entered(..) =
                         bytecode_call(&mut vm, top, usize::from(argc), return_pc, offset)?
@@ -5369,7 +5362,6 @@ fn run_loop(
                             frames_base,
                             handlers_base,
                             state: &mut state,
-                            trace_errors,
                         },
                         op,
                     )?;
@@ -5498,7 +5490,7 @@ fn run_loop(
                     // (cl-generic's bootstrap raises and handles one on
                     // every boot; a child process spawned by a test must
                     // not leak that into its measured stderr).
-                    if trace_errors
+                    if trace_load_errors()
                         && !matches!(error.kind(), LispErrorKind::Throw(_, _))
                         && !interp.some_active_handler_matches(&error)
                         && let Some(instr) = last_instruction
