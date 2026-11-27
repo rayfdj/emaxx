@@ -6564,21 +6564,27 @@ impl NativeHeap {
             }
         }
 
-        // A cons, float, vector or symbol is made unmarked (the sweeps
-        // clear the marks they read, and allocation sets none), so one made
-        // after the mark phase starts and before its kind's sweep would be
-        // freed there: this collector, as alloc.c's, makes none in between,
-        // which alloc.c's counters of them show (a checked build's guard,
-        // as alloc.c's eassert of !gc_in_progress).
+        // A cons, float, vector, symbol or string is made unmarked (the
+        // sweeps clear the marks they read, and allocation sets none), so
+        // one made after the mark phase starts and before its kind's sweep
+        // would be freed there.  alloc.c relies on garbage_collect making
+        // none between its first mark and gc_sweep's end, and asserts
+        // nothing of it in its allocators: input is blocked, gc_in_progress
+        // is set, and a signal or a module's call in between aborts
+        // (signal_or_quit, emacs-module.c's module_assert_thread).  This
+        // collector makes none either, which alloc.c's counters of them
+        // show (a checked build's guard).
         let consed = || {
             use crate::lisp::alloc::counters::{
-                CONS_CELLS_CONSED, FLOATS_CONSED, SYMBOLS_CONSED, VECTOR_CELLS_CONSED,
+                CONS_CELLS_CONSED, FLOATS_CONSED, STRINGS_CONSED, SYMBOLS_CONSED,
+                VECTOR_CELLS_CONSED,
             };
             [
                 &CONS_CELLS_CONSED,
                 &FLOATS_CONSED,
                 &VECTOR_CELLS_CONSED,
                 &SYMBOLS_CONSED,
+                &STRINGS_CONSED,
             ]
             .map(|counter| counter.load(std::sync::atomic::Ordering::Relaxed))
         };
@@ -6593,18 +6599,26 @@ impl NativeHeap {
         // return: an unwind ends the process (`CollectionUnderway').
         let underway = CollectionUnderway;
         let reachability = interpreter.weak_hash_reachability(environment, &lisp_roots);
-        // From here to the sweep, no other mark phase may begin (a checked
-        // build's guard; see `begin_mark_epoch').
+        // From here to the end of the sweeps, no other mark phase may begin
+        // (a checked build's guard; see `begin_mark_phase').
         crate::lisp::types::set_sweep_pending(true);
         // The mark pass queued and traced doomed finalizers before the
         // weak-table fixed point, as alloc.c does. Sweep weak entries before
         // reclaiming any object storage.
-        let epoch = reachability.epoch;
         crate::lisp::primitives::sweep_weak_hash_tables(interpreter, reachability);
-        // alloc.c:gc_sweep, after the weak entries are gone. Strings follow
-        // symbols, whose weak names must remain readable during their sweep.
+        crate::lisp::alloc::verify_marking_before_sweeps();
+        // alloc.c:gc_sweep, after the weak entries are gone: sweep_strings
+        // first, so that the strings the collection keeps have their sizes
+        // back (XUNMARK_STRING) before any other sweep runs, and no later
+        // sweep reads a string, which this one may have freed.
+        debug_assert_eq!(
+            consed()[4],
+            before_marks[4],
+            "a string made in a collection"
+        );
+        let free_strings = crate::lisp::alloc::sweep_strings();
         debug_assert_eq!(consed()[0], before_marks[0], "a cons made in a collection");
-        crate::lisp::alloc::sweep_conses(epoch);
+        crate::lisp::alloc::sweep_conses();
         debug_assert_eq!(consed()[1], before_marks[1], "a float made in a collection");
         crate::lisp::alloc::sweep_floats();
         debug_assert_eq!(
@@ -6620,8 +6634,8 @@ impl NativeHeap {
             "a symbol made in a collection"
         );
         crate::lisp::types::sweep_symbol_cells();
-        let free_strings = crate::lisp::alloc::sweep_strings(epoch);
         crate::lisp::alloc::clear_dump_marks();
+        crate::lisp::types::set_sweep_pending(false);
         interpreter.note_sweeps_free_counts(free_strings, free_vector_slots);
         // The collection is complete.
         std::mem::forget(underway);
@@ -17982,11 +17996,9 @@ mod tests {
             assert!(state.is_pure());
             assert_eq!(state.borrow().len(), if index == 2 { 10 } else { 0 });
             assert_eq!(state.borrow().is_multibyte(), index == 1);
-            assert!(
-                state
-                    .mark_bit()
-                    .is_marked(crate::lisp::types::current_mark_epoch())
-            );
+            // survives_gc_p's `|| PURE_P': a pure string is never marked
+            // and always survives.
+            assert!(state.mark_bit().is_marked());
         }
     }
 

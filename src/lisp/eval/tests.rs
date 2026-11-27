@@ -173,12 +173,13 @@ fn reachability_marks_deep_cons_paths_and_cycles_without_recursive_stack_growth(
 #[test]
 fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
     // alloc.c's sweeps unmark what they keep (XUNMARK_CONS, the float
-    // blocks' bits, the vectors' ARRAY_MARK_FLAG, the symbols'
-    // gcmarkbit), and Fcons and make_float give a new object no mark:
-    // after a collection no bit of a cons, float or vector block is set,
-    // no large vector's header carries the flag and no symbol's gcmarkbit
-    // is set, an object made between collections is unmarked until the
-    // next one marks it, and that one leaves it unmarked again, kept.
+    // blocks' bits, the vectors' and the strings' ARRAY_MARK_FLAG, the
+    // symbols' gcmarkbit), and Fcons and make_float give a new object no
+    // mark: after a collection no bit of a cons, float or vector block is
+    // set, no large vector's header and no string's size carries the flag
+    // and no symbol's gcmarkbit is set, an object made between collections
+    // is unmarked until the next one marks it, and that one leaves it
+    // unmarked again, kept.
     let mut interp = Interpreter::new();
     let mut env = Env::new();
     crate::test_support::eval_lisp(&mut interp, &mut env, "(garbage-collect)")
@@ -218,6 +219,21 @@ fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
     };
     assert!(!name.is_marked());
     large_vector.set(0, symbol);
+    // A string, whose mark is its size word's ARRAY_MARK_FLAG: made with
+    // its length alone in that word, and unmarked again by the sweep that
+    // keeps it (XUNMARK_STRING), so its length reads as it was made.
+    let string = crate::lisp::primitives::call(
+        &mut interp,
+        "make-string",
+        &[Value::Integer(7), Value::Integer(122)],
+        &mut env,
+    )
+    .expect("a string");
+    let Kind::StringObject(text) = string.kind() else {
+        unreachable!("constructed string");
+    };
+    assert!(!text.mark_bit().is_marked());
+    large_vector.set(1, string);
     interp.set_symbol_value_cell("zz-made-between", vector);
     interp.set_symbol_value_cell("zz-large-made-between", large);
     crate::test_support::eval_lisp(&mut interp, &mut env, "(garbage-collect)")
@@ -226,6 +242,8 @@ fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
     assert!(!cell.mark_bit().is_marked() && !cell_float.mark_bit().is_marked());
     assert!(!large_vector.mark_bit().is_marked());
     assert!(!name.is_marked());
+    assert!(!text.mark_bit().is_marked());
+    assert_eq!(text.borrow().len(), 7);
     assert_eq!(large_vector.len(), 600);
     assert_eq!(
         crate::test_support::eval_lisp(
@@ -233,11 +251,12 @@ fn a_collection_leaves_every_mark_bit_clear_and_a_new_cons_unmarked() {
             &mut env,
             "(list (length zz-large-made-between)
                    (symbol-name (aref zz-large-made-between 0))
+                   (aref zz-large-made-between 1)
                    (aref zz-large-made-between 599))"
         )
         .expect("the large vector")
         .to_string(),
-        "(600 \"zz-symbol-made-between\" (5))"
+        "(600 \"zz-symbol-made-between\" \"zzzzzzz\" (5))"
     );
     assert_eq!(
         crate::test_support::eval_lisp(&mut interp, &mut env, "zz-made-between")
@@ -294,6 +313,76 @@ fn the_sweep_s_note_of_a_freed_record_reads_no_name_string() {
         name.host_text_if_built().is_none(),
         "the sweep built the type symbol's key from its name"
     );
+}
+
+// A record nothing holds, of a type that is a symbol nothing else holds,
+// its key not yet built: made in a frame of its own so that no word of
+// the test's names any of the three.  The weak table of `zz-dying-witness'
+// has the symbol and its name, a string, for keys.
+#[inline(never)]
+fn make_dead_record_of_dying_type(interp: &mut Interpreter, env: &mut Env) {
+    let symbol = crate::lisp::primitives::call(
+        interp,
+        "make-symbol",
+        &[Value::String("zz-dying".into())],
+        env,
+    )
+    .expect("a symbol");
+    let Kind::Symbol(name) = symbol.kind() else {
+        unreachable!("constructed symbol");
+    };
+    assert!(name.host_text_if_built().is_none(), "the key is pending");
+    let table = interp
+        .symbol_value_cell("zz-dying-witness")
+        .expect("the witness table");
+    for key in [symbol, name.lisp_name()] {
+        crate::lisp::primitives::call(interp, "puthash", &[key, Value::T, table], env)
+            .expect("witness the key");
+    }
+    let id = interp.alloc_record_id();
+    std::hint::black_box(crate::lisp::types::RecordRef::allocate(RecordState {
+        id,
+        owner: 0,
+        type_tag: symbol,
+        slots: Vec::new(),
+        kind: RecordKind::UserPointer,
+    }));
+}
+
+#[test]
+fn a_freed_record_s_note_reads_nothing_of_a_name_swept_before_it() {
+    // alloc.c's gc_sweep sweeps strings first, and no later sweep reads
+    // one.  A dead record whose type is a symbol that dies with it, and
+    // the symbol's name with them: when the vectors' sweep reaches the
+    // record, the strings' sweep has already made the name a free cell
+    // (a checked build fills it, so that a guard taken on it stops the
+    // process).  The note the sweep leaves of the record reads the
+    // symbol's cell, which is swept after the vectors, for a key already
+    // built, and nothing of the name.
+    let _runtime = crate::Runtime::lock();
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    crate::test_support::eval_lisp(
+        &mut interp,
+        &mut env,
+        "(progn (setq zz-dying-witness (make-hash-table :test 'eq :weakness 'key)) nil)",
+    )
+    .expect("the witness table");
+    make_dead_record_of_dying_type(&mut interp, &mut env);
+    crate::lisp::alloc::clobber_stack();
+    assert_eq!(
+        crate::test_support::eval_lisp(
+            &mut interp,
+            &mut env,
+            "(list (hash-table-count zz-dying-witness)
+                   (progn (garbage-collect) (hash-table-count zz-dying-witness)))"
+        )
+        .expect("a collection")
+        .to_string(),
+        "(2 0)",
+        "the symbol and its name die with the record, in one collection"
+    );
+    assert!(crate::lisp::alloc::every_mark_bit_clear());
 }
 
 #[test]

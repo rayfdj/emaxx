@@ -9,19 +9,18 @@ fn marked_cons_edges_to_positioned_symbols_are_checked() {
     };
     // No collection runs here, and between collections every mark bit is
     // clear. Mark this cons in its block's bitmap while its child stays
-    // unmarked, then invoke the actual pre-sweep checker with an epoch no
-    // object carries. Restore the entire block bitmap before asserting.
-    let probe_epoch = super::super::types::current_mark_epoch().wrapping_add(1);
+    // unmarked, then invoke the actual pre-sweep checker. Restore the
+    // entire block bitmap before asserting.
     let mark = unsafe { cons_mark(cell.as_ptr()) };
     let old_words: [usize; CONS_BITMAP_WORDS] =
         std::array::from_fn(|index| mark.block.marked[index].get());
     mark.mark();
     let rejected = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        verify_marking(probe_epoch);
+        verify_marking();
     }));
     cell.car.set(Value::Nil);
     let accepted = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
-        verify_marking(probe_epoch);
+        verify_marking();
     }));
     for (word, saved) in mark.block.marked.iter().zip(old_words) {
         word.set(saved);

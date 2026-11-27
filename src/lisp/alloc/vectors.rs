@@ -40,7 +40,9 @@ pub use windows::WindowObjectRef;
 mod tests;
 
 use super::super::types::{BufferValue, LispBignum, Value};
-use super::{BlockKind, blocks_of, register_block, sweep_blocks_of, unregister_block};
+use super::{
+    ARRAY_MARK_FLAG, BlockKind, blocks_of, register_block, sweep_blocks_of, unregister_block,
+};
 use std::cell::Cell;
 use std::marker::PhantomData;
 use std::ptr::NonNull;
@@ -84,9 +86,6 @@ const fn vindex(nbytes: usize) -> usize {
     (nbytes - VBLOCK_BYTES_MIN) / ROUNDUP_SIZE
 }
 
-/// lisp.h's `ARRAY_MARK_FLAG' (PTRDIFF_MIN): the mark of a vector outside
-/// the blocks, in its header's size word from the mark phase to the sweep.
-const ARRAY_MARK_FLAG: usize = 1 << (usize::BITS - 1);
 /// lisp.h's `PSEUDOVECTOR_FLAG' and the tag's place in the size word.
 const PSEUDOVECTOR_FLAG: usize = 1 << (usize::BITS - 2);
 const PSEUDOVECTOR_SIZE_BITS: u32 = 12;

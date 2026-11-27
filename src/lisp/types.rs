@@ -69,10 +69,8 @@ impl Hasher for IdentityHasher {
 pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
 
 /// The collections begun in the process, as alloc.c's `gcs_done' counts
-/// the ones done: a count, the process's as alloc.c's is.  A collection
-/// is counted at its start because the strings' marks still carry the
-/// count as their collection's number (see `MarkBit'); no other object
-/// carries it, and nothing else reads it while a collection runs.
+/// the ones done: a count, the process's as alloc.c's is.  No object
+/// carries it, and nothing reads it while a collection runs.
 static GC_MARK_EPOCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
 /// The collections begun so far: two reads agree when no collection
@@ -82,66 +80,28 @@ pub(crate) fn collections_begun() -> u32 {
     GC_MARK_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// The number a string marked in the current collection carries, and a
-/// new string is made with: the count of the last collection begun.
-#[inline]
-pub(crate) fn current_mark_epoch() -> u32 {
-    collections_begun()
-}
-
-/// Between a mark phase and its sweep (a checked build's guard: a second
-/// mark phase in between would give the strings born after it a newer
-/// epoch, and the sweep would free them).
+/// Between a mark phase and the end of its sweeps (a checked build's
+/// guard: a second mark phase in between would find the first's marks
+/// still set and trace nothing below them, and the sweeps would keep
+/// whatever the first alone had reached).
 static GC_SWEEP_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub(crate) fn set_sweep_pending(pending: bool) {
     GC_SWEEP_PENDING.store(pending, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Start a collection: count it, which gives the epoch every string
-/// marked in it will carry.
-pub(crate) fn begin_mark_epoch() -> u32 {
+/// A collection's mark phase begins: the collection is counted, and no
+/// object of the heap is marked, as the last one's sweeps left them.
+pub(crate) fn begin_mark_phase() {
     debug_assert!(
         !GC_SWEEP_PENDING.load(std::sync::atomic::Ordering::Relaxed),
         "a mark phase began while the previous one's sweep is pending"
     );
-    let epoch = current_mark_epoch().wrapping_add(1).max(1);
-    GC_MARK_EPOCH.store(epoch, std::sync::atomic::Ordering::Relaxed);
-    crate::lisp::alloc::begin_image_mark_epoch();
-    epoch
-}
-
-/// alloc.c's mark bit, on the object: a string is marked when it carries
-/// the current collection's epoch, so the mark phase writes a word into
-/// the object instead of inserting its address into a table, and no pass
-/// clears the bits afterwards.  (A cons, a float and a vector in a block
-/// are marked in their block's bitmap, a large vector by its header's
-/// ARRAY_MARK_FLAG and a symbol by its gcmarkbit, which the sweeps clear.)
-#[derive(Debug, Default)]
-pub(crate) struct MarkBit(Cell<u32>);
-
-impl MarkBit {
-    /// Mark for EPOCH; true when the object was not yet marked in it.
-    pub(crate) fn mark(&self, epoch: u32) -> bool {
-        if self.0.get() == epoch {
-            return false;
-        }
-        self.0.set(epoch);
-        true
-    }
-
-    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
-        self.0.get() == epoch
-    }
-
-    /// The word itself (the allocator's free mark rides in it).
-    pub(crate) fn raw(&self) -> u32 {
-        self.0.get()
-    }
-
-    pub(crate) fn set_raw(&self, word: u32) {
-        self.0.set(word);
-    }
+    GC_MARK_EPOCH.store(
+        collections_begun().wrapping_add(1),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+    crate::lisp::alloc::begin_image_marks();
 }
 
 /// A handle to the single canonical Lisp string payload. Rust text is

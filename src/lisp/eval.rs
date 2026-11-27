@@ -1397,7 +1397,6 @@ fn next_record_owner() -> u32 {
 /// The shared allocator can also sweep objects owned by parked interpreters.
 /// Keep their doomed objects until their own evaluator can run the callbacks.
 fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReachability) {
-    let epoch = marked.epoch;
     let active_state = std::ptr::from_ref::<InterpreterState>(active) as usize;
     let states = crate::lisp::alloc::live_states();
     active.queue_doomed_finalizers();
@@ -1416,7 +1415,7 @@ fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReac
         if state != active_state {
             // SAFETY: as above; only Lisp marks are updated in this phase.
             let other = unsafe { Interpreter::registered_gc_view(state) };
-            let mut other_marked = LispReachability::with_epoch(epoch);
+            let mut other_marked = LispReachability::in_collection();
             other.mark_doomed_finalizers(&mut other_marked);
         }
     }
@@ -4859,11 +4858,6 @@ pub(crate) struct LispReachability {
     /// Whether an object was marked since `trace_pending' last answered.
     reached: bool,
     weak_tables: Vec<crate::lisp::types::HashTableRef>,
-    /// This collection's number: a string is marked by carrying it; a
-    /// cons, float or vector in a block by its block's mark bit, a large
-    /// vector by its header's ARRAY_MARK_FLAG and a symbol by its
-    /// gcmarkbit, which the sweeps clear.
-    epoch: u32,
     /// The retention pass after the live sets are taken: every slot of
     /// every record is traced, a weak table's actual entries included, so
     /// the objects a never-swept record holds stay allocated.
@@ -4871,44 +4865,31 @@ pub(crate) struct LispReachability {
 }
 
 impl LispReachability {
-    /// A marker for another interpreter state in the same collection:
-    /// the objects and their marks are the process's (the strings' is
-    /// this collection's epoch), the work list and the weak tables it
-    /// finds its own.
-    pub(crate) fn with_epoch(epoch: u32) -> Self {
-        let mut marker = Self::default_without_epoch();
-        marker.epoch = epoch;
-        marker
-    }
-}
-
-impl LispReachability {
-    /// A collection's mark phase starts (`weak_hash_reachability', which
-    /// only the collector runs, and its sweeps follow): its own epoch, so
-    /// no string is marked in it yet.
-    fn for_collection() -> Self {
-        let mut marker = Self::default_without_epoch();
-        marker.epoch = crate::lisp::types::begin_mark_epoch();
-        marker
-    }
-}
-
-impl LispReachability {
-    fn default_without_epoch() -> Self {
+    /// A marker for an interpreter state's roots in the collection under
+    /// way.  The marks are on the objects, the process's: a cons, float or
+    /// vector in a block is marked in its block's bits, a large vector and
+    /// a string by ARRAY_MARK_FLAG in its size word and a symbol by its
+    /// gcmarkbit, which the sweeps clear.  The work list and the weak
+    /// tables the marker finds are its own.
+    pub(crate) fn in_collection() -> Self {
         Self {
             pending: Vec::new(),
             reached: false,
             weak_tables: Vec::new(),
             retaining: false,
-            epoch: 0,
         }
+    }
+
+    /// A collection's mark phase starts (`weak_hash_reachability', which
+    /// only the collector runs, and its sweeps follow): no object of the
+    /// heap is marked, as the last collection's sweeps left them.
+    fn for_collection() -> Self {
+        crate::lisp::types::begin_mark_phase();
+        Self::in_collection()
     }
 }
 
 pub(crate) struct WeakHashReachability {
-    /// The collection's epoch: the mark every reached string carries,
-    /// which the strings' sweep tests.
-    pub(crate) epoch: u32,
     pub(crate) tables: Vec<WeakHashTableReachability>,
 }
 
@@ -4943,7 +4924,7 @@ impl LispReachability {
                 unsafe { value.vectorlike_mark() }.is_marked()
             }
             Kind::Float(value) => value.mark_bit().is_marked(),
-            Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::StringObject(value) => value.mark_bit().is_marked(),
             // alloc.c:survives_gc_p tests the symbol's mark. A live owner's
             // obarray marks its symbols; a retired owner's names are not roots.
             Kind::Symbol(symbol) => symbol.is_marked(),
@@ -5032,7 +5013,7 @@ impl LispReachability {
                 unsafe { value.vectorlike_mark() }.mark()
             }
             Kind::Float(value) => value.mark_bit().mark(),
-            Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
+            Kind::StringObject(value) => value.mark_bit().mark(),
             Kind::Symbol(symbol) => symbol.mark(),
             Kind::Cons(value) => value.mark_bit().mark(),
         }
@@ -5743,13 +5724,12 @@ impl Interpreter {
             // while this collection reads its roots. The view owns no box.
             let other = unsafe { Interpreter::registered_gc_view(state) };
             // Its own marker (its work list and the weak tables it finds),
-            // the marks on the objects themselves, the process's, the
-            // strings' this collection's epoch; every record it keeps is
-            // retained as this state's are below.
+            // the marks on the objects themselves, the process's; every
+            // record it keeps is retained as this state's are below.
             // Nothing sweeps that state's weak tables in this collection,
             // so their entries are held as strongly as the rest: retaining
             // from the first root.
-            let mut other_marked = LispReachability::with_epoch(marked.epoch);
+            let mut other_marked = LispReachability::in_collection();
             // These roots share the allocator and this collection's marks.
             other_marked.retaining = true;
             other.mark_static_roots_into(&mut other_marked);
@@ -5809,10 +5789,7 @@ impl Interpreter {
                 (table, remove)
             })
             .collect();
-        WeakHashReachability {
-            epoch: marked.epoch,
-            tables,
-        }
+        WeakHashReachability { tables }
     }
 
     /// The windows this state's C-side structures hold and that the

@@ -7,7 +7,7 @@
 
 use super::{Kind, LispError, StringObjectRef, Value};
 use crate::lisp::alloc::{
-    PendingStringData, StringAllocation, retire_string_data, string_data_size,
+    ARRAY_MARK_FLAG, PendingStringData, StringAllocation, retire_string_data, string_data_size,
 };
 use std::cell::Cell;
 use std::ptr::{self, NonNull};
@@ -21,7 +21,12 @@ pub use properties::StringProperties;
 /// Positive SIZE_BYTE is a multibyte byte count; -1 denotes unibyte data.
 #[repr(C)]
 pub struct SharedStringState {
-    size: usize,
+    /// lisp.h's `size': "Number of characters in string; MSB is used as
+    /// the mark bit" (`ARRAY_MARK_FLAG'), set from the mark phase's
+    /// reaching the string to `sweep_strings'.  A cell, because the mark
+    /// phase sets the flag through a handle that the guards of a borrowed
+    /// string share.
+    size: Cell<usize>,
     size_byte: isize,
     pub props: StringProperties,
     data: NonNull<u8>,
@@ -51,7 +56,7 @@ impl std::fmt::Debug for SharedStringState {
 
 impl PartialEq for SharedStringState {
     fn eq(&self, other: &Self) -> bool {
-        self.size == other.size
+        self.len() == other.len()
             && self.size_byte == other.size_byte
             && self.bytes() == other.bytes()
             && self.props == other.props
@@ -144,7 +149,7 @@ impl StringObjectRef {
             let data =
                 unsafe { PendingStringData::new(state, nbytes, kind == StringAllocation::Pure) }?;
             let props = initialize(data.as_ptr());
-            state.size = characters;
+            state.size.set(characters);
             state.size_byte = if multibyte { nbytes as isize } else { -1 };
             state.data = data.install();
             state.props = props;
@@ -471,9 +476,13 @@ fn char_head_p(byte: u8) -> bool {
 }
 
 impl SharedStringState {
+    /// Where `u.s.data' is in the header, for the allocator, which keeps
+    /// it null in a free cell.
+    pub(crate) const DATA_OFFSET: usize = std::mem::offset_of!(SharedStringState, data);
+
     pub(crate) fn empty(multibyte: bool) -> Self {
         Self {
-            size: 0,
+            size: Cell::new(0),
             size_byte: if multibyte { 0 } else { -1 },
             props: StringProperties::default(),
             data: NonNull::from(&EMPTY_DATA),
@@ -518,7 +527,7 @@ impl SharedStringState {
             .into());
         }
         Ok(Self {
-            size: characters,
+            size: Cell::new(characters),
             size_byte: if multibyte { nbytes as isize } else { -1 },
             props: StringProperties::default(),
             data,
@@ -530,7 +539,7 @@ impl SharedStringState {
         STRING_CHAR_BYTE_CACHE.with(Cell::get).filter(|cache| {
             ptr::eq(cache.header, self)
                 && cache.data == self.data.as_ptr().cast_const()
-                && cache.size == self.size
+                && cache.size == self.len()
                 && cache.size_byte == self.size_byte
         })
     }
@@ -540,7 +549,7 @@ impl SharedStringState {
             cell.set(Some(StringCharByteCache {
                 header: self,
                 data: self.data.as_ptr().cast_const(),
-                size: self.size,
+                size: self.len(),
                 size_byte: self.size_byte,
                 charpos,
                 bytepos,
@@ -566,8 +575,9 @@ impl SharedStringState {
     /// end and the cached position, which then moves there.
     #[inline(always)]
     pub(crate) fn char_to_byte(&self, char_index: usize) -> usize {
-        assert!(char_index <= self.size, "character index within the string");
-        if self.size == self.storage_bytes() {
+        let size = self.len();
+        assert!(char_index <= size, "character index within the string");
+        if size == self.storage_bytes() {
             return char_index;
         }
         self.char_to_byte_scanned(char_index)
@@ -578,7 +588,7 @@ impl SharedStringState {
     #[inline(never)]
     fn char_to_byte_scanned(&self, char_index: usize) -> usize {
         let (mut below, mut below_byte) = (0, 0);
-        let (mut above, mut above_byte) = (self.size, self.storage_bytes());
+        let (mut above, mut above_byte) = (self.len(), self.storage_bytes());
         let cache = self.char_byte_cache();
         if let Some(cache) = cache {
             if cache.charpos < char_index {
@@ -618,7 +628,7 @@ impl SharedStringState {
     /// that starts at byte BYTE_INDEX (at most the byte length).
     pub(crate) fn byte_to_char(&self, byte_index: usize) -> usize {
         let (mut below, mut below_byte) = (0, 0);
-        let (mut above, mut above_byte) = (self.size, self.storage_bytes());
+        let (mut above, mut above_byte) = (self.len(), self.storage_bytes());
         assert!(byte_index <= above_byte, "byte index within the string");
         if above == above_byte {
             return byte_index;
@@ -660,7 +670,7 @@ impl SharedStringState {
 
     /// The byte offset COUNT characters after byte offset FROM.
     pub(crate) fn bytes_after_chars(&self, from: usize, count: usize) -> usize {
-        if !self.is_multibyte() || self.size == self.storage_bytes() {
+        if !self.is_multibyte() || self.len() == self.storage_bytes() {
             return from + count;
         }
         let bytes = self.bytes();
@@ -730,7 +740,7 @@ impl SharedStringState {
             }
             self.data = data;
         }
-        self.size = characters;
+        self.size.set(characters);
         self.size_byte = if multibyte { nbytes as isize } else { -1 };
     }
 
@@ -750,18 +760,77 @@ impl SharedStringState {
         // SAFETY: as `bytes', for the caller's lifetime.
         unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.storage_bytes()) }
     }
+    /// lisp.h's `SCHARS', with its `eassume (0 <= nchars)': no string is
+    /// marked while Lisp runs.
+    #[inline]
     pub(crate) fn len(&self) -> usize {
-        self.size
+        let size = self.size.get();
+        debug_assert!(
+            size & ARRAY_MARK_FLAG == 0,
+            "the length of a marked string read outside the collector"
+        );
+        size
     }
     pub(crate) fn is_multibyte(&self) -> bool {
         self.size_byte >= 0
     }
+    /// lisp.h's `STRING_BYTES': a unibyte string's are its characters.
+    #[inline]
     pub(crate) fn storage_bytes(&self) -> usize {
         if self.size_byte >= 0 {
             self.size_byte as usize
         } else {
-            self.size
+            self.len()
         }
+    }
+
+    /// alloc.c's `string_bytes': "Like STRING_BYTES, but ... can be called
+    /// during GC, so pay attention to the mark bit", for a report the
+    /// collector makes of a string it may have marked.
+    pub(crate) fn gc_storage_bytes(&self) -> usize {
+        if self.size_byte >= 0 {
+            self.size_byte as usize
+        } else {
+            self.size.get() & !ARRAY_MARK_FLAG
+        }
+    }
+
+    /// The bytes, for a report the collector makes between its mark phase
+    /// and the strings' sweep (`gc_storage_bytes').
+    pub(crate) fn gc_bytes(&self) -> &[u8] {
+        // SAFETY: as `bytes'.
+        unsafe { std::slice::from_raw_parts(self.data.as_ptr(), self.gc_storage_bytes()) }
+    }
+
+    /// alloc.c's `XSTRING_MARKED_P'.
+    #[inline(always)]
+    pub(crate) fn gc_marked(&self) -> bool {
+        self.size.get() & ARRAY_MARK_FLAG != 0
+    }
+
+    /// alloc.c's `XMARK_STRING' after a test of `XSTRING_MARKED_P': true
+    /// when the string was not yet marked.
+    #[inline(always)]
+    pub(crate) fn gc_mark(&self) -> bool {
+        let size = self.size.get();
+        if size & ARRAY_MARK_FLAG != 0 {
+            return false;
+        }
+        self.size.set(size | ARRAY_MARK_FLAG);
+        true
+    }
+
+    /// alloc.c's `XUNMARK_STRING' after a test of `XSTRING_MARKED_P', as
+    /// sweep_strings has them: true when the string was marked, which it
+    /// no longer is.
+    #[inline(always)]
+    pub(crate) fn gc_unmark(&self) -> bool {
+        let size = self.size.get();
+        if size & ARRAY_MARK_FLAG == 0 {
+            return false;
+        }
+        self.size.set(size & !ARRAY_MARK_FLAG);
+        true
     }
 
     /// fns.c:Fstring_equal and internal_equal compare SCHARS, SBYTES and
@@ -1161,7 +1230,7 @@ impl SharedStringState {
         self.forget_char_byte_cache();
         if nbytes != 0 {
             self.bytes_mut().fill(0);
-            self.size = nbytes;
+            self.size.set(nbytes);
             self.size_byte = -1;
         }
     }
@@ -1171,7 +1240,7 @@ impl SharedStringState {
     /// string's variable with empty_unibyte_string instead, which is the
     /// caller's to do.
     pub(crate) fn set_unibyte(&mut self) {
-        debug_assert!(self.size != 0 && self.storage_bytes() == self.size);
+        debug_assert!(self.len() != 0 && self.storage_bytes() == self.len());
         self.forget_char_byte_cache();
         self.size_byte = -1;
     }
