@@ -696,11 +696,17 @@ struct ActiveCall {
 // Keeps: at a native call nested in an active call (`invoke_nested'), the
 // load of the record's interpreter pointer, the store of the entering
 // frame's own and the store back when the callee returns (3; the address
-// stored is the one loaded, the derivation is what differs), and, no
-// register being free across the callee, the outer pointer's save in the
-// frame and its reload (2).  Measured: 5 at eval's call of a native
-// function (interp-to-native), 6 at the byte-code machine's
-// (bc-to-native).
+// stored is the one loaded, the derivation is what differs), and a
+// register for the loaded pointer across the callee, where none is free
+// (2): at the byte-code machine's call (run_verified) the pointer is
+// saved in the frame and reloaded; at eval's (eval_cons_call) it takes
+// the register of the environment's pointer, which is then reloaded from
+// the frame for its store and after the call.  Measured instruction by
+// instruction against the record without it: 6 at the byte-code
+// machine's (bc-to-native), the sixth the loop's own layout around the
+// call (two alignment no-ops and two register copies more, a spill and
+// two reloads fewer); 5 at eval's (interp-to-native), with a constant
+// made once more and an alignment no-op fewer.
 
 #[cfg(target_os = "macos")]
 fn current_native_stack_bottom() -> *const NativeWord {
