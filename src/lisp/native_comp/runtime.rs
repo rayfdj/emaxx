@@ -784,27 +784,37 @@ pub(crate) fn with_active_call<R>(
     body: impl FnOnce() -> R,
 ) -> R {
     let outermost = ACTIVE_CALL.with(|active| active.get().is_null());
+    // The heap, read from the runtime before the record's pointer is made
+    // from it: a place of the shared state's own pointer, as the
+    // collector's below is, with no reference to either.
+    let heap = runtime.heap_pointer();
+    // The record's pointers, each made once from its parameter, which is
+    // not used again while the call lasts: every reference a helper makes
+    // from them is derived from this frame's.
     let mut active = ActiveCall {
         interpreter,
         environment: Cell::new(environment),
         runtime,
     };
     let previous = ACTIVE_CALL.replace(&mut active);
-    let previous_gc = ActiveGc::replace(std::ptr::from_mut(&mut runtime.heap.gc));
+    // SAFETY: HEAP is the runtime's live heap.
+    let previous_gc = ActiveGc::replace(unsafe { &raw const (*heap).gc });
     // Every store to the heap pointer is made by the runtime's holder, so a
     // load and a store exchange it: a swap is a locked `xchg' on x86, about
     // 20 cycles on each native call.
     let previous_heap = ACTIVE_NATIVE_HEAP.load(Ordering::Relaxed);
-    ACTIVE_NATIVE_HEAP.store(std::ptr::from_mut(&mut runtime.heap), Ordering::Relaxed);
-    let previous_stack_bottom = runtime.heap.native_stack_bottom;
+    ACTIVE_NATIVE_HEAP.store(heap, Ordering::Relaxed);
+    // SAFETY: as above; no reference to the heap is live here.
+    let previous_stack_bottom = unsafe { (*heap).native_stack_bottom };
     if outermost {
-        runtime.heap.set_stack_bottom(current_native_stack_bottom());
+        // SAFETY: as above; the reference ends with the statement.
+        unsafe { (*heap).set_stack_bottom(current_native_stack_bottom()) };
     }
     let _guard = ActiveCallGuard {
         previous,
         previous_gc,
         previous_heap,
-        heap: std::ptr::from_mut(&mut runtime.heap),
+        heap,
         previous_stack_bottom,
     };
     body()
@@ -1254,7 +1264,13 @@ impl HandlerEntry {
 /// with its Rust/native frames. The scheduler must also switch TLS and roots;
 /// transferring this payload alone is not a native context switch.
 pub(crate) struct NativeRuntime {
-    shared: Option<Box<NativeSharedState>>,
+    /// Owned by its allocation's raw pointer, not by a Box: the heap's and
+    /// the collector's pointers the active call publishes are places of
+    /// that pointer (`heap_pointer'), which the references `Deref' and
+    /// `DerefMut' make for a statement do not end, nor does the owner's
+    /// move between shells at a thread switch.  A Box would be borrowed
+    /// anew at each `DerefMut' and retagged at each move.
+    shared: Option<crate::lisp::eval::StateOwner<NativeSharedState>>,
     thread: Box<NativeThreadState>,
     handlers: Vec<HandlerEntry>,
     /// The innermost handler's record, null for none: what the thread's
@@ -1453,7 +1469,7 @@ impl Default for NativeRuntime {
         let mut thread = Box::<NativeThreadState>::default();
         let thread_pointer = Box::new((&mut *thread) as *mut NativeThreadState);
         Self {
-            shared: Some(Box::new(NativeSharedState {
+            shared: Some(crate::lisp::eval::StateOwner::new(NativeSharedState {
                 heap: NativeHeap::new(),
                 thread_pointer,
                 link_table: runtime_link_table().into_boxed_slice(),
@@ -1471,6 +1487,17 @@ impl Default for NativeRuntime {
 }
 
 impl NativeRuntime {
+    /// The heap as a place of the shared state's own pointer, for the
+    /// active call to publish (`with_active_call'): no reference to the
+    /// shared state is made on the way.
+    #[inline(always)]
+    fn heap_pointer(&self) -> *mut NativeHeap {
+        debug_assert!(self.shared.is_some(), "native runtime shell is parked");
+        // SAFETY: as Deref's: the shell holds its shared state, whose
+        // pointer is its live allocation's.
+        unsafe { &raw mut (*self.shared.as_ref().unwrap_unchecked().as_ptr()).heap }
+    }
+
     pub(crate) fn is_pristine(&self) -> bool {
         self.handlers.is_empty()
             && self.call.is_null()
@@ -10778,8 +10805,13 @@ mod tests {
         let second_thread = std::ptr::from_mut(&mut *second.thread);
         assert_ne!(first_thread, second_thread);
 
+        let heap = first.heap_pointer();
         second.shared = first.shared.take();
         assert!(first.shared.is_none());
+        // The owner's move is no move of the allocation: the place the
+        // active call publishes is the second shell's now.
+        assert!(std::ptr::eq(heap, second.heap_pointer()));
+        assert!(std::ptr::eq(heap, &raw const second.heap));
         assert_eq!(
             first.call_frames().count(),
             1,

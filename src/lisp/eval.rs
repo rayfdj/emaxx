@@ -6755,10 +6755,17 @@ pub struct Interpreter {
     continuations: continuations::ThreadContinuations,
 }
 
-/// Own one stable state allocation while the root registry and suspended
-/// continuations retain raw pointers into it. Moving this owner makes no
-/// uniqueness assertion about the pointed-to state. Only its final Drop
-/// restores the Box, after execution and borrowed GC views have ended.
+/// Own one stable allocation by the raw pointer `Box::into_raw' gave.
+/// Moving this owner makes no uniqueness assertion about what it points to,
+/// and every reference into the allocation is made from that one pointer,
+/// as is any place of it another module publishes (`as_ptr').  Only its
+/// final Drop restores the Box.  It owns the editor state
+/// (`InterpreterStateOwner') and the native runtime's shared state
+/// (native_comp/runtime.rs), for the same reason.
+///
+/// The editor state: the root registry and suspended continuations retain
+/// raw pointers into it, and its Drop comes after execution and borrowed
+/// GC views have ended.
 ///
 /// The pointer is the one `Box::into_raw' gave, and every reference into
 /// the state is made from it: the shell's `Deref' and `DerefMut' for the
@@ -6771,22 +6778,31 @@ pub struct Interpreter {
 /// retagged as unique at every move of the owner, and a collector's
 /// access through the registry's older pointer would then conflict with
 /// the Box's next use.
-struct InterpreterStateOwner(std::ptr::NonNull<InterpreterState>);
+pub(crate) struct StateOwner<T>(std::ptr::NonNull<T>);
 
-impl InterpreterStateOwner {
-    fn new(state: InterpreterState) -> Self {
+type InterpreterStateOwner = StateOwner<InterpreterState>;
+
+impl<T> StateOwner<T> {
+    pub(crate) fn new(state: T) -> Self {
         Self(std::ptr::NonNull::new(Box::into_raw(Box::new(state))).expect("allocated state"))
+    }
+
+    /// The allocation's own pointer, for a place of it made with no
+    /// reference between (`&raw mut (*pointer).field').
+    #[inline(always)]
+    pub(crate) fn as_ptr(&self) -> *mut T {
+        self.0.as_ptr()
     }
 }
 
-impl Clone for InterpreterStateOwner {
+impl<T: Clone> Clone for StateOwner<T> {
     fn clone(&self) -> Self {
         Self::new((**self).clone())
     }
 }
 
-impl std::ops::Deref for InterpreterStateOwner {
-    type Target = InterpreterState;
+impl<T> std::ops::Deref for StateOwner<T> {
+    type Target = T;
 
     fn deref(&self) -> &Self::Target {
         // SAFETY: the active owner or a scoped GC view keeps the allocation
@@ -6795,7 +6811,7 @@ impl std::ops::Deref for InterpreterStateOwner {
     }
 }
 
-impl std::ops::DerefMut for InterpreterStateOwner {
+impl<T> std::ops::DerefMut for StateOwner<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: execution is serialized; ownership transfers leave the
         // old shell parked. GC's mutable view is restricted to sweep cleanup.
@@ -6803,7 +6819,7 @@ impl std::ops::DerefMut for InterpreterStateOwner {
     }
 }
 
-impl Drop for InterpreterStateOwner {
+impl<T> Drop for StateOwner<T> {
     fn drop(&mut self) {
         // SAFETY: new consumes exactly one Box. Continuations transfer this
         // owner, Clone allocates a distinct state, and GC views never drop it.
@@ -6839,7 +6855,7 @@ impl Interpreter {
         // owner-shaped reference, so unwinding cannot drop the live state.
         let continuations = continuations::ThreadContinuations::default();
         let view = std::mem::ManuallyDrop::new(Self {
-            state: Some(InterpreterStateOwner(pointer)),
+            state: Some(StateOwner(pointer)),
             continuations,
         });
         debug_assert!(
