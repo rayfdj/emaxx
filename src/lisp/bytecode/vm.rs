@@ -6885,3 +6885,94 @@ fn an_activation_entered_from_rust_leaves_the_threads_stacks_as_it_found_them() 
     assert_eq!(interp.bc_stack.leave_frame(), 0);
     assert_eq!(interp.bc_stack.frame_count(), 0);
 }
+
+#[cfg(test)]
+#[test]
+fn an_activation_the_verified_loop_leaves_goes_on_where_it_left_off() {
+    // exec_byte_code keeps its frames' program, pc and quitcounter in its
+    // own locals through everything its loop does: the quit check every
+    // 256 backward jumps (maybe_gc and maybe_quit, then NEXT) and a frame
+    // switch included.  Here the verified loop leaves the activation to
+    // the dispatch loop at each quit check, from a frame two calls above
+    // the one entered from Rust, and the dispatch hands it back; a handler
+    // the entry's frame pushed takes a signal from that frame after it.
+    // GNU 30.2's byte code for
+    //   (defun zz-spin (n) (let ((i 0)) (while (< i n) (setq i (1+ i))) i))
+    //   (defun zz-spin-signal (n)
+    //     (if (= (zz-spin n) n) (signal 'error (list n)) n))
+    //   (defun zz-hand (n)
+    //     (list (condition-case e (zz-spin-signal n)
+    //             (error (cons 'caught (cdr e))))
+    //           (zz-spin n)))
+    // answers ((caught N) N) for 3, 300 and 1000, as GNU's does, by each
+    // entry from Rust, and leaves the thread's stacks as it found them.
+    fn eval(interp: &mut Interpreter, env: &mut Env, text: &str) -> Value {
+        let form = crate::lisp::read_next_load_form(interp, text, &mut 0, env)
+            .expect("read form")
+            .expect("a form");
+        interp.eval(&form, env).expect("eval")
+    }
+    fn marks(interp: &Interpreter) -> [usize; 9] {
+        [
+            interp.bc_stack.frame,
+            interp.bc_stack.base,
+            interp.bc_stack.top,
+            interp.bc_stack.frame_count(),
+            interp.bc_frames.len(),
+            interp.bc_handlers.len(),
+            interp.specpdl_index(),
+            interp.backtrace_frames_len(),
+            interp.lisp_eval_depth,
+        ]
+    }
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    eval(
+        &mut interp,
+        &mut env,
+        "(progn
+           (defalias 'zz-spin
+             (make-byte-code 257 (unibyte-string #o300 #o211 #o2 #o127 #o203 #o13 #o0
+                                                 #o124 #o202 #o1 #o0 #o207)
+                             [0] 4))
+           (defalias 'zz-spin-signal
+             (make-byte-code 257 (unibyte-string #o300 #o1 #o41 #o1 #o125 #o203 #o16 #o0
+                                                 #o301 #o302 #o2 #o103 #o42 #o207 #o207)
+                             [zz-spin signal error] 4))
+           (defalias 'zz-hand
+             (make-byte-code 257 (unibyte-string #o300 #o61 #o13 #o0 #o301 #o1 #o41 #o60
+                                                 #o202 #o21 #o0 #o302 #o1 #o101 #o102 #o262
+                                                 #o1 #o303 #o2 #o41 #o104 #o207)
+                             [(error) zz-spin-signal caught zz-spin] 4)))",
+    );
+    let function = eval(&mut interp, &mut env, "(symbol-function 'zz-hand)");
+    let closure = function.closure_ref().expect("a closure");
+    interp.bc_stack.ensure_allocated();
+    // A caller's frame with operands on it, as a Bcall's.
+    interp
+        .bc_stack
+        .enter_frame(8, Value::Nil, 0)
+        .expect("the caller's frame");
+    interp.bc_stack.push(Value::Integer(1)).expect("an operand");
+    for n in [3, 300, 1000] {
+        let expected = eval(&mut interp, &mut env, &format!("'((caught {n}) {n})"));
+        let args = [Value::Integer(n)];
+        let before = marks(&interp);
+        for entry in 0..3 {
+            let result = match entry {
+                0 => interp.call_function_value(function, None, &args, &mut env),
+                1 => execute_closure(&mut interp, closure, &args, &mut env),
+                _ => funcall_closure(&mut interp, closure, &args, &mut env),
+            }
+            .expect("zz-hand");
+            assert!(
+                crate::lisp::primitives::values_equal(&interp, &result, &expected).expect("equal"),
+                "zz-hand {n} by entry {entry}: {result:?}"
+            );
+            assert_eq!(marks(&interp), before, "zz-hand {n} by entry {entry}");
+            assert_eq!(&*interp.bc_stack, &[Value::Integer(1)]);
+        }
+    }
+    interp.bc_stack.leave_frame();
+    assert_eq!(interp.bc_stack.frame_count(), 0);
+}
