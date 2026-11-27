@@ -683,6 +683,11 @@ struct ActiveCall {
     interpreter: Cell<*mut Interpreter>,
     runtime: *mut NativeRuntime,
     environment: Cell<*mut Env>,
+    /// The record of the call this one nests in, or null: the active
+    /// call when this one began, which it makes the active call again
+    /// when it ends.  The calls active on an OS thread are thus a chain
+    /// from `ACTIVE_CALL' (`native_calls_are_all').
+    previous: *mut ActiveCall,
 }
 
 // S-DERIVED.  A `&mut' parameter is protected for its callee's whole frame:
@@ -793,7 +798,8 @@ fn active_collection_cannot_be_due() -> bool {
 static ACTIVE_NATIVE_HEAP: AtomicPtr<NativeHeap> = AtomicPtr::new(std::ptr::null_mut());
 
 struct ActiveCallGuard {
-    previous: *mut ActiveCall,
+    /// The call's record, whose `previous' is the active call again.
+    record: *mut ActiveCall,
     previous_gc: ActiveGc,
     previous_heap: *mut NativeHeap,
     heap: *mut NativeHeap,
@@ -805,7 +811,9 @@ impl Drop for ActiveCallGuard {
         // The owned shared payload has returned to this activation before
         // its scope exits. Restore the physical stack, not another fiber's.
         unsafe { (*self.heap).native_stack_bottom = self.previous_stack_bottom };
-        ACTIVE_CALL.set(self.previous);
+        // SAFETY: the record is in the call's frame until this guard,
+        // declared after it, has gone.
+        ACTIVE_CALL.set(unsafe { (*self.record).previous });
         self.previous_gc.restore();
         ACTIVE_NATIVE_HEAP.store(self.previous_heap, Ordering::Relaxed);
     }
@@ -830,8 +838,10 @@ pub(crate) fn with_active_call<R>(
         interpreter: Cell::new(interpreter),
         environment: Cell::new(environment),
         runtime,
+        previous: ACTIVE_CALL.get(),
     };
-    let previous = ACTIVE_CALL.replace(&mut active);
+    let record = std::ptr::from_mut(&mut active);
+    ACTIVE_CALL.set(record);
     // SAFETY: HEAP is the runtime's live heap.
     let previous_gc = ActiveGc::replace(unsafe { &raw const (*heap).gc });
     // Every store to the heap pointer is made by the runtime's holder, so a
@@ -846,7 +856,7 @@ pub(crate) fn with_active_call<R>(
         unsafe { (*heap).set_stack_bottom(current_native_stack_bottom()) };
     }
     let _guard = ActiveCallGuard {
-        previous,
+        record,
         previous_gc,
         previous_heap,
         heap,
@@ -926,6 +936,29 @@ fn with_active<R>(body: impl FnOnce(&ActiveCall) -> R) -> R {
         // waits on it.
         body(unsafe { &*active })
     })
+}
+
+/// Whether every native call active on this OS thread, the active call and
+/// the calls it nests in, is INTERPRETER's: whether no other interpreter's
+/// evaluation is under way on this thread.  Lisp reaches another
+/// interpreter's evaluation only through Rust code a native call ran
+/// (generated code, a test's function as generated code): a builtin or a
+/// module function acts on the interpreter that called it.  The calls are
+/// those of the stack running now: a thread switch clears the active call
+/// while another stack runs (`with_thread_suspended').  Only the records'
+/// pointers are compared; no interpreter is reached through them.
+pub(crate) fn native_calls_are_all(interpreter: *const Interpreter) -> bool {
+    let mut call = ACTIVE_CALL.get();
+    while !call.is_null() {
+        // SAFETY: a record on the chain is in the frame of its call, which
+        // returns after every call nested in it.
+        let record = unsafe { &*call };
+        if !std::ptr::eq(record.interpreter.get(), interpreter) {
+            return false;
+        }
+        call = record.previous;
+    }
+    true
 }
 
 /// GNU has one process-wide `consing_until_gc', a plain global the one
@@ -1961,6 +1994,7 @@ impl NativeRuntime {
                 interpreter: Cell::new(interpreter),
                 environment: Cell::new(environment),
                 runtime: self,
+                previous,
             };
             ACTIVE_CALL.set(&mut active);
             // SAFETY: the caller's, and the frame linked above holds
@@ -19361,6 +19395,165 @@ mod tests {
         let stderr = String::from_utf8_lossy(&control.stderr);
         assert!(control.status.success(), "{:?}\n{stderr}", control.status);
         assert!(!stderr.contains(STOP), "{stderr}");
+    }
+
+    /// A native call of INTERPRETER around BODY, a test's function in the
+    /// place of generated code, made as the SAFE_FREE test above makes one.
+    fn in_native_call(
+        interpreter: &mut Interpreter,
+        environment: &mut Env,
+        runtime: &mut NativeRuntime,
+        body: impl FnOnce(),
+    ) {
+        let frame = runtime.new_call_frame(std::ptr::null_mut(), interpreter);
+        runtime.begin_call(&frame);
+        with_active_call(interpreter, environment, runtime, body);
+        runtime
+            .finish_call(interpreter, &frame)
+            .expect("finish the native activation");
+    }
+
+    /// `garbage-collect' in the active call's interpreter.
+    fn collect_in_active_call() {
+        with_active(|active| {
+            // SAFETY: the active call's pointers, each reference made for
+            // the call, as the helpers make theirs.
+            let interpreter = unsafe { &mut *active.interpreter.get() };
+            interpreter.select_symbol_owner();
+            crate::lisp::primitives::call(interpreter, "garbage-collect", &[], unsafe {
+                &mut *active.environment.get()
+            })
+            .expect("collect in the active call");
+        });
+    }
+
+    /// A collection views every other interpreter's state, which is sound
+    /// while none of them runs.  On another OS thread none can, this one
+    /// holding the runtime, even in the middle of its Lisp (roots.rs's
+    /// test of an interpreter that waits there); what checked builds stop
+    /// is another interpreter's evaluation under way on this thread, which
+    /// only Rust code a native call ran can start.  Here the first
+    /// interpreter's native call, its lisp_eval_depth 0, makes the second
+    /// collect from Rust ("interpreted") and from a native call of the
+    /// second's ("native"), each in a child process that stops at the
+    /// assertion.  The controls return: the second collects in its own
+    /// native call ("own") and after the first's call has returned
+    /// ("after").
+    #[test]
+    fn a_collection_under_another_interpreters_native_call_stops_the_process() {
+        const CHILD: &str = "EMAXX_TEST_FOREIGN_COLLECTION_PART";
+        const STOP: &str = "a collection views another interpreter's state only while no other \
+                            interpreter's evaluation is under way on its OS thread";
+        if let Ok(part) = std::env::var(CHILD) {
+            let mut first = Interpreter::new();
+            let mut first_environment = Env::new();
+            let mut first_runtime = NativeRuntime::default();
+            let mut second = Interpreter::new();
+            let mut second_environment = Env::new();
+            let mut second_runtime = NativeRuntime::default();
+            assert_eq!(first.lisp_eval_depth, 0);
+            match part.as_str() {
+                "interpreted" => in_native_call(
+                    &mut first,
+                    &mut first_environment,
+                    &mut first_runtime,
+                    || {
+                        second.select_symbol_owner();
+                        crate::lisp::primitives::call(
+                            &mut second,
+                            "garbage-collect",
+                            &[],
+                            &mut second_environment,
+                        )
+                        .expect("collect in the second interpreter");
+                    },
+                ),
+                "native" => in_native_call(
+                    &mut first,
+                    &mut first_environment,
+                    &mut first_runtime,
+                    || {
+                        in_native_call(
+                            &mut second,
+                            &mut second_environment,
+                            &mut second_runtime,
+                            collect_in_active_call,
+                        );
+                    },
+                ),
+                "own" => in_native_call(
+                    &mut second,
+                    &mut second_environment,
+                    &mut second_runtime,
+                    collect_in_active_call,
+                ),
+                "after" => {
+                    in_native_call(
+                        &mut first,
+                        &mut first_environment,
+                        &mut first_runtime,
+                        || {},
+                    );
+                    second.select_symbol_owner();
+                    crate::lisp::primitives::call(
+                        &mut second,
+                        "garbage-collect",
+                        &[],
+                        &mut second_environment,
+                    )
+                    .expect("collect in the second interpreter");
+                }
+                other => panic!("no part {other}"),
+            }
+            assert!(
+                matches!(part.as_str(), "own" | "after") || !cfg!(debug_assertions),
+                "{part}: the collection returned"
+            );
+            return;
+        }
+        let run = |part: &str| {
+            std::process::Command::new(std::env::current_exe().expect("test binary"))
+                .args([
+                    concat!(
+                        module_path!(),
+                        "::a_collection_under_another_interpreters_native_call_stops_the_process"
+                    )
+                    .strip_prefix("emaxx::")
+                    .expect("the crate's module path"),
+                    "--exact",
+                    "--test-threads=1",
+                    "--nocapture",
+                ])
+                .env(CHILD, part)
+                .output()
+                .expect("run the part in a child process")
+        };
+        // The assertion is a checked build's; without it each part returns.
+        for part in ["interpreted", "native"] {
+            let child = run(part);
+            let stderr = String::from_utf8_lossy(&child.stderr);
+            assert_eq!(
+                child.status.success(),
+                !cfg!(debug_assertions),
+                "{part}: {:?}\n{stderr}",
+                child.status
+            );
+            assert_eq!(
+                stderr.contains(STOP),
+                cfg!(debug_assertions),
+                "{part}: {stderr}"
+            );
+        }
+        for part in ["own", "after"] {
+            let control = run(part);
+            let stderr = String::from_utf8_lossy(&control.stderr);
+            assert!(
+                control.status.success(),
+                "{part}: {:?}\n{stderr}",
+                control.status
+            );
+            assert!(!stderr.contains(STOP), "{part}: {stderr}");
+        }
     }
 }
 

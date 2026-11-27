@@ -1403,7 +1403,7 @@ fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReac
     for &state in &states {
         if state != active_state {
             // SAFETY: the registered state is parked during serialized GC.
-            let other = unsafe { Interpreter::registered_gc_view(state) };
+            let other = unsafe { Interpreter::registered_gc_view(state, active) };
             other.queue_doomed_finalizers();
         }
     }
@@ -1414,7 +1414,7 @@ fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReac
     for state in states {
         if state != active_state {
             // SAFETY: as above; only Lisp marks are updated in this phase.
-            let other = unsafe { Interpreter::registered_gc_view(state) };
+            let other = unsafe { Interpreter::registered_gc_view(state, active) };
             let mut other_marked = LispReachability::in_collection();
             other.mark_doomed_finalizers(&mut other_marked);
         }
@@ -1443,7 +1443,7 @@ pub(crate) fn purge_freed_records_in_live_states(active: &mut Interpreter) {
         }
         // SAFETY: the registered allocation remains alive during this
         // serialized sweep cleanup. Only its freed-record indexes change.
-        let mut other = unsafe { Interpreter::registered_gc_view(state) };
+        let mut other = unsafe { Interpreter::registered_gc_view(state, &raw const *active) };
         other.purge_freed_records(&freed);
     }
 }
@@ -5722,7 +5722,7 @@ impl Interpreter {
             }
             // SAFETY: the registered allocation stays alive and parked
             // while this collection reads its roots. The view owns no box.
-            let other = unsafe { Interpreter::registered_gc_view(state) };
+            let other = unsafe { Interpreter::registered_gc_view(state, self) };
             // Its own marker (its work list and the weak tables it finds),
             // the marks on the objects themselves, the process's; every
             // record it keeps is retained as this state's are below.
@@ -6840,15 +6840,25 @@ impl Interpreter {
     /// (`register_state_as_root'), beside the owner's.  That is sound
     /// while no reference the owner made is used again after the view's:
     /// while the interpreter that owns STATE is not executing.  It is
-    /// another interpreter's than the collecting one (the Lisp threads of
-    /// one interpreter share its state), so it is either idle on this OS
-    /// thread (the tests' image template, a test's second interpreter) or
-    /// belongs to an OS thread that waits for the runtime, which this one
-    /// holds for the whole collection, as alloc.c:mark_threads reads the
-    /// thread_state of threads that wait for global_lock.  Checked builds
-    /// assert both: the runtime held, and the state outside every eval and
-    /// funcall (thread.h's lisp_eval_depth, 0 at top level).
-    unsafe fn registered_gc_view(state: usize) -> std::mem::ManuallyDrop<Self> {
+    /// another interpreter's than COLLECTOR, the collecting one (the Lisp
+    /// threads of one interpreter share its state), so it is either idle
+    /// on this OS thread (the tests' image template, a test's second
+    /// interpreter) or belongs to an OS thread that waits for the runtime,
+    /// which this one holds for the whole collection, as thread.c's
+    /// mark_threads reads the thread_state of threads that wait for
+    /// global_lock.  Such a thread may wait in the middle of its Lisp, its
+    /// lisp_eval_depth above 0, as a GNU thread does in thread_select or
+    /// sys_cond_wait: it runs nothing until it holds the runtime again.
+    /// What would be executing is an interpreter whose evaluation is
+    /// under way on this OS thread, below
+    /// the collection.  Checked builds assert that neither is so: the
+    /// runtime held, and every native call active on this thread
+    /// COLLECTOR's, the only way another interpreter's Lisp runs under
+    /// this one's (`native_comp::native_calls_are_all').
+    unsafe fn registered_gc_view(
+        state: usize,
+        collector: *const Interpreter,
+    ) -> std::mem::ManuallyDrop<Self> {
         let pointer = std::ptr::NonNull::new(state as *mut InterpreterState)
             .expect("registered state is non-null");
         // Construct all potentially fallible fields before the non-owning
@@ -6862,9 +6872,10 @@ impl Interpreter {
             crate::lisp::runtime::held(),
             "a collection views another state only while its OS thread holds the runtime"
         );
-        debug_assert_eq!(
-            view.lisp_eval_depth, 0,
-            "a collection views another interpreter's state only while it runs no Lisp"
+        debug_assert!(
+            crate::lisp::native_comp::native_calls_are_all(collector),
+            "a collection views another interpreter's state only while no other \
+             interpreter's evaluation is under way on its OS thread"
         );
         view
     }

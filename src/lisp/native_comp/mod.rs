@@ -27,7 +27,7 @@ pub(crate) use runtime::with_thread_suspended;
 pub(crate) use runtime::{
     MEMORY_FULL_CONS_THRESHOLD, bump_consing_until_gc, collection_cannot_be_due,
     decode_active_backtrace_arguments, garbage_collection_maybe_due, gc_tuning,
-    lower_consing_until_gc, maybe_gc, note_lisp_allocation,
+    lower_consing_until_gc, maybe_gc, native_calls_are_all, note_lisp_allocation,
 };
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 pub(crate) use runtime::{NativeRuntime, NestedCall};
