@@ -804,9 +804,6 @@ fn call_native_nested(
     if !crate::lisp::native_comp::collection_cannot_be_due(interp) {
         return None;
     }
-    // SAFETY: the active call lends its runtime for this synchronous
-    // call, as `current_runtime' does.
-    let runtime = unsafe { &mut *nested.runtime() };
     // SAFETY: as the Call arm's: the arguments stay on the caller's stack
     // until the call returns, and verification found them there.
     let call_args = unsafe { interp.bc_stack.below_top_unchecked(top, argc) };
@@ -814,8 +811,11 @@ fn call_native_nested(
     let depths = (lisp_eval_depth, backtrace_depth + 1);
     // SAFETY: NESTED is the active call of this runtime and interpreter,
     // and TARGET takes at most six arguments, among them CALL_ARGS.
-    let result =
-        unsafe { runtime.invoke_nested_fixed(nested, interp, env, target, call_args, depths) };
+    let result = unsafe {
+        crate::lisp::native_comp::NativeRuntime::invoke_nested_fixed(
+            nested, interp, env, target, call_args, depths,
+        )
+    };
     let result = interp.settle_call_result(backtrace_depth, result, env);
     interp.leave_plain_funcall(backtrace_depth);
     Some(result)

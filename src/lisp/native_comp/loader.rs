@@ -1087,16 +1087,22 @@ pub(crate) fn call_fixed_function(
         && let Some(nested) = super::runtime::NestedCall::of(interpreter)
     {
         let target = native.target();
-        // SAFETY: the active call lends its runtime for this synchronous
-        // call, as `current_runtime' does; NESTED is its call, and TARGET
-        // takes at most six arguments, among them ARGUMENTS.
-        let runtime = unsafe { &mut *nested.runtime() };
         let depths = (
             interpreter.lisp_eval_depth,
             interpreter.backtrace_frames_len(),
         );
+        // SAFETY: the active call lends its runtime for this synchronous
+        // call, as `current_runtime' does; NESTED is its call, and TARGET
+        // takes at most six arguments, among them ARGUMENTS.
         return Some(unsafe {
-            runtime.invoke_nested_fixed(nested, interpreter, environment, target, arguments, depths)
+            NativeRuntime::invoke_nested_fixed(
+                nested,
+                interpreter,
+                environment,
+                target,
+                arguments,
+                depths,
+            )
         });
     }
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
@@ -1178,16 +1184,15 @@ pub(crate) unsafe fn call_many_vector(
     }
     let target = native.target();
     if let Some(nested) = super::runtime::NestedCall::of(interpreter) {
-        // SAFETY: as `call_fixed_function's nested call: the active call
-        // lends its runtime, NESTED is its call, and TARGET takes a count
-        // and a vector, the caller's.
-        let runtime = unsafe { &mut *nested.runtime() };
         let depths = (
             interpreter.lisp_eval_depth,
             interpreter.backtrace_frames_len(),
         );
+        // SAFETY: as `call_fixed_function's nested call: the active call
+        // lends its runtime, NESTED is its call, and TARGET takes a count
+        // and a vector, the caller's.
         return Some(unsafe {
-            runtime.invoke_nested_many(
+            NativeRuntime::invoke_nested_many(
                 nested,
                 interpreter,
                 environment,

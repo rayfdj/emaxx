@@ -23,14 +23,14 @@ mod runtime;
 mod state;
 
 pub(crate) use loader::{DumpedNativeFunction, RegistrationKind, UnitLibrary, open_unit};
-#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
-pub(crate) use runtime::NestedCall;
 pub(crate) use runtime::with_thread_suspended;
 pub(crate) use runtime::{
     MEMORY_FULL_CONS_THRESHOLD, bump_consing_until_gc, collection_cannot_be_due,
     decode_active_backtrace_arguments, garbage_collection_maybe_due, gc_tuning,
     lower_consing_until_gc, maybe_gc, note_lisp_allocation,
 };
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+pub(crate) use runtime::{NativeRuntime, NestedCall};
 pub(crate) use runtime::{
     hash_table_compare_eql, hash_table_compare_equal, hash_table_compare_user, hash_table_hash_eq,
     hash_table_hash_eql, hash_table_hash_equal, hash_table_hash_user,

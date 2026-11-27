@@ -57,7 +57,11 @@ fn thread_suspension_and_signals_match_gnu_with_real_native_code() {
 /// goes on with its own frame.  One case for each such helper: Ffuncall
 /// (each kind of callee, and one that signals), helper_unbind_n (a
 /// cleanup, a watcher), Fget under `overriding-plist-environment' (the
-/// debugger entered for a quit in Fassq) and helper_sanitizer_assert.
+/// debugger entered for a quit in Fassq) and helper_sanitizer_assert;
+/// and one for Ffuncall's plain path of a subr that runs Lisp, of a
+/// byte-compiled function and of a native function, with a native call
+/// nested from eval and from byte code between them, each thread's
+/// backtrace as deep after the call as before it.
 /// The collector's verifier is on in each editor's environment; GNU
 /// reads no such variable.
 #[test]
@@ -88,6 +92,12 @@ fn native_helpers_go_on_after_their_callee_parks_the_thread() {
             include_str!("fixtures/thread-native-sanitizer-yield.el"),
             None,
             "(t (120 120) 80)\n",
+        ),
+        (
+            "plain-funcall-yield",
+            include_str!("fixtures/thread-native-plain-funcall-yield.el"),
+            None,
+            "(t t t t t t (((2 3) t) ((11 12) t) 4))\n",
         ),
     ];
     run_cases("native-helper-yield", &cases, true);

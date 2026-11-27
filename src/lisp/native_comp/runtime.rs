@@ -1979,7 +1979,6 @@ impl NativeRuntime {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[inline(always)]
     pub(crate) unsafe fn invoke_nested_fixed(
-        &mut self,
         nested: NestedCall,
         interpreter: &mut Interpreter,
         environment: &mut Env,
@@ -1990,7 +1989,7 @@ impl NativeRuntime {
         // SAFETY: as the caller's; the frame `invoke_nested' links holds
         // the buffer until it is unlinked.
         unsafe {
-            self.invoke_nested(
+            Self::invoke_nested(
                 nested,
                 interpreter,
                 environment,
@@ -2012,7 +2011,6 @@ impl NativeRuntime {
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[inline(always)]
     pub(crate) unsafe fn invoke_nested_many(
-        &mut self,
         nested: NestedCall,
         interpreter: &mut Interpreter,
         environment: &mut Env,
@@ -2022,7 +2020,7 @@ impl NativeRuntime {
     ) -> Result<Value, LispError> {
         // SAFETY: as the caller's.
         unsafe {
-            self.invoke_nested(
+            Self::invoke_nested(
                 nested,
                 interpreter,
                 environment,
@@ -2037,13 +2035,16 @@ impl NativeRuntime {
     ///
     /// # Safety
     ///
-    /// NESTED is the active call of this runtime and INTERPRETER, DEPTHS
-    /// are INTERPRETER's Ffuncall depth and backtrace frame count, and
-    /// CALL's target and arguments are as `RegisterCall::call' requires.
+    /// NESTED is the active call of INTERPRETER, DEPTHS are INTERPRETER's
+    /// Ffuncall depth and backtrace frame count, and CALL's target and
+    /// arguments are as `RegisterCall::call' requires.
+    ///
+    /// The runtime is NESTED's, reached through its pointer for each
+    /// statement: the callee's helpers make their own references from that
+    /// pointer, so none is held here across the call (S-DERIVED).
     #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
     #[inline(always)]
     unsafe fn invoke_nested(
-        &mut self,
         nested: NestedCall,
         interpreter: &mut Interpreter,
         environment: &mut Env,
@@ -2052,8 +2053,16 @@ impl NativeRuntime {
     ) -> Result<Value, LispError> {
         let mut escape = EscapeBuffer(MaybeUninit::uninit());
         let buffer = std::ptr::from_mut(&mut escape);
-        let frame = NativeCallFrame::new(self.call, buffer.cast(), depths.0, depths.1);
-        self.link_call_frame(&frame);
+        let runtime = nested.runtime();
+        // SAFETY: the active call's runtime, live for its extent; no
+        // reference to it is live in this frame.
+        let frame = NativeCallFrame::new(
+            unsafe { (*runtime).call },
+            buffer.cast(),
+            depths.0,
+            depths.1,
+        );
+        unsafe { &mut *runtime }.link_call_frame(&frame);
         // The active call already names this runtime: the callee's record
         // is that one naming this frame's INTERPRETER and ENVIRONMENT,
         // written in place while the callee runs, the active call being
@@ -2071,13 +2080,14 @@ impl NativeRuntime {
         debug_assert!(std::ptr::eq(record.environment.get(), environment));
         record.interpreter.set(outer_interpreter);
         record.environment.set(outer_environment);
+        // SAFETY: as above, after the call.
         if escaped {
-            return self.finish_escaped_frame(interpreter, &frame, false);
+            return unsafe { &mut *runtime }.finish_escaped_frame(interpreter, &frame, false);
         }
         // SAFETY: as `decode_result's: the returned word still belongs to
         // the protected activation.
         let result = unsafe { Value::from_word(word) };
-        self.finish_frame(interpreter, &frame, false)?;
+        unsafe { &mut *runtime }.finish_frame(interpreter, &frame, false)?;
         Ok(result)
     }
 
@@ -4290,15 +4300,8 @@ fn plain_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Option
     let (&function_word, call_arguments) = arguments.split_first()?;
     // SAFETY: the caller's live word.
     let function = unsafe { Value::from_word(function_word) };
-    // SAFETY: the activation's pointees outlive this call.
-    let result = invoke_plain_native_funcall(
-        unsafe { &mut *active.interpreter.get() },
-        unsafe { &mut *active.runtime },
-        unsafe { &mut *active.environment.get() },
-        function,
-        call_arguments,
-    )
-    .or_else(|| invoke_plain_bytecode_funcall(active, function, call_arguments))?;
+    let result = invoke_plain_native_funcall(active, function, call_arguments)
+        .or_else(|| invoke_plain_bytecode_funcall(active, function, call_arguments))?;
     Some(result.unwrap_or_else(|error| {
         remember_helper_error(active, error);
         0
@@ -4314,14 +4317,18 @@ fn plain_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Option
 /// the function called with ARGUMENTS as the full path below would call
 /// it.  None, with nothing changed, when any of that does not hold or the
 /// function does not take this many arguments.
+///
+/// The callee runs in this activation and its helpers make their
+/// references from ACTIVE's pointers, so this frame holds none across the
+/// call: each is made from the pointer for the statement that uses it
+/// (S-DERIVED).
 #[inline(always)]
 fn invoke_plain_native_funcall(
-    interpreter: &mut Interpreter,
-    runtime: &mut NativeRuntime,
-    environment: &mut Env,
+    active: &ActiveCall,
     function: Value,
     arguments: &[NativeWord],
 ) -> Option<Result<NativeWord, LispError>> {
+    let interpreter = active.interpreter.get();
     let name = function.symbol_cell();
     // funcall_general's read of the live cell; a native function is never
     // a symbol, so an alias or a void cell is not one.
@@ -4330,25 +4337,19 @@ fn invoke_plain_native_funcall(
         None => function,
     };
     let Some(native) = callee.native_function_ref() else {
-        return invoke_plain_builtin_funcall(
-            interpreter,
-            runtime,
-            environment,
-            function,
-            name,
-            callee,
-            arguments,
-        );
+        return invoke_plain_builtin_funcall(active, function, name, callee, arguments);
     };
     let native = RegisteredNative(native);
     let fixed = native.admits(arguments.len());
+    // SAFETY: the activation's pointees outlive this call, and no other
+    // reference to them is live in this frame.
     if !(fixed || native.admits_many(arguments.len()))
-        || !interpreter.plain_bcall_entry(name)
-        || !runtime.heap.collection_cannot_be_due()
+        || !unsafe { &*interpreter }.plain_bcall_entry(name)
+        || !unsafe { &*active.runtime }.heap.collection_cannot_be_due()
     {
         return None;
     }
-    let depth = interpreter.enter_plain_native_funcall(function, arguments);
+    let depth = unsafe { &mut *interpreter }.enter_plain_native_funcall(function, arguments);
     let word = if fixed {
         // SAFETY: the register counts admit this many arguments for the
         // native function's fixed-arity target.
@@ -4358,12 +4359,21 @@ fn invoke_plain_native_funcall(
         // argument vector, as funcall_subr's `aMANY (numargs, args)'.
         unsafe { call_word_target(native.0.target(), NativeCallingConvention::Many, arguments) }
     };
-    let result = if interpreter.current_backtrace_debug_on_exit() {
-        native_funcall_exit_debugger(interpreter, runtime, environment, word)
+    // SAFETY: as above, after the call; the debugger's pointers are the
+    // activation's.
+    let result = if unsafe { &*interpreter }.current_backtrace_debug_on_exit() {
+        unsafe {
+            native_funcall_exit_debugger(
+                interpreter,
+                active.runtime,
+                active.environment.get(),
+                word,
+            )
+        }
     } else {
         Ok(word)
     };
-    interpreter.leave_plain_funcall(depth);
+    unsafe { &mut *interpreter }.leave_plain_funcall(depth);
     Some(result)
 }
 
@@ -4376,9 +4386,7 @@ fn invoke_plain_native_funcall(
 /// signals for those.
 #[inline(always)]
 fn invoke_plain_builtin_funcall(
-    interpreter: &mut Interpreter,
-    runtime: &mut NativeRuntime,
-    environment: &mut Env,
+    active: &ActiveCall,
     function: Value,
     name: Option<SymbolName>,
     callee: Value,
@@ -4387,18 +4395,21 @@ fn invoke_plain_builtin_funcall(
     let descriptor = callee.builtin_ref()?.descriptor();
     let count = arguments.len();
     let maximum = descriptor.max_args_word();
+    let interpreter = active.interpreter.get();
     // UNEVALLED is -1, MANY -2; a finite count above eight is called as
     // MANY without an upper bound, as funcall_subr calls it.
     let many = maximum == -2 || maximum > 8;
     if count < usize::from(descriptor.min_args)
         || maximum == -1
         || (!many && count > maximum as usize)
-        || !interpreter.plain_bcall_entry(name)
-        || !runtime.heap.collection_cannot_be_due()
+        || !unsafe { &*interpreter }.plain_bcall_entry(name)
+        || !unsafe { &*active.runtime }.heap.collection_cannot_be_due()
     {
         return None;
     }
-    let depth = interpreter.enter_plain_native_funcall(function, arguments);
+    // SAFETY: as `invoke_plain_native_funcall's: a reference for each
+    // statement, none across the subr's call.
+    let depth = unsafe { &mut *interpreter }.enter_plain_native_funcall(function, arguments);
     let target = descriptor.function;
     // SAFETY: the descriptor's target takes this convention and count.
     let word = unsafe {
@@ -4416,12 +4427,21 @@ fn invoke_plain_builtin_funcall(
             )
         }
     };
-    let result = if interpreter.current_backtrace_debug_on_exit() {
-        native_funcall_exit_debugger(interpreter, runtime, environment, word)
+    // SAFETY: as above, after the call; the debugger's pointers are the
+    // activation's.
+    let result = if unsafe { &*interpreter }.current_backtrace_debug_on_exit() {
+        unsafe {
+            native_funcall_exit_debugger(
+                interpreter,
+                active.runtime,
+                active.environment.get(),
+                word,
+            )
+        }
     } else {
         Ok(word)
     };
-    interpreter.leave_plain_funcall(depth);
+    unsafe { &mut *interpreter }.leave_plain_funcall(depth);
     Some(result)
 }
 
@@ -4489,20 +4509,30 @@ fn invoke_plain_bytecode_funcall(
 /// backtrace record, when backtrace-debug marked the frame.  The native
 /// word stays live until the debugger receives the same Lisp object; the
 /// debugger's return value is the call's.
+///
+/// The debugger is Lisp, and native code it runs makes its own reference
+/// to the runtime: the one made here ends before the debugger runs and
+/// another is made after it (S-DERIVED).
+///
+/// # Safety
+/// The three pointers are the active call's, with no reference made from
+/// them live in the caller.
 #[cold]
 #[inline(never)]
-fn native_funcall_exit_debugger(
-    interpreter: &mut Interpreter,
-    runtime: &mut NativeRuntime,
-    environment: &mut Env,
+unsafe fn native_funcall_exit_debugger(
+    interpreter: *mut Interpreter,
+    runtime: *mut NativeRuntime,
+    environment: *mut Env,
     word: NativeWord,
 ) -> Result<NativeWord, LispError> {
-    let value = runtime
+    // SAFETY: the caller's; each reference is made for one statement.
+    let value = unsafe { &mut *runtime }
         .heap
         .decode(word)
         .map_err(|error| super::lisp::native_ice(&error))?;
-    let value = interpreter.call_exit_debugger(value, environment)?;
-    runtime
+    let value =
+        unsafe { &mut *interpreter }.call_exit_debugger(value, unsafe { &mut *environment })?;
+    unsafe { &mut *runtime }
         .heap
         .encode(&value)
         .map_err(|error| super::lisp::native_ice(&error))
@@ -4601,10 +4631,16 @@ fn invoke_native_funcall(active: &ActiveCall, arguments: &[NativeWord]) -> Optio
         // The error keeps its box: signal_or_quit marks a signal it has
         // settled there.
         match result {
-            Ok(word) if interpreter.current_backtrace_debug_on_exit() => {
-                let runtime = unsafe { &mut *runtime_pointer };
-                native_funcall_exit_debugger(interpreter, runtime, environment, word)
-            }
+            // SAFETY: the active call's pointers; this frame's references
+            // made from them are not used after this.
+            Ok(word) if interpreter.current_backtrace_debug_on_exit() => unsafe {
+                native_funcall_exit_debugger(
+                    interpreter_pointer,
+                    runtime_pointer,
+                    environment_pointer,
+                    word,
+                )
+            },
             Ok(word) => Ok(word),
             Err(error) => Err(interpreter.signal_or_quit(error, environment)),
         }
