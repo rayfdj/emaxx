@@ -349,7 +349,8 @@ fn forget_image_live() {
 
 /// Make the next allocation of every kind take a new block. The cells left
 /// behind stay free and return to the free lists at the next sweep (or, in
-/// an image block, stay unused).
+/// an image block, stay unused); a symbol block's, which nothing has
+/// written, are made free cells here.
 fn abandon_allocation_frontiers() {
     FREE_LIST.set(std::ptr::null_mut());
     BUMP_NEXT.set(BUMP_END.get());
@@ -1992,10 +1993,10 @@ fn new_block(kind: BlockKind) -> usize {
                     .write(FloatMarks::new())
             };
         }
-        BlockKind::Symbol => {
-            // SAFETY: the block just allocated.
-            unsafe { symbols::init_block(start) };
-        }
+        // alloc.c writes nothing in a new symbol_block: the cells no
+        // symbol was made in are told by symbol_block_index
+        // (`symbols::live_symbol_holding').
+        BlockKind::Symbol => {}
         BlockKind::String => {
             // SAFETY: the block just allocated.
             unsafe { strings::init_block(start) };

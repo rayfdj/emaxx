@@ -1285,9 +1285,28 @@ pub(crate) fn allocate_symbol(cell: SymbolCell) -> SymbolRef {
 /// The next symbol takes a new block (see `ImageRegion').
 pub(super) fn abandon_allocation_frontier() {
     SYMBOL_FREE_LIST.set(std::ptr::null_mut());
-    SYMBOL_BUMP_NEXT.set(SYMBOL_BUMP_END.get());
+    free_unused_cells();
 }
 
+/// The current block stops being the current one before it is full, which
+/// alloc.c's symbol_block never does: the cells no symbol was made in
+/// become free cells, as every cell of a block that is not the current
+/// one is a symbol or a free cell, for `live_symbol_holding' and
+/// `sweep_symbols', which read all of it.
+fn free_unused_cells() {
+    let end = SYMBOL_BUMP_END.get();
+    for cell in (SYMBOL_BUMP_NEXT.get()..end).step_by(SYMBOL_CELL_SIZE) {
+        // SAFETY: a cell of the current block at or past its index, which
+        // holds no symbol.
+        unsafe { set_free(cell as *mut SymbolCell) };
+    }
+    SYMBOL_BUMP_NEXT.set(end);
+}
+
+/// alloc.c's `symbol_block->symbols[symbol_block_index++]', after a new
+/// symbol_block when the current one is full.  Nothing is written in a
+/// new block: its cells are told from symbols by the index
+/// (`live_symbol_holding').
 fn bump_symbol() -> *mut SymbolCell {
     let next = SYMBOL_BUMP_NEXT.get();
     let end = SYMBOL_BUMP_END.get();
@@ -1296,6 +1315,10 @@ fn bump_symbol() -> *mut SymbolCell {
         return next as *mut SymbolCell;
     }
     let block = new_block(BlockKind::Symbol);
+    // A thread without the runtime took it in `new_block', and its
+    // frontier with it (`alloc::Frontier'): the block that names is left
+    // for the new one.  Any other thread's current block is full here.
+    free_unused_cells();
     SYMBOL_BUMP_NEXT.set(block + SYMBOL_CELL_SIZE);
     SYMBOL_BUMP_END.set(block + SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE);
     block as *mut SymbolCell
@@ -1315,30 +1338,36 @@ unsafe fn set_free(cell: *mut SymbolCell) {
     }
 }
 
-/// Make every cell of a fresh block a free one.
-///
-/// # Safety
-/// START is a block `new_block' just allocated.
-pub(super) unsafe fn init_block(start: usize) {
-    for index in 0..SYMBOLS_PER_BLOCK {
-        // SAFETY: inside the block, which holds no symbol yet.
-        unsafe { set_free((start + index * SYMBOL_CELL_SIZE) as *mut SymbolCell) };
-    }
-}
-
 /// alloc.c's `live_symbol_holding': the allocated cell containing
-/// ADDRESS, or None.
+/// ADDRESS, or None.  "P must point into the Lisp_Symbol, not be one of
+/// the unused cells in the current symbol block, and not be on the
+/// free-list": `(b != symbol_block || offset / sizeof b->symbols[0] <
+/// symbol_block_index) && !deadp (s->u.s.function)'.  The current block
+/// and its index are the frontier's, which the thread that holds the
+/// runtime has (`alloc::Frontier').
 ///
 /// # Safety
-/// START is a registered symbol block.
+/// START is a registered symbol block, and this thread holds the runtime.
 pub(super) unsafe fn live_symbol_holding(start: usize, address: usize) -> Option<*mut SymbolCell> {
+    debug_assert!(
+        crate::lisp::runtime::held(),
+        "the current symbol block is known to the thread that holds the runtime"
+    );
     let index = (address - start) / SYMBOL_CELL_SIZE;
     if index >= SYMBOLS_PER_BLOCK {
         return None;
     }
-    let cell = (start + index * SYMBOL_CELL_SIZE) as *mut SymbolCell;
-    // SAFETY: inside a registered symbol block; the function slot is a
-    // word in every state (`!deadp (s->u.s.function)').
+    let cell = start + index * SYMBOL_CELL_SIZE;
+    if SYMBOL_BUMP_END.get() == start + SYMBOLS_PER_BLOCK * SYMBOL_CELL_SIZE
+        && cell >= SYMBOL_BUMP_NEXT.get()
+    {
+        // An unused cell of the current block, which nothing has written.
+        return None;
+    }
+    let cell = cell as *mut SymbolCell;
+    // SAFETY: a cell of a block that is not the current one, or one below
+    // the current block's index: a symbol or a free cell, whose function
+    // slot is a word in either state.
     let function = unsafe { (*cell).function.get() };
     (!function.deadp()).then_some(cell)
 }
