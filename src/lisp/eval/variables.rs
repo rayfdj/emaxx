@@ -3344,9 +3344,28 @@ impl InterpreterState {
             record + 1,
             "the call's record is innermost"
         );
-        let Some(frame) = self.backtrace_frames.get(record) else {
+        if record >= self.backtrace_frames.len() {
             return false;
-        };
+        }
+        // SAFETY: RECORD is within the backtrace, as just tested.
+        unsafe { self.leave_returned_funcall(record) }
+    }
+
+    /// `leave_innermost_funcall' where the caller has just seen the
+    /// backtrace RECORD + 1 frames long: the activation entered from the
+    /// call returned with nothing of its own left (`run_entered_returned').
+    ///
+    /// # Safety
+    /// RECORD is an index of the backtrace.
+    #[inline(always)]
+    pub(crate) unsafe fn leave_returned_funcall(&mut self, record: usize) -> bool {
+        debug_assert_eq!(
+            self.backtrace_frames.len(),
+            record + 1,
+            "the call's record is innermost"
+        );
+        // SAFETY: the caller's.
+        let frame = unsafe { self.backtrace_frames.get_unchecked(record) };
         if frame.debug_on_exit() {
             return false;
         }

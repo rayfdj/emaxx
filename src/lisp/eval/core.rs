@@ -1575,21 +1575,10 @@ impl Interpreter {
                 return None;
             }
             let depth = self.enter_plain_funcall(func, args);
-            let result = crate::lisp::bytecode::vm::funcall_closure_recorded(
+            // The call and Ffuncall's exit of it, the record popped.
+            return Some(crate::lisp::bytecode::vm::funcall_closure_recorded(
                 self, closure, args, env, depth,
-            );
-            // The activation leaves the backtrace as long as it found it,
-            // the call's record its last (`finish_activation', or the fast
-            // return's test of that very record): Ffuncall's
-            // `backtrace_debug_on_exit (count)' and `specpdl_ptr--' of it.
-            if let Ok(value) = result
-                && self.leave_innermost_funcall(depth)
-            {
-                return Some(Ok(value));
-            }
-            let result = self.settle_call_result(depth, result, env);
-            self.leave_plain_funcall(depth);
-            return Some(result);
+            ));
         }
         let callee = self.plain_bcall_callee(func, function)?;
         if !crate::lisp::native_comp::collection_cannot_be_due(self) {
