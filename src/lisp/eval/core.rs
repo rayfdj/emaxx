@@ -1575,12 +1575,13 @@ impl Interpreter {
                 return None;
             }
             let depth = self.enter_plain_funcall(func, args);
-            let result =
-                crate::lisp::bytecode::vm::funcall_closure_in_place(self, closure, args, env);
+            let result = crate::lisp::bytecode::vm::funcall_closure_recorded(
+                self, closure, args, env, depth,
+            );
             // The activation leaves the backtrace as long as it found it,
             // the call's record its last (`finish_activation', or the fast
-            // return's test): Ffuncall's `backtrace_debug_on_exit (count)'
-            // and `specpdl_ptr--' of that record.
+            // return's test of that very record): Ffuncall's
+            // `backtrace_debug_on_exit (count)' and `specpdl_ptr--' of it.
             if let Ok(value) = result
                 && self.leave_innermost_funcall(depth)
             {

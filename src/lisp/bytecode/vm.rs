@@ -4366,6 +4366,41 @@ pub(crate) fn funcall_closure_in_place(
     }
 }
 
+/// `funcall_closure_in_place' from Ffuncall's frame whose record of the
+/// call is at RECORD, the innermost (`plain_funcall'): the backtrace the
+/// activation leaves behind is that record's, so its test of the
+/// backtrace on a value is the test that RECORD is still the innermost,
+/// the one Ffuncall's `backtrace_debug_on_exit (count)' and
+/// `specpdl_ptr--' then read without looking again.
+#[inline(always)]
+pub(crate) fn funcall_closure_recorded(
+    interp: &mut Interpreter,
+    closure: crate::lisp::types::ClosureRef,
+    args: &[Value],
+    env: &mut Env,
+    record: usize,
+) -> Result<Value, LispError> {
+    debug_assert_eq!(interp.backtrace_frames_len(), record + 1);
+    let entry = super::verify::entry_program(closure);
+    match entry {
+        // SAFETY: nothing runs Lisp or collects before the entry reads the
+        // program.
+        Some(program) if unsafe { program.as_ref() }.takes(args.len()) => {
+            let unwinds = interp.specpdl_index();
+            run_entered_above(
+                interp,
+                program,
+                Value::Closure(closure),
+                args,
+                env,
+                unwinds,
+                record + 1,
+            )
+        }
+        _ => funcall_closure_otherwise(interp, closure, entry, args, env),
+    }
+}
+
 /// The rest of `funcall_closure_in_place', given ENTRY, what
 /// `entry_program' answered for CLOSURE: a dynamic-binding function's
 /// formals bound and then the environment to its nil lexenv, and its code
