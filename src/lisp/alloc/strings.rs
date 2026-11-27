@@ -871,3 +871,92 @@ pub(crate) fn live_string_object_census() -> (usize, usize, usize) {
         LIVE_SPANS.load(Ordering::Relaxed),
     )
 }
+
+#[cfg(test)]
+mod tests {
+    use crate::lisp::eval::Interpreter;
+    use crate::lisp::types::{Env, Kind, Value};
+    use crate::lisp::{json, primitives};
+
+    // The witnessed string is made in a frame of its own, cleared before
+    // the collection that expects it dead, and kept as its word's
+    // complement: no word of the test's names it.
+    #[inline(never)]
+    fn witnessed_string(interpreter: &mut Interpreter, table: &Value) -> usize {
+        let string = primitives::call(
+            interpreter,
+            "make-string",
+            &[Value::Integer(5), Value::Integer(120)],
+            &mut Env::new(),
+        )
+        .expect("make a string");
+        primitives::call(
+            interpreter,
+            "puthash",
+            &[string, Value::T, *table],
+            &mut Env::new(),
+        )
+        .expect("witness the string");
+        !string.word()
+    }
+
+    #[inline(never)]
+    fn witnesses_after_collection(interpreter: &mut Interpreter, table: &Value) -> usize {
+        crate::lisp::alloc::clobber_stack();
+        let Kind::HashTable(id) = table.kind() else {
+            panic!("a hash table");
+        };
+        primitives::call(interpreter, "garbage-collect", &[], &mut Env::new()).expect("collect");
+        id.count()
+    }
+
+    /// The word of `u.s.data', lisp.h's fourth word of a Lisp_String, in
+    /// the string cell whose word's complement is COMPLEMENT, read as a
+    /// word whatever the cell holds.
+    #[inline(never)]
+    fn data_word(complement: usize) -> usize {
+        let cell = (!complement & !7) as *const usize;
+        // SAFETY: a cell of a registered string block, allocated or free;
+        // its first four words are words in either state.
+        unsafe { cell.add(3).read() }
+    }
+
+    /// Whether the conservative scan takes that cell's word for a string
+    /// (alloc.c's live_string_holding).
+    #[inline(never)]
+    fn scan_finds(complement: usize) -> bool {
+        crate::lisp::alloc::conservative_value(!complement).is_some()
+    }
+
+    #[test]
+    fn a_freed_string_s_data_is_null() {
+        // alloc.c:sweep_strings puts an unmarked string on the free list
+        // with `s->u.s.data = NULL' ("Reset the strings's `data' member so
+        // that we know it's free"), allocate_string gives every string of
+        // a new block the same ("Every string on a free list should have
+        // NULL data pointer"), and live_string_holding takes a cell for a
+        // string only if `s->u.s.data' is not null.
+        // What the cell holds is read with the runtime held, so that no
+        // other thread's string takes the freed cell, and judged once the
+        // runtime is given back.
+        let (made, freed, witnesses) = {
+            let _runtime = crate::Runtime::lock();
+            let mut interpreter = Interpreter::new();
+            let table = json::make_hash_table(&mut interpreter, "eq", Vec::new());
+            let Kind::HashTable(id) = table.kind() else {
+                panic!("a hash table");
+            };
+            id.set_weakness(1);
+            interpreter.set_global_binding("null-data-witnesses", table);
+            let string = witnessed_string(&mut interpreter, &table);
+            let made = (data_word(string), scan_finds(string));
+            let witnesses = witnesses_after_collection(&mut interpreter, &table);
+            (made, (data_word(string), scan_finds(string)), witnesses)
+        };
+        assert_ne!(made.0, 0, "a string's data is its bytes");
+        assert!(made.1, "the live cell is found");
+        assert_eq!(witnesses, 0, "the string nothing holds is freed");
+        assert_eq!(freed.0, 0, "the freed cell's data is null");
+        assert!(!freed.1, "live_string_holding refuses the freed cell");
+    }
+}
