@@ -25578,10 +25578,24 @@ ert-tests as a whole 26,307 ms against 27,211.
   runs on such a runner gave 1.093 to 1.121 in all.  The widest body
   gaps are tramp-tests (22.0 s against 19.1 s), comp-tests (16.8
   against 14.7), ert-tests (41.0 against 39.3), process-tests (3.01
-  against 1.61) and semantic-utest-ia (3.97 against 2.72).  The Rust gate (run 45846893656) passed: 3,701 library tests, the
-  eight integration targets (242), the binaries' tests (63) and the
-  doc stage, three doctests passing and three that must fail to
-  compile, none failed.
+  against 1.61) and semantic-utest-ia (3.97 against 2.72).  The Rust
+  gate (run 45846893656) passed: 3,701 library tests, the eight
+  integration targets (242), the binaries' tests (63) and the doc
+  stage, three doctests passing and three that must fail to compile,
+  none failed.
+
+**On `2179c8a`** (round 402): the frozen run (run 46039724518) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 52.9 s against 46.1 s (1.148), test bodies 231.5 s
+  against 223.0 s (1.038), in all 1.057 (GNU's suite took 269 s; round
+  398's run on a runner of that speed gave 1.032 for the bodies).  The
+  widest body gaps are tramp-tests (15.2 s against 13.4 s), comp-tests
+  (11.8 against 10.3), semantic-utest-ia (2.75 against 1.97),
+  process-tests (2.20 against 1.50) and mule-tests (1.86 against 1.31).
+  Both editors passed the eglot test.  The Rust gate (run 46039718612)
+  passed: 3,709 library tests (eight more), the eight integration
+  targets (242), the binaries' tests (63) and the doc stage, three
+  doctests passing and three that must fail to compile, none failed.
 
 **The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
   25 Nov by running the one test alone.
