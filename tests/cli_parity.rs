@@ -1659,6 +1659,310 @@ fn the_memory_profiler_files_a_byte_code_callback_under_mapc() {
     assert_same(&corpus, &["--batch", "-Q", "-l", &probe]);
 }
 
+/// BINARY's run of ARGS from the corpus directory with
+/// EMAXX_TRACE_LOAD_ERRORS set, which Emaxx latches at startup for its
+/// trace of byte-code errors and GNU does not read: stdout, stderr and
+/// the exit status, the corpus directory replaced as `Corpus::run' does.
+fn run_tracing(corpus: &Corpus, binary: &Path, args: &[&str]) -> Run {
+    let Output {
+        status,
+        stdout,
+        stderr,
+    } = Command::new(binary)
+        .args(args)
+        .current_dir(&corpus.directory)
+        .env("HOME", &corpus.directory)
+        .env("LC_ALL", "C")
+        .env("EMAXX_TRACE_LOAD_ERRORS", "1")
+        .stdin(std::process::Stdio::null())
+        .output()
+        .unwrap();
+    let normalize = |bytes: &[u8]| {
+        String::from_utf8_lossy(bytes).replace(&corpus.directory.display().to_string(), "CORPUS")
+    };
+    (normalize(&stdout), normalize(&stderr), status.code())
+}
+
+#[test]
+fn byte_code_activations_entered_from_c_end_as_exec_byte_code_ends_them() {
+    // bytecode.c:exec_byte_code called from C (funcall_lambda, for mapcar,
+    // mapc, funcall and apply) enters its frame, pushes the arguments and
+    // returns at that frame's Breturn; a signal or a throw leaves it by
+    // the handler's longjmp, which restores the frame, the specpdl and
+    // the handlers of the catcher.  The same from Rust: a callee that
+    // pushes and pops a condition-case or a catch and returns; a signal
+    // from a nested call under a dynamic let and an unwind-protect, whose
+    // unwind forms run and bindings are undone in GNU's order; a throw
+    // through two activations; activations nested through mapc, mapcar
+    // and apply; a callee whose code string a function it calls stores
+    // into; the byte-code stack's overflow where C enters a frame, and
+    // the calls after it; a dynamic-binding callee; a loop long enough
+    // for the quit check; a collection; and frames marked for the
+    // debugger at their exit.  The backtrace is as deep after each as
+    // before.  The run with Emaxx's trace of byte-code errors latched,
+    // where every Bcall takes its full arm, gives the same answers and
+    // writes nothing for an error a handler takes.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "activations.el",
+        r##";;; -*- lexical-binding: t -*-
+;; Byte-code activations entered from C.
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defvar zz-n 0)
+(defvar zz-log nil)
+(defvar zz-dyn 'global)
+(defmacro zz-probe (&rest body)
+  `(progn (setq zz-n (1+ zz-n))
+          (princ (format "%d: %S\n" zz-n
+                         (condition-case e (progn ,@body) (t (list 'signal e)))))))
+(define-error 'zz-error "zz error")
+(defun zz-depth () (let ((n 0)) (mapbacktrace (lambda (&rest _) (setq n (1+ n)))) n))
+;; A callee that pushes and pops a handler and returns.
+(defun zz-cc (x) (condition-case nil (car x) (error 'caught)))
+(defun zz-catch (x) (catch 'zz-tag (if (consp x) (throw 'zz-tag (car x)) x)))
+(defun zz-cc-nested (x) (condition-case nil (zz-cc-inner x) (zz-error 'outer-caught)))
+(defun zz-cc-inner (x) (condition-case nil (signal 'zz-error (list x)) (wrong-type-argument 'inner-caught)))
+;; A signal from a nested call under a dynamic let and an unwind-protect.
+(defun zz-inner (x) (push (list 'inner zz-dyn) zz-log) (signal 'zz-error (list x zz-dyn)))
+(defun zz-mid (x)
+  (let ((zz-dyn 'mid))
+    (unwind-protect (zz-inner x)
+      (push (list 'mid-unwind zz-dyn) zz-log))))
+(defun zz-mid-2 (x)
+  (unwind-protect (let ((zz-dyn 'mid-2)) (zz-inner x))
+    (push (list 'mid-2-unwind zz-dyn) zz-log)))
+(defun zz-outer (f x)
+  (let ((zz-dyn 'outer))
+    (unwind-protect (car (mapcar f (list x)))
+      (push (list 'outer-unwind zz-dyn) zz-log))))
+(defun zz-outer-caught (f x)
+  (let ((zz-dyn 'outer))
+    (list (condition-case e (car (mapcar f (list x))) (zz-error (list 'caught e zz-dyn)))
+          zz-dyn)))
+;; A throw through two activations.
+(defun zz-thrower (x) (throw 'zz-tag (list 'thrown x zz-dyn)))
+(defun zz-through (x)
+  (let ((zz-dyn 'through))
+    (unwind-protect (mapc #'zz-thrower (list x))
+      (push (list 'through-unwind zz-dyn) zz-log))))
+(defun zz-catcher (x) (list (catch 'zz-tag (mapc #'zz-through (list x)) 'not-thrown) zz-dyn))
+;; Nested activations.
+(defvar zz-acc 0)
+(defun zz-leaf (x) (setq zz-acc (+ zz-acc x)))
+(defun zz-nest (l) (mapc #'zz-leaf l) (length l))
+(defun zz-nest-3 (ll) (apply #'+ (mapcar #'zz-nest ll)))
+(defun zz-leaf-err (x) (if (= x 2) (car x) x))
+(defun zz-nest-cc (l) (condition-case e (mapcar #'zz-leaf-err l) (wrong-type-argument (list 'nest-caught (cdr e)))))
+(dolist (f '(zz-depth zz-cc zz-catch zz-cc-nested zz-cc-inner zz-inner zz-mid zz-mid-2 zz-outer
+             zz-outer-caught zz-thrower zz-through zz-catcher zz-leaf zz-nest zz-nest-3
+             zz-leaf-err zz-nest-cc))
+  (byte-compile f))
+(defmacro zz-same-depth (&rest body)
+  `(let* ((before (zz-depth)) (value (progn ,@body)) (after (zz-depth)))
+     (list value (= before after))))
+;; 1-4: handlers pushed and popped in the callee.
+(zz-probe (zz-same-depth (mapcar #'zz-cc '((1) nil 2 (3)))))
+(zz-probe (zz-same-depth (mapcar #'zz-catch '((1) 2 (3)))))
+(zz-probe (list (funcall #'zz-cc 5) (apply #'zz-cc '((6))) (zz-cc '(7))))
+(zz-probe (zz-same-depth (list (mapcar #'zz-cc-nested '(1 2)) (condition-case e (throw 'zz-tag 1) (no-catch e)))))
+;; 5-9: a signal from a nested call, its unwind forms and bindings.
+(zz-probe (setq zz-log nil)
+          (list (condition-case e (zz-same-depth (mapcar #'zz-mid '(1))) (zz-error (list 'caught e zz-dyn)))
+                zz-dyn (reverse zz-log)))
+(zz-probe (setq zz-log nil)
+          (list (condition-case e (mapcar #'zz-mid-2 '(2)) (zz-error (list 'caught e zz-dyn)))
+                zz-dyn (reverse zz-log)))
+(zz-probe (setq zz-log nil)
+          (list (condition-case e (zz-outer #'zz-mid 3) (zz-error (list 'caught e zz-dyn)))
+                zz-dyn (reverse zz-log)))
+(zz-probe (setq zz-log nil)
+          (zz-same-depth (list (mapcar (lambda (x) (zz-outer-caught #'zz-mid-2 x)) '(4 5)) zz-dyn (reverse zz-log))))
+(zz-probe (setq zz-log nil)
+          (list (condition-case e
+                    (handler-bind ((zz-error (lambda (err) (push (list 'handler err zz-dyn) zz-log))))
+                      (zz-outer #'zz-mid 6))
+                  (zz-error (list 'caught e zz-dyn)))
+                zz-dyn (reverse zz-log)))
+;; 10-12: a throw through two activations.
+(zz-probe (setq zz-log nil)
+          (zz-same-depth (list (catch 'zz-tag (mapc #'zz-through '(7))) zz-dyn (reverse zz-log))))
+(zz-probe (setq zz-log nil)
+          (zz-same-depth (list (mapcar #'zz-catcher '(8 9)) zz-dyn (reverse zz-log))))
+(zz-probe (setq zz-log nil)
+          (list (condition-case e (mapc #'zz-through '(10)) (no-catch (list 'no-catch e zz-dyn))) (reverse zz-log)))
+;; 13-15: nested activations.
+(zz-probe (setq zz-acc 0) (zz-same-depth (list (mapcar #'zz-nest '((1 2) (3) ())) zz-acc)))
+(zz-probe (setq zz-acc 0) (list (zz-nest-3 '((1 2) (3 4 5))) (funcall #'zz-nest-3 '((6))) zz-acc))
+(zz-probe (zz-same-depth (mapcar #'zz-nest-cc '((1 3) (1 2 3) (4)))))
+;; 16-19: a callee whose code string is stored into by a function it calls.
+(defvar zz-code (unibyte-string #o300 #o040 #o210 #o301 #o207))
+(defalias 'zz-patched (make-byte-code 257 zz-code [zz-patch old new] 3))
+(defvar zz-patch-byte #o302)
+(defun zz-patch () (aset zz-code 3 zz-patch-byte) nil)
+(defun zz-patch-bc () (aset zz-code 3 zz-patch-byte) nil)
+(byte-compile 'zz-patch-bc)
+(zz-probe (list (mapcar #'zz-patched '(1 2)) (append zz-code nil)))
+(zz-probe (setq zz-patch-byte #o301) (list (funcall #'zz-patched 1) (mapcar #'zz-patched '(1)) (append zz-code nil)))
+(defalias 'zz-patched-bc (make-byte-code 257 zz-code [zz-patch-bc old new] 3))
+(zz-probe (setq zz-patch-byte #o302) (list (mapcar #'zz-patched-bc '(1 2)) (zz-patched-bc 3) (append zz-code nil)))
+(zz-probe (setq zz-patch-byte #o301) (list (mapcar #'zz-patched-bc '(1 2)) (append zz-code nil)))
+;; 20-23: the byte-code stack's overflow where C enters a frame.
+(defvar zz-levels 0)
+(defun zz-deep (n) (setq zz-levels (1+ zz-levels)) (if (= n 0) 'bottom (car (mapcar #'zz-deep (list (1- n))))))
+(byte-compile 'zz-deep)
+(let ((f (symbol-function 'zz-deep)))
+  (defalias 'zz-deep (make-byte-code (aref f 0) (aref f 1) (aref f 2) 100000)))
+(zz-probe (setq zz-levels 0) (list (zz-deep 3) zz-levels))
+(zz-probe (setq zz-levels 0) (zz-same-depth (list (condition-case e (zz-deep 20) (error (list 'caught e))) zz-levels)))
+(zz-probe (setq zz-levels 0) (list (condition-case e (mapcar #'zz-deep '(20)) (error (list 'caught e))) zz-levels))
+(zz-probe (setq zz-levels 0) (list (zz-deep 3) (mapcar #'zz-deep '(1 2)) zz-levels))
+;; 24-25: a dynamic-binding callee, its formals bound around the frame.
+(defvar zz-dyn-reader (byte-compile (eval '(lambda (zz-dyn) (list zz-dyn (symbol-value 'zz-dyn))) nil)))
+(zz-probe (list (byte-code-function-p zz-dyn-reader) (aref zz-dyn-reader 0)))
+(zz-probe (zz-same-depth (list (mapcar zz-dyn-reader '(1 2)) (funcall zz-dyn-reader 3) zz-dyn)))
+;; 26-28: a loop long enough for the quit check, a collection, and a frame
+;; marked for the debugger at its exit, inside an activation C entered.
+(defun zz-loop (n) (let ((i 0) (s 0)) (while (< i n) (setq s (+ s i) i (1+ i))) s))
+(defun zz-gc (x) (garbage-collect) (list x (make-string 3 ?a)))
+(defun zz-marked (x) (backtrace-debug 1 t) (list 'marked x))
+(defun zz-calls-marked (x) (list 'outer (zz-marked x)))
+(dolist (f '(zz-loop zz-gc zz-marked zz-calls-marked)) (byte-compile f))
+(zz-probe (zz-same-depth (mapcar #'zz-loop '(1000 10 0 3000))))
+(zz-probe (zz-same-depth (mapcar #'zz-gc '(1 2))))
+(zz-probe (let ((debugger (lambda (&rest args)
+                            (push args zz-log)
+                            (if (eq (car args) 'exit) (list 'replaced (cadr args)) nil)))
+                (zz-log nil))
+            (list (mapcar #'zz-calls-marked '(1 2)) (mapcar #'zz-marked '(3)) (reverse zz-log))))
+"##,
+    );
+    let args = ["--batch", "-Q", "-l", &program];
+    let (actual, expected) = both(&corpus, &args);
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+    assert_eq!(
+        run_tracing(&corpus, emaxx(), &args),
+        expected,
+        "Emaxx tracing byte-code errors (left) and GNU (right) differ"
+    );
+}
+
+#[test]
+fn the_trace_of_byte_code_errors_is_written_for_an_error_no_handler_takes() {
+    // Emaxx's own diagnostic, latched from EMAXX_TRACE_LOAD_ERRORS at
+    // startup: a byte-code operation's error that no condition-case or
+    // handler-bind is about to take is written to stderr with the
+    // operation and its offset, once for each activation it leaves.  A
+    // thread's function runs under no handler: the `car' in the callee
+    // mapcar entered and the call of mapcar in the thread's function are
+    // traced, an error a condition-case takes is not, and Lisp sees what
+    // GNU's sees either way.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "trace.el",
+        r##";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defun zz-err (x) (car x))
+(defun zz-in-thread () (mapcar #'zz-err '(1)))
+(defun zz-caught-in-thread () (condition-case e (mapcar #'zz-err '(2)) (error (list 'caught e))))
+(dolist (f '(zz-err zz-in-thread zz-caught-in-thread)) (byte-compile f))
+(princ (format "1 %S\n" (condition-case e (mapcar #'zz-err '(0)) (error e))))
+(princ (format "2 %S\n" (list (condition-case e (thread-join (make-thread #'zz-in-thread)) (error (list 'joined e)))
+                              (thread-last-error t))))
+(princ (format "3 %S\n" (list (thread-join (make-thread #'zz-caught-in-thread)) (thread-last-error t))))
+(princ (format "4 %S\n" (mapcar #'zz-err '((3)))))
+"##,
+    );
+    let args = ["--batch", "-Q", "-l", &program];
+    let (actual, expected) = both(&corpus, &args);
+    assert_eq!(actual, expected, "Emaxx (left) and GNU (right) differ");
+    assert_eq!(expected.1, "", "GNU writes nothing to stderr");
+    let (out, err, status) = run_tracing(&corpus, emaxx(), &args);
+    assert_eq!((&out, status), (&expected.0, expected.2));
+    assert_eq!(
+        err,
+        "bytecode operation Car failed at byte offset 0: \
+         SignalValue((wrong-type-argument listp 1))\n\
+         bytecode operation Call(2) failed at byte offset 3: \
+         SignalValue((wrong-type-argument listp 1))\n"
+    );
+}
+
+#[test]
+fn a_dynamic_binding_functions_formals_are_bound_before_its_frame_is_entered() {
+    // eval.c:funcall_lambda specbinds a dynamic-binding function's formals
+    // and then calls `exec_byte_code (fun, 0, 0, NULL)', which enters the
+    // frame: when the byte-code stack has no room for it, the formal is
+    // bound already, and the signal's unwinding undoes the binding.  A
+    // watcher of the formal hears the `let' and the `unlet' of the call
+    // that overflows, as it hears those of the calls that fit.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "dynamic-overflow.el",
+        r##";;; -*- lexical-binding: t -*-
+(require 'bytecomp)
+(setq byte-compile-warnings nil)
+(defvar zz-wlog nil)
+(defvar zz-dyn 'global)
+(defvar zz-levels 0)
+(add-variable-watcher 'zz-dyn (lambda (sym new op where) (push (list op new) zz-wlog)))
+(defvar zz-dyn-deep
+  (let ((f (byte-compile (eval '(lambda (zz-dyn)
+                                  (setq zz-levels (1+ zz-levels))
+                                  (if (= zz-dyn 0) 'bottom (car (mapcar zz-dyn-deep (list (1- zz-dyn))))))
+                               nil))))
+    (make-byte-code (aref f 0) (aref f 1) (aref f 2) 100000)))
+(princ (format "1 %S\n" (list (funcall zz-dyn-deep 2) zz-levels (reverse zz-wlog) zz-dyn)))
+(setq zz-wlog nil zz-levels 0)
+(princ (format "2 %S\n" (list (condition-case e (funcall zz-dyn-deep 20) (error e)) zz-levels (reverse zz-wlog) zz-dyn)))
+(setq zz-wlog nil zz-levels 0)
+(princ (format "3 %S\n" (list (mapcar zz-dyn-deep '(1)) zz-levels (reverse zz-wlog) zz-dyn)))
+"##,
+    );
+    assert_same(&corpus, &["--batch", "-Q", "-l", &program]);
+}
+
+#[test]
+fn byte_code_returning_to_c_with_a_binding_left_is_undone_where_gnu_is_undefined() {
+    // Hand-made byte code that returns to C with a Bvarbind it never
+    // unbinds.  bytecode.c's Breturn does not look at the specpdl, so
+    // Ffuncall's `specpdl_ptr--' takes the binding's record off in place
+    // of the call's own, undone by nobody, and every record below is one
+    // off: GNU 30.2 dies of a signal before it prints anything (the
+    // behaviour is undefined there).  Emaxx's activation undoes what it
+    // left above its entry: the variable has its value again when the
+    // call returns, called by funcall, by mapcar or by the evaluator.
+    // Both are recorded here; Emaxx's answer is its own.
+    let corpus = Corpus::new();
+    let program = corpus.write(
+        "binding-left.el",
+        r##";;; -*- lexical-binding: t -*-
+(defvar zz-v 'global)
+(defalias 'zz-ub1 (make-byte-code 257 (unibyte-string #o301 #o030 #o207) [zz-v bound] 2))
+(princ (format "1 %S\n" (list (funcall #'zz-ub1 8) zz-v (default-value 'zz-v))))
+(princ (format "2 %S\n" (list (mapcar #'zz-ub1 '(7)) zz-v)))
+(princ (format "3 %S\n" (list (let ((zz-v 'let)) (list (zz-ub1 9) zz-v)) zz-v)))
+"##,
+    );
+    let args = ["--batch", "-Q", "-l", &program];
+    let (out, err, status) = corpus.run(emaxx(), &args);
+    assert_eq!(
+        (out.as_str(), err.as_str(), status),
+        (
+            "1 (8 global global)\n2 ((7) global)\n3 ((9 let) global)\n",
+            "",
+            Some(0)
+        )
+    );
+    let (gnu_out, _, gnu_status) = corpus.run(&oracle(), &args);
+    assert_eq!(
+        (gnu_out.as_str(), gnu_status),
+        ("", None),
+        "GNU 30.2 dies of a signal with nothing printed"
+    );
+}
+
 #[test]
 fn set_buffer_multibyte_is_fset_buffer_multibyte() {
     // buffer.c:Fset_buffer_multibyte: the undo list is t before the

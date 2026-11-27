@@ -6443,3 +6443,99 @@ fn bytecode_stack_footers_share_storage_and_preserve_borrowed_caller_arguments()
     );
     assert_eq!(moved.frame_count(), 0);
 }
+
+#[cfg(test)]
+#[test]
+fn an_activation_entered_from_rust_leaves_the_threads_stacks_as_it_found_them() {
+    // exec_byte_code's return to its C caller restores the caller's frame
+    // (`bc->fp = bc->fp->saved_fp'), and a signal's longjmp restores the
+    // frame, the specpdl and the handlers its catcher saved.  An
+    // activation entered from Rust under a caller's frame with operands
+    // on it: whether it returns a value, signals from its own frame or
+    // from one it called, finds no room for its frame, or returns with a
+    // binding it never undid, the byte-code stack's frame, base and top,
+    // the suspended frames, the handlers, the specpdl, the backtrace and
+    // the evaluation depth are as they were before the call.
+    fn eval(interp: &mut Interpreter, env: &mut Env, text: &str) -> Value {
+        let form = crate::lisp::read_next_load_form(interp, text, &mut 0, env)
+            .expect("read form")
+            .expect("a form");
+        interp.eval(&form, env).expect("eval")
+    }
+    fn marks(interp: &Interpreter) -> [usize; 9] {
+        [
+            interp.bc_stack.frame,
+            interp.bc_stack.base,
+            interp.bc_stack.top,
+            interp.bc_stack.frame_count(),
+            interp.bc_frames.len(),
+            interp.bc_handlers.len(),
+            interp.specpdl_index(),
+            interp.backtrace_frames_len(),
+            interp.lisp_eval_depth,
+        ]
+    }
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    eval(&mut interp, &mut env, "(defvar emaxx-test-left 'global)");
+    // return / car; return / constant F; stack-ref 1; call 1; return /
+    // constant 1; varbind 0; return.
+    let cases = [
+        ("(make-byte-code 257 (unibyte-string #o207) [] 1)", Ok(7)),
+        (
+            "(make-byte-code 257 (unibyte-string #o100 #o207) [] 1)",
+            Err("wrong-type-argument"),
+        ),
+        (
+            "(progn (defalias 'emaxx-test-car \
+               (make-byte-code 257 (unibyte-string #o100 #o207) [] 1)) \
+              (make-byte-code 257 (unibyte-string #o300 1 #o041 #o207) [emaxx-test-car] 3))",
+            Err("wrong-type-argument"),
+        ),
+        (
+            "(make-byte-code 257 (unibyte-string #o207) [] 600000)",
+            Err("error"),
+        ),
+        (
+            "(make-byte-code 257 (unibyte-string #o301 #o030 #o207) \
+               [emaxx-test-left bound] 2)",
+            Ok(7),
+        ),
+    ];
+    interp.bc_stack.ensure_allocated();
+    interp
+        .bc_stack
+        .enter_frame(8, Value::Nil, 0)
+        .expect("the caller's frame");
+    interp.bc_stack.push(Value::Integer(1)).expect("an operand");
+    interp.bc_stack.push(Value::Integer(2)).expect("an operand");
+    for (text, expected) in cases {
+        let function = eval(&mut interp, &mut env, text);
+        let closure = function.closure_ref().expect("a closure");
+        let before = marks(&interp);
+        for entry in 0..3 {
+            let result = match entry {
+                0 => interp.call_function_value(function, None, &[Value::Integer(7)], &mut env),
+                1 => execute_closure(&mut interp, closure, &[Value::Integer(7)], &mut env),
+                _ => funcall_closure(&mut interp, closure, &[Value::Integer(7)], &mut env),
+            };
+            match (result, expected) {
+                (Ok(value), Ok(expected)) => assert_eq!(value.fixnum(), Some(expected), "{text}"),
+                (Err(error), Err(expected)) => {
+                    assert!(error.condition_symbol().is_named(expected), "{text}")
+                }
+                (result, _) => panic!("{text} by entry {entry}: {result:?}"),
+            }
+            assert_eq!(marks(&interp), before, "{text} by entry {entry}");
+            assert_eq!(
+                &*interp.bc_stack,
+                &[Value::Integer(1), Value::Integer(2)],
+                "the caller's operands after {text}"
+            );
+        }
+        let left = eval(&mut interp, &mut env, "emaxx-test-left");
+        assert_eq!(left.symbol_str(), Some("global"), "{text}");
+    }
+    assert_eq!(interp.bc_stack.leave_frame(), 0);
+    assert_eq!(interp.bc_stack.frame_count(), 0);
+}
