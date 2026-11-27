@@ -518,10 +518,24 @@ impl BcFrame {
     }
 }
 
+/// What the dispatch loops keep between their ops besides the program,
+/// which exec_byte_code keeps in its own frame: where the frame goes on,
+/// the frames its signaling ops recorded, and bytecode.c's `quitcounter'.
+struct LoopState {
+    /// The offset the frame runs from, or went on to when a loop left it.
+    pc: usize,
+    /// Frames pushed by signaling byte ops (see `Activation').
+    op_error_frames: usize,
+    /// bytecode.c's `quitcounter' (see `Activation').
+    quitcounter: u8,
+}
+
 /// What a frame switch in the dispatch loop changes: the thread's state
 /// (its byte-code stack, backtrace and depth, suspended frames and
-/// handlers), this activation's program, and the frames its signaling ops
-/// recorded.
+/// handlers), this activation's program, and the loop's own state.  The
+/// loop and its helpers change the program and that state where they
+/// lie; nothing changes this record once it is made, so the loop reads
+/// its other fields once.
 struct VmFrames<'a> {
     interp: &'a mut Interpreter,
     env: &'a mut Env,
@@ -530,7 +544,7 @@ struct VmFrames<'a> {
     /// thread's `bc_frames' and `bc_handlers'.
     frames_base: usize,
     handlers_base: usize,
-    op_error_frames: &'a mut usize,
+    state: &'a mut LoopState,
     trace_errors: bool,
 }
 
@@ -560,7 +574,7 @@ fn bytecode_call(
         interp,
         env,
         program,
-        op_error_frames,
+        state,
         trace_errors,
         ..
     } = vm;
@@ -625,7 +639,7 @@ fn bytecode_call(
                 ));
             }
             // A signaling op's records are gone before the frame runs on.
-            debug_assert_eq!(**op_error_frames, 0);
+            debug_assert_eq!(state.op_error_frames, 0);
             let frame = BcFrame {
                 program: std::mem::replace(*program, Running::of(&callee)),
                 base: args_start - 1,
@@ -954,7 +968,7 @@ fn enter_closure_frame(
     let backtrace_depth = state.enter_plain_funcall(func, call_args);
     debug_assert_eq!(backtrace_depth, state.innermost_backtrace_record());
     // A signaling op's records are gone before the frame runs on.
-    debug_assert_eq!(*vm.op_error_frames, 0);
+    debug_assert_eq!(vm.state.op_error_frames, 0);
     // The caller's program copied into the frame's slot, then the callee's
     // over it: `mem::replace' moved the caller's through a temporary.
     let frame = BcFrame {
@@ -1085,7 +1099,7 @@ fn enter_dynamic_frame_with(
     let backtrace_depth = state.enter_plain_funcall(func, call_args);
     debug_assert_eq!(backtrace_depth, state.innermost_backtrace_record());
     // A signaling op's records are gone before the frame runs on.
-    debug_assert_eq!(*vm.op_error_frames, 0);
+    debug_assert_eq!(vm.state.op_error_frames, 0);
     let frame = BcFrame {
         program: *vm.program,
         base: args_start - 1,
@@ -1240,7 +1254,7 @@ fn return_to_bytecode_frame(
     *vm.program = program;
     // The caller's records of signaling ops were gone at the call, and so
     // are the callee's at its return.
-    debug_assert_eq!(*vm.op_error_frames, 0);
+    debug_assert_eq!(vm.state.op_error_frames, 0);
     state.bc_handlers.truncate(handlers_len);
     let unchanged = code_changes == crate::lisp::alloc::code_changes();
     // SAFETY: FRAME is the last, which needs no drop.
@@ -1967,8 +1981,6 @@ fn run_verified(
     code: &[u8],
     words: *mut Value,
     top: usize,
-    pc: &mut usize,
-    quitcounter: &mut u8,
 ) -> Option<Value> {
     let mut code = code;
     let mut top = top;
@@ -1989,7 +2001,7 @@ fn run_verified(
         // of the header beneath the frame, which no op reads.
         // SAFETY: top lies within the active frame, above that header.
         let mut sp = unsafe { words.add(top - 1) };
-        let mut at = *pc;
+        let mut at = vm.state.pc;
         let exit = 'run: loop {
             // AT stays at the op until its arm moves past it (by the op's
             // length) or jumps, so the head reads the byte and dispatches,
@@ -2037,7 +2049,7 @@ fn run_verified(
                 () => {{
                     // SAFETY: sp lies within the active frame.
                     let top = unsafe { sp.offset_from(words) as usize } + 1;
-                    break 'run op_in_place(vm, offset, top, pc);
+                    break 'run op_in_place(vm, offset, top);
                 }};
             }
             // A jump op is three bytes; one to before its end is backward.
@@ -2045,10 +2057,10 @@ fn run_verified(
                 ($target:expr) => {{
                     let destination = usize::from($target);
                     if destination < at + 3 {
-                        *quitcounter = quitcounter.wrapping_add(1);
-                        if *quitcounter == 0 {
-                            *quitcounter = 1;
-                            *pc = destination;
+                        vm.state.quitcounter = vm.state.quitcounter.wrapping_add(1);
+                        if vm.state.quitcounter == 0 {
+                            vm.state.quitcounter = 1;
+                            vm.state.pc = destination;
                             break 'run FastExit::QuitCheck;
                         }
                     }
@@ -2135,13 +2147,13 @@ fn run_verified(
                                     at = next;
                                     continue 'run;
                                 }
-                                *pc = next;
+                                vm.state.pc = next;
                                 break 'run FastExit::Switched(top, $depth);
                             }};
                         }
                         macro_rules! raise_from_call {
                             ($error:expr) => {{
-                                *pc = next;
+                                vm.state.pc = next;
                                 break 'run FastExit::Raised(
                                     super::Instr {
                                         offset,
@@ -2181,15 +2193,15 @@ fn run_verified(
                     }
                     match bytecode_call(vm, top, argc, next, offset) {
                         Ok(CallOutcome::Entered(top, depth)) => {
-                            *pc = 0;
+                            vm.state.pc = 0;
                             break 'run FastExit::Switched(top, depth);
                         }
                         Ok(CallOutcome::Returned(top, depth)) => {
-                            *pc = next;
+                            vm.state.pc = next;
                             break 'run FastExit::Switched(top, depth);
                         }
                         Err(error) => {
-                            *pc = next;
+                            vm.state.pc = next;
                             break 'run FastExit::Raised(
                                 super::Instr {
                                     offset,
@@ -2606,7 +2618,7 @@ fn run_verified(
                             at = resume;
                             continue 'run;
                         }
-                        *pc = resume;
+                        vm.state.pc = resume;
                         break 'run FastExit::Switched(top, depth);
                     }
                     // exec_byte_code's `return val' to its C caller: the
@@ -2935,7 +2947,7 @@ fn run_verified(
                     drop_values!(2);
                     match destination {
                         Some(destination) => {
-                            *pc = destination;
+                            vm.state.pc = destination;
                             // SAFETY: sp lies within the active frame.
                             let top = unsafe { sp.offset_from(words) as usize } + 1;
                             vm.interp.bc_stack.top = top;
@@ -3106,7 +3118,7 @@ fn run_verified(
                 && vm
                     .program
                     .verified
-                    .is_some_and(|verified| verified.admits(*pc, depth))
+                    .is_some_and(|verified| verified.admits(vm.state.pc, depth))
             {
                 top = new_top;
                 continue;
@@ -3319,7 +3331,7 @@ fn switch_destination(
 /// the op may have run Lisp; after a signal, the signal. An op that does
 /// not decode leaves the loop with the stack as it was.
 #[inline(never)]
-fn op_in_place(vm: &mut VmFrames<'_>, offset: usize, top: usize, pc: &mut usize) -> FastExit {
+fn op_in_place(vm: &mut VmFrames<'_>, offset: usize, top: usize) -> FastExit {
     let changes = crate::lisp::alloc::code_changes();
     // The frame's code, which the loop reads only by its verified offsets
     // and so holds without its length.
@@ -3336,7 +3348,7 @@ fn op_in_place(vm: &mut VmFrames<'_>, offset: usize, top: usize, pc: &mut usize)
             None => match super::fetch_instruction(code, offset, constants) {
                 Ok(instr) => instr,
                 Err(error) => {
-                    *pc = offset;
+                    vm.state.pc = offset;
                     return FastExit::Error(error);
                 }
             },
@@ -3364,11 +3376,11 @@ fn op_in_place(vm: &mut VmFrames<'_>, offset: usize, top: usize, pc: &mut usize)
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.bc_stack.top = top;
     let next = offset + instr.len;
-    *pc = next;
-    match exec_op_inline(vm, instr.op, pc) {
+    vm.state.pc = next;
+    match exec_op_inline(vm, instr.op) {
         Ok(()) => {
             let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
-            if *pc == next && crate::lisp::alloc::code_changes() == changes {
+            if vm.state.pc == next && crate::lisp::alloc::code_changes() == changes {
                 debug_assert!(
                     vm.program
                         .verified
@@ -3466,32 +3478,36 @@ fn pop_handler(interp: &mut Interpreter, handlers_base: usize) {
 
 /// exec_byte_code's arm for every op the fast loops leave to the
 /// interpreter: variables, bindings and unwinding, handlers, buffer and
-/// primitive ops, and each fast op's operands of another kind. PC is
-/// already past the instruction; Bswitch moves it. The verified loop runs
-/// these in place and the full dispatch runs them after the unverified
-/// loop.
+/// primitive ops, and each fast op's operands of another kind. The
+/// frame's pc is already past the instruction; Bswitch moves it. The
+/// verified loop runs these in place and the full dispatch runs them
+/// after the unverified loop.
 #[inline(never)]
-fn exec_op(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispError> {
-    exec_op_inline(vm, op, pc)
+fn exec_op(vm: &mut VmFrames<'_>, op: Op) -> Result<(), LispError> {
+    exec_op_inline(vm, op)
 }
 
 /// `exec_op's body, inline in `op_in_place', the verified loop's way to
 /// these ops (a call and a second prologue for each of them).
 #[inline(always)]
-fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op, pc: &mut usize) -> Result<(), LispError> {
+fn exec_op_inline(vm: &mut VmFrames<'_>, op: Op) -> Result<(), LispError> {
     let VmFrames {
         interp,
         env,
         program,
         handlers_base,
-        op_error_frames,
+        state,
         ..
     } = vm;
     let interp: &mut Interpreter = interp;
     let env: &mut Env = env;
     let program: &mut Running = program;
     let handlers_base: usize = *handlers_base;
-    let op_error_frames: &mut usize = op_error_frames;
+    let LoopState {
+        pc,
+        op_error_frames,
+        ..
+    } = &mut **state;
     macro_rules! pop {
         () => {
             interp
@@ -4437,9 +4453,11 @@ fn run_entered_with(
             break 'entry Err(error);
         }
         let mut program = Running::entered(&program);
-        let mut op_error_frames = 0;
-        let mut pc = 0;
-        let mut quitcounter = 1;
+        let mut state = LoopState {
+            pc: 0,
+            op_error_frames: 0,
+            quitcounter: 1,
+        };
         // SAFETY: as in `run_loop': the verified loop runs no Lisp, collects
         // nothing and stores into no string while it reads the bytes.  When
         // SETUP ran no Lisp, nothing has run since `entry_program' found
@@ -4473,14 +4491,12 @@ fn run_entered_with(
                     program: &mut program,
                     frames_base,
                     handlers_base,
-                    op_error_frames: &mut op_error_frames,
+                    state: &mut state,
                     trace_errors: trace_load_errors(),
                 },
                 code,
                 words,
                 top,
-                &mut pc,
-                &mut quitcounter,
             );
             match returned {
                 Some(value)
@@ -4518,11 +4534,11 @@ fn run_entered_with(
             env,
             Activation {
                 program,
-                pc,
+                pc: state.pc,
                 frames_base,
                 handlers_base,
-                op_error_frames,
-                quitcounter,
+                op_error_frames: state.op_error_frames,
+                quitcounter: state.quitcounter,
             },
             exit,
         )
@@ -4847,12 +4863,17 @@ fn run_loop(
 ) -> Result<Value, LispError> {
     let Activation {
         mut program,
-        mut pc,
+        pc,
         frames_base,
         handlers_base,
-        mut op_error_frames,
-        mut quitcounter,
+        op_error_frames,
+        quitcounter,
     } = activation;
+    let mut state = LoopState {
+        pc,
+        op_error_frames,
+        quitcounter,
+    };
     let mut last_instruction = None;
     let trace_errors = trace_load_errors();
 
@@ -4878,20 +4899,20 @@ fn run_loop(
     macro_rules! branch {
         ($target:expr) => {{
             let destination = $target as usize;
-            if destination < pc {
-                quitcounter = quitcounter.wrapping_add(1);
-                if quitcounter == 0 {
-                    quitcounter = 1;
+            if destination < state.pc {
+                state.quitcounter = state.quitcounter.wrapping_add(1);
+                if state.quitcounter == 0 {
+                    state.quitcounter = 1;
                     crate::lisp::native_comp::maybe_gc(interp, env);
                     interp.maybe_quit(env)?;
                 }
             }
-            pc = destination;
+            state.pc = destination;
         }};
     }
 
     // Breturn: with a frame below, the value replaces the callee's slot
-    // and the caller's program and pc resume; at the entry frame it
+    // and the caller's program and state.pc resume; at the entry frame it
     // leaves the activation.
     macro_rules! breturn {
         ($value:expr) => {{
@@ -4922,10 +4943,10 @@ fn run_loop(
                         _ => value,
                     };
                     let left = leave_frame(interp, env, &frame).and(unbound);
-                    pc = interp.bc_stack.leave_frame();
+                    state.pc = interp.bc_stack.leave_frame();
                     interp.bc_stack.truncate(frame.base);
                     program = frame.program;
-                    debug_assert_eq!(op_error_frames, 0);
+                    debug_assert_eq!(state.op_error_frames, 0);
                     interp.bc_handlers.truncate(frame.handlers_len);
                     // A signal or throw from undoing the callee's entries
                     // (funcall_lambda's unbind_to: a watcher of a formal)
@@ -4959,7 +4980,7 @@ fn run_loop(
                 let verified_run = current
                     && program
                         .verified
-                        .is_some_and(|verified| verified.admits(pc, interp.bc_stack.len()));
+                        .is_some_and(|verified| verified.admits(state.pc, interp.bc_stack.len()));
                 let exit = match program.verified {
                     Some(_) if verified_run => {
                         let words = interp.bc_stack.words.as_mut_ptr().cast::<Value>();
@@ -4973,14 +4994,12 @@ fn run_loop(
                                 program: &mut program,
                                 frames_base,
                                 handlers_base,
-                                op_error_frames: &mut op_error_frames,
+                                state: &mut state,
                                 trace_errors,
                             },
                             code,
                             words,
                             top,
-                            &mut pc,
-                            &mut quitcounter,
                         );
                         match returned {
                             Some(value) => FastExit::Return(value),
@@ -4993,8 +5012,8 @@ fn run_loop(
                         &program,
                         code,
                         &mut interp.bc_stack,
-                        &mut pc,
-                        &mut quitcounter,
+                        &mut state.pc,
+                        &mut state.quitcounter,
                     ),
                 };
                 // The verified loop switches frames itself, and a call or
@@ -5007,13 +5026,14 @@ fn run_loop(
                     }
                     break exit;
                 }
+                let at = state.pc;
                 let mut vm = VmFrames {
                     interp,
                     env,
                     program: &mut program,
                     frames_base,
                     handlers_base,
-                    op_error_frames: &mut op_error_frames,
+                    state: &mut state,
                     trace_errors,
                 };
                 match exit {
@@ -5022,11 +5042,13 @@ fn run_loop(
                         op: Op::Call(argc),
                         len,
                         ..
-                    }) if enter_bytecode_frame(&mut vm, pc + len, usize::from(argc)) => pc = 0,
+                    }) if enter_bytecode_frame(&mut vm, at + len, usize::from(argc)) => {
+                        vm.state.pc = 0
+                    }
                     FastExit::Return(value) if vm.interp.bc_frames.len() > vm.frames_base => {
                         let top = vm.interp.bc_stack.top;
                         match return_to_bytecode_frame(&mut vm, top, value) {
-                            Some((resume, ..)) => pc = resume,
+                            Some((resume, ..)) => vm.state.pc = resume,
                             None => break exit,
                         }
                     }
@@ -5057,7 +5079,7 @@ fn run_loop(
             last_instruction = Some(instr);
             let op = instr.op;
             let offset = instr.offset;
-            pc += instr.len;
+            state.pc += instr.len;
 
             // run_fast already handled the ordinary stack/value cases.
             // A fallback goes directly to its complete operation; repeating
@@ -5103,19 +5125,20 @@ fn run_loop(
                 }
                 Op::Call(argc) => {
                     let top = interp.bc_stack.top;
+                    let return_pc = state.pc;
                     let mut vm = VmFrames {
                         interp,
                         env,
                         program: &mut program,
                         frames_base,
                         handlers_base,
-                        op_error_frames: &mut op_error_frames,
+                        state: &mut state,
                         trace_errors,
                     };
                     if let CallOutcome::Entered(..) =
-                        bytecode_call(&mut vm, top, usize::from(argc), pc, offset)?
+                        bytecode_call(&mut vm, top, usize::from(argc), return_pc, offset)?
                     {
-                        pc = 0;
+                        state.pc = 0;
                     }
                 }
                 Op::Goto { target } => {
@@ -5156,11 +5179,10 @@ fn run_loop(
                             program: &mut program,
                             frames_base,
                             handlers_base,
-                            op_error_frames: &mut op_error_frames,
+                            state: &mut state,
                             trace_errors,
                         },
                         op,
-                        &mut pc,
                     )?;
                 }
             }
@@ -5219,9 +5241,9 @@ fn run_loop(
                         if let Some(value) = matched_value {
                             // A caught signal unwinds the frame its byte op
                             // recorded (GNU unbinds specpdl to the handler).
-                            while op_error_frames > 0 {
+                            while state.op_error_frames > 0 {
                                 interp.pop_backtrace_frame();
-                                op_error_frames -= 1;
+                                state.op_error_frames -= 1;
                             }
                             while interp.specpdl_index() > handler.unwind_len {
                                 match interp.pop_specpdl_entry() {
@@ -5234,7 +5256,7 @@ fn run_loop(
                             }
                             interp.bc_stack.truncate(handler.stack_len);
                             push!(value);
-                            pc = handler.dest;
+                            state.pc = handler.dest;
                             handled = true;
                             break 'frames;
                         }
@@ -5246,16 +5268,16 @@ fn run_loop(
                     // signaling ops pushed, then the settling every call
                     // boundary does (handler-bind, the batch backtrace),
                     // then the frame itself.
-                    while op_error_frames > 0 {
+                    while state.op_error_frames > 0 {
                         interp.pop_backtrace_frame();
-                        op_error_frames -= 1;
+                        state.op_error_frames -= 1;
                     }
                     error = match interp.settle_frame_result(Err(error), env) {
                         Ok(value) => {
                             if let Err(error) = leave_frame(interp, env, &frame) {
                                 break 'run Err(error);
                             }
-                            pc = interp.bc_stack.leave_frame();
+                            state.pc = interp.bc_stack.leave_frame();
                             interp.bc_stack.truncate(frame.base);
                             push!(value);
                             program = frame.program;
@@ -5269,7 +5291,7 @@ fn run_loop(
                     {
                         error = unwind_error;
                     }
-                    pc = interp.bc_stack.leave_frame();
+                    state.pc = interp.bc_stack.leave_frame();
                     interp.bc_stack.truncate(frame.base);
                     program = frame.program;
                 }
