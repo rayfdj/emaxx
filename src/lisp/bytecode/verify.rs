@@ -185,7 +185,8 @@ pub(crate) struct EntryProgram {
     pub(crate) code: CodeBytes,
     pub(crate) constants: VectorRef,
     pub(crate) verified: &'static VerifiedCode,
-    pub(crate) stack_depth: usize,
+    /// The frame's depth, below the 65535 slots verification takes.
+    pub(crate) stack_depth: u32,
     /// The frame's first slots: the arguments, the &optional ones' nils
     /// and the &rest list's.
     pub(crate) entry_depth: usize,
@@ -351,7 +352,8 @@ fn entry_program_slow(closure: ClosureRef, identity: usize) -> Option<NonNull<En
         code: program.code,
         constants: program.constants,
         verified,
-        stack_depth: program.stack_depth,
+        // Verified code's depth is below 65535.
+        stack_depth: u32::try_from(program.stack_depth).ok()?,
         entry_depth,
         counts,
         arguments,

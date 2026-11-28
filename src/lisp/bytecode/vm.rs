@@ -80,17 +80,84 @@ impl BcStack {
         unsafe { self.words.as_ptr().add(frame).cast::<BcHeader>().read() }
     }
 
+    /// setup_frame's frame of DEPTH operand slots above the active frame's
+    /// declared depth, whose footer saves the caller's frame, its top and
+    /// PC and holds FUNCTION; or the stack's overflow, with nothing
+    /// changed.  The active footer lies within the stack and DEPTH is
+    /// below 2^32, so the new footer's offset is a sum that cannot
+    /// overflow, and its one compare with the stack's end is setup_frame's
+    /// `fp->next_stack > bc->stack_end'.
     #[inline(always)]
-    fn enter_frame(&mut self, depth: usize, function: Value, pc: usize) -> Result<(), LispError> {
-        let base = self.frame + BC_HEADER_WORDS;
-        // The room above BASE bounds DEPTH, with no addition to overflow.
-        const LIMIT: usize = BC_STACK_WORDS - BC_HEADER_WORDS;
-        if base > LIMIT || depth > LIMIT - base {
+    fn enter_frame(&mut self, depth: u32, function: Value, pc: usize) -> Result<(), LispError> {
+        let Some((base, frame)) = self.frame_above(depth) else {
             return Err(stack_overflow());
-        }
-        let frame = base + depth;
+        };
         // SAFETY: the checked footer lies after the caller's entire declared
         // frame. Its slots are disjoint from all caller/backtrace slices.
+        unsafe { self.write_header(frame, function, pc) };
+        self.frame = frame;
+        self.base = base;
+        self.top = base;
+        Ok(())
+    }
+
+    /// `enter_frame' with the frame's first ENTRY_DEPTH slots filled,
+    /// ARGS and then nils, as setup_frame enters a frame and pushes the
+    /// arguments and the optionals' nils.
+    ///
+    /// # Safety
+    /// ARGS are at most ENTRY_DEPTH, and ENTRY_DEPTH is at most DEPTH.
+    #[inline(always)]
+    unsafe fn enter_frame_with_arguments(
+        &mut self,
+        depth: u32,
+        function: Value,
+        pc: usize,
+        args: &[Value],
+        entry_depth: usize,
+    ) -> Result<(), LispError> {
+        let Some((base, frame)) = self.frame_above(depth) else {
+            return Err(stack_overflow());
+        };
+        debug_assert!(
+            args.len() <= entry_depth && base + entry_depth <= frame,
+            "byte code exceeded its declared stack depth"
+        );
+        // SAFETY: as `enter_frame's footer; the first ENTRY_DEPTH slots
+        // lie below it, as the caller's contract, and ARGS lie in the
+        // caller's frame, disjoint from them.
+        unsafe {
+            self.write_header(frame, function, pc);
+            write_arguments(
+                self.words.as_mut_ptr().add(base).cast::<Value>(),
+                args,
+                entry_depth,
+            );
+        }
+        self.frame = frame;
+        self.base = base;
+        self.top = base + entry_depth;
+        Ok(())
+    }
+
+    /// The base and the footer of a frame of DEPTH slots above the active
+    /// one, when its footer fits the stack.
+    #[inline(always)]
+    fn frame_above(&self, depth: u32) -> Option<(usize, usize)> {
+        debug_assert!(self.frame <= BC_STACK_WORDS - BC_HEADER_WORDS);
+        let base = self.frame + BC_HEADER_WORDS;
+        // No sum overflows: FRAME is within the stack, DEPTH below 2^32.
+        let frame = base + depth as usize;
+        (frame <= BC_STACK_WORDS - BC_HEADER_WORDS).then_some((base, frame))
+    }
+
+    /// The footer of a frame entered at FRAME from the active one.
+    ///
+    /// # Safety
+    /// FRAME is a footer `frame_above' answered for the active frame.
+    #[inline(always)]
+    unsafe fn write_header(&mut self, frame: usize, function: Value, pc: usize) {
+        // SAFETY: as the caller's contract.
         unsafe {
             self.words
                 .as_mut_ptr()
@@ -103,10 +170,6 @@ impl BcStack {
                     function,
                 });
         }
-        self.frame = frame;
-        self.base = base;
-        self.top = base;
-        Ok(())
     }
 
     fn leave_frame(&mut self) -> usize {
@@ -194,45 +257,6 @@ impl BcStack {
         self.top += 1;
     }
 
-    /// A new frame's first ENTRY_DEPTH slots, in a frame known to hold
-    /// them: ARGS, then nils.
-    ///
-    /// # Safety
-    /// ARGS are at most ENTRY_DEPTH, and ENTRY_DEPTH slots fit below the
-    /// active footer.
-    #[inline(always)]
-    unsafe fn push_arguments_within(&mut self, args: &[Value], entry_depth: usize) {
-        debug_assert!(
-            args.len() <= entry_depth && self.top + entry_depth <= self.frame,
-            "byte code exceeded its declared stack depth"
-        );
-        // SAFETY: these free operand words precede the active footer; ARGS
-        // lie in the caller's frame, disjoint from them.
-        unsafe {
-            let slots = self.words.as_mut_ptr().add(self.top).cast::<Value>();
-            // A store for each of a few arguments, as setup_frame's PUSH
-            // loop: cheaper than a `memcpy' call, which a copy loop becomes.
-            match args {
-                [] => {}
-                [a] => slots.write(*a),
-                [a, b] => {
-                    slots.write(*a);
-                    slots.add(1).write(*b);
-                }
-                [a, b, c] => {
-                    slots.write(*a);
-                    slots.add(1).write(*b);
-                    slots.add(2).write(*c);
-                }
-                args => std::ptr::copy_nonoverlapping(args.as_ptr(), slots, args.len()),
-            }
-            for index in args.len()..entry_depth {
-                slots.add(index).write(Value::Nil);
-            }
-        }
-        self.top += entry_depth;
-    }
-
     #[inline(always)]
     pub(crate) fn pop(&mut self) -> Option<Value> {
         if self.top == self.base {
@@ -248,16 +272,15 @@ impl BcStack {
         self.top = self.base + len.min(self.top - self.base);
     }
 
-    /// A call's end: VALUE takes the function's slot, LEN operands up the
-    /// frame, and the arguments above it go (`truncate' and a push).
+    /// A call's end, the stack's top where the call found it: VALUE takes
+    /// the function's slot, ARGC operands below the top, and the arguments
+    /// above it go (`truncate' and a push), as Bcall's `TOP = val' after
+    /// `top -= op'.
     #[inline(always)]
-    fn replace_call(&mut self, len: usize, value: Value) {
-        assert!(
-            self.base + len < self.top,
-            "a call's function lies below the top"
-        );
-        // SAFETY: as asserted.
-        unsafe { self.replace_call_below_top(len, value) }
+    fn replace_call(&mut self, argc: usize, value: Value) {
+        assert!(argc < self.len(), "a call's function lies in the frame");
+        // SAFETY: as asserted, the slot lies in the frame, below the top.
+        unsafe { self.replace_call_below_top(self.len() - argc - 1, value) }
     }
 
     /// `replace_call' of a function slot known to lie below the top.
@@ -431,6 +454,44 @@ impl std::fmt::Debug for BcStack {
 
 fn stack_overflow() -> LispError {
     LispError::Signal("Bytecode stack overflow".into())
+}
+
+/// A frame's first ENTRY_DEPTH slots from SLOTS on: ARGS, then nils.
+///
+/// # Safety
+/// ARGS are at most ENTRY_DEPTH, and the ENTRY_DEPTH words from SLOTS
+/// are free words of the stack, disjoint from ARGS.
+#[inline(always)]
+unsafe fn write_arguments(slots: *mut Value, args: &[Value], entry_depth: usize) {
+    // SAFETY: as the caller's contract.
+    unsafe {
+        // A store for each of a few arguments, as setup_frame's PUSH
+        // loop: cheaper than a `memcpy' call, which a copy loop becomes.
+        match args {
+            [] => {}
+            [a] => slots.write(*a),
+            [a, b] => {
+                slots.write(*a);
+                slots.add(1).write(*b);
+            }
+            [a, b, c] => {
+                slots.write(*a);
+                slots.add(1).write(*b);
+                slots.add(2).write(*c);
+            }
+            args => std::ptr::copy_nonoverlapping(args.as_ptr(), slots, args.len()),
+        }
+        for index in args.len()..entry_depth {
+            slots.add(index).write(Value::Nil);
+        }
+    }
+}
+
+/// A byte-code object's maximum stack depth as a frame's depth: one
+/// beyond 2^32 words, which no frame holds, stays one no frame holds.
+#[inline(always)]
+fn frame_depth(depth: usize) -> u32 {
+    u32::try_from(depth).unwrap_or(u32::MAX)
 }
 
 /// exec_byte_code's arity signal for a lexbound template: the data is
@@ -649,11 +710,11 @@ fn bytecode_call(
     // packed-closure setup_frame branch does after maybe_gc.
     let callee = match interp.bcall_callee(&func) {
         crate::lisp::eval::BcallCallee::ByteCode(callee, callee_function) => {
-            if let Err(error) =
-                interp
-                    .bc_stack
-                    .enter_frame(callee.stack_depth, callee_function, return_pc)
-            {
+            if let Err(error) = interp.bc_stack.enter_frame(
+                frame_depth(callee.stack_depth),
+                callee_function,
+                return_pc,
+            ) {
                 let result = interp.settle_frame_result(Err(error), env);
                 interp.truncate_backtrace_frames(backtrace_depth);
                 interp.end_funcall();
@@ -914,8 +975,13 @@ fn call_plain(
         .settle_call_result(backtrace_depth, result, vm.env);
     let state: &mut crate::lisp::eval::InterpreterState = vm.interp;
     state.leave_plain_funcall(backtrace_depth);
+    // A call returns with the stack's top where it found it, above the
+    // arguments (exec_byte_code's `top', which the call leaves as it
+    // is), so the function's slot is found from there again: nothing
+    // of it is kept across the call.
     Some(result.map(|value| {
-        state.bc_stack.replace_call(args_start - 1, value);
+        debug_assert_eq!(state.bc_stack.top, top, "a call leaves the stack's top");
+        state.bc_stack.replace_call(argc, value);
         (state.bc_stack.top, state.bc_stack.len())
     }))
 }
@@ -970,10 +1036,19 @@ fn enter_closure_frame(
     // callers found the function and the arguments on the stack: verified
     // code, or `enter_bytecode_frame's index of the function.
     let call_args = unsafe { state.bc_stack.slice_from_unchecked(args_start, argc) };
-    if state
-        .bc_stack
-        .enter_frame(callee.stack_depth, function, return_pc)
-        .is_err()
+    // setup_frame's frame, its `PUSH (*args)' and the optionals' nils.
+    // SAFETY: the program takes ARGC arguments (`takes'), at most its entry
+    // depth, and its stack depth holds that (`EntryProgram::counts').
+    if unsafe {
+        state.bc_stack.enter_frame_with_arguments(
+            callee.stack_depth,
+            function,
+            return_pc,
+            call_args,
+            entry_depth,
+        )
+    }
+    .is_err()
     {
         return None;
     }
@@ -998,11 +1073,6 @@ fn enter_closure_frame(
     };
     state.bc_frames.push(frame);
     vm.state.program = Running::entered(callee);
-    // setup_frame's `PUSH (*args)' and the optionals' nils.
-    // SAFETY: the program takes ARGC arguments (`takes'), at most its entry
-    // depth, and the frame entered above holds its stack depth, at least
-    // that (`EntryProgram::counts').
-    unsafe { state.bc_stack.push_arguments_within(call_args, entry_depth) };
     Some((state.bc_stack.top, entry_depth))
 }
 
@@ -2066,8 +2136,10 @@ fn run_verified(
     left: &mut Left,
 ) -> Option<Value> {
     let state: &mut crate::lisp::eval::InterpreterState = interp;
-    // The loop's state, written where it comes from.
+    // The loop's state, written where it comes from, and the stack's
+    // words, read before the entry writes any.
     let mut registers: LoopState;
+    let words: *mut Value;
     match entry {
         Some(entry) => {
             // SAFETY: the caller's program, which stays in place while
@@ -2080,32 +2152,33 @@ fn run_verified(
                 state.bc_handlers.len(),
             );
             state.bc_stack.ensure_allocated();
-            if state
-                .bc_stack
-                .enter_frame(entry.stack_depth, function, 0)
-                .is_err()
+            words = state.bc_stack.words.as_mut_ptr().cast::<Value>();
+            // SAFETY: the caller's `takes' admits at most the list's
+            // ENTRY_DEPTH arguments, which `entry_program' gives only a
+            // program whose STACK_DEPTH holds them.
+            if unsafe {
+                state.bc_stack.enter_frame_with_arguments(
+                    entry.stack_depth,
+                    function,
+                    0,
+                    args,
+                    entry.entry_depth,
+                )
+            }
+            .is_err()
             {
                 left.exit.write(FastExit::Overflow);
                 left.activation.write(registers);
                 return None;
             }
-            // SAFETY: the caller's `takes' admits at most the list's
-            // ENTRY_DEPTH arguments, which `entry_program' gives only a
-            // program whose STACK_DEPTH holds them, and `enter_frame' has
-            // just put the frame's footer that depth above its first slot.
-            unsafe {
-                state
-                    .bc_stack
-                    .push_arguments_within(args, entry.entry_depth)
-            };
         }
         None => {
             // SAFETY: without ENTRY the caller wrote the state to go on
             // from.
             registers = unsafe { *left.activation.assume_init_ref() };
+            words = state.bc_stack.words.as_mut_ptr().cast::<Value>();
         }
     }
-    let words = state.bc_stack.words.as_mut_ptr().cast::<Value>();
     let mut top = state.bc_stack.top;
     let mut frames = VmFrames {
         interp,
@@ -5086,7 +5159,7 @@ fn run_frames(
         }
     }
     interp.bc_stack.enter_frame(
-        program.stack_depth,
+        frame_depth(program.stack_depth),
         if function.is_nil() {
             Value::Vector(program.constants)
         } else {
@@ -6750,14 +6823,14 @@ fn bytecode_stack_footers_share_storage_and_preserve_borrowed_caller_arguments()
     assert!(moved.is_empty());
     assert_eq!(moved.frame_count(), 0);
     moved
-        .enter_frame(BC_STACK_WORDS - 8, Value::Integer(31), 0)
+        .enter_frame(frame_depth(BC_STACK_WORDS - 8), Value::Integer(31), 0)
         .expect("GNU's largest single frame includes both footers");
     assert!(moved.enter_frame(0, Value::Nil, 0).is_err());
     assert_eq!(moved.frame_count(), 1);
     moved.leave_frame();
     assert!(
         moved
-            .enter_frame(BC_STACK_WORDS - 7, Value::Nil, 0)
+            .enter_frame(frame_depth(BC_STACK_WORDS - 7), Value::Nil, 0)
             .is_err()
     );
     assert_eq!(moved.frame_count(), 0);
@@ -6860,7 +6933,7 @@ fn an_activation_entered_from_rust_leaves_the_threads_stacks_as_it_found_them() 
     // The caller's frame leaves room for a few small frames above it.
     interp
         .bc_stack
-        .enter_frame(BC_STACK_WORDS - 4096, Value::Nil, 0)
+        .enter_frame(frame_depth(BC_STACK_WORDS - 4096), Value::Nil, 0)
         .expect("the caller's frame");
     interp.bc_stack.push(Value::Integer(1)).expect("an operand");
     interp.bc_stack.push(Value::Integer(2)).expect("an operand");
