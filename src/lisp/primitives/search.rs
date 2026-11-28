@@ -104,9 +104,10 @@ pub(crate) fn reset_elisp_regex_compile_count() {
     COMPILES.with(|count| count.set(0));
 }
 
-/// The bytes of a string value, read in place.  Nothing that could store
-/// into the string or collect runs while they are in use: the matcher calls
-/// Lisp only for `syntax-propertize' in a buffer.
+/// The bytes of a string value, read in place, as re_search reads SDATA.
+/// No collection runs while they are in use: the matcher calls Lisp for
+/// `syntax-propertize' in a buffer only, and for a quit, whose handlers
+/// run with the collection inhibited (`Interpreter::probably_quit').
 fn string_bytes(value: &Value) -> Option<(&[u8], bool, usize)> {
     match value.kind() {
         Kind::StringObject(state) => {

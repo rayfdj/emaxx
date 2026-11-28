@@ -269,7 +269,6 @@ pub(crate) fn sweep_weak_hash_tables(
             table.remove(slot);
         }
     }
-    let epoch = reachability.epoch;
     let live = interp
         .modules
         .record_ids()
@@ -277,7 +276,7 @@ pub(crate) fn sweep_weak_hash_tables(
         .filter(|id| {
             interp
                 .record_ref(*id)
-                .is_some_and(|record| record.mark_bit().is_marked(epoch))
+                .is_some_and(|record| record.mark_bit().is_marked())
         })
         .collect::<crate::lisp::eval::MarkedIds>();
     interp.modules.collect(&live);

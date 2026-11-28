@@ -3344,9 +3344,28 @@ impl InterpreterState {
             record + 1,
             "the call's record is innermost"
         );
-        let Some(frame) = self.backtrace_frames.get(record) else {
+        if record >= self.backtrace_frames.len() {
             return false;
-        };
+        }
+        // SAFETY: RECORD is within the backtrace, as just tested.
+        unsafe { self.leave_returned_funcall(record) }
+    }
+
+    /// `leave_innermost_funcall' where the caller has just seen the
+    /// backtrace RECORD + 1 frames long: the activation entered from the
+    /// call returned with nothing of its own left (`run_entered_returned').
+    ///
+    /// # Safety
+    /// RECORD is an index of the backtrace.
+    #[inline(always)]
+    pub(crate) unsafe fn leave_returned_funcall(&mut self, record: usize) -> bool {
+        debug_assert_eq!(
+            self.backtrace_frames.len(),
+            record + 1,
+            "the call's record is innermost"
+        );
+        // SAFETY: the caller's.
+        let frame = unsafe { self.backtrace_frames.get_unchecked(record) };
         if frame.debug_on_exit() {
             return false;
         }
@@ -3829,13 +3848,13 @@ impl Interpreter {
         let error_symbol = error.condition_symbol();
         let identity = error.identity();
         let condition = error_symbol.identity_ptr();
-        let epoch = crate::lisp::types::current_mark_epoch();
+        let collections = crate::lisp::types::gcs_done();
         let depth = self.active_handlers.len();
         if let Some(memo) = self.handler_search_memo
             && memo.error == identity
             && memo.condition == condition
             && memo.generation == self.handler_generation
-            && memo.epoch == epoch
+            && memo.collections == collections
             && memo.decisive.is_none_or(|index| index < depth)
         {
             return memo;
@@ -3875,7 +3894,7 @@ impl Interpreter {
             error: identity,
             condition,
             generation: self.handler_generation,
-            epoch,
+            collections,
             decisive,
         };
         self.handler_search_memo = Some(search);

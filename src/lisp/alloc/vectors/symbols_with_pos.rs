@@ -16,8 +16,11 @@ impl SymbolWithPosRef {
         let header = allocate_vectorlike(logical_bytes);
         // SAFETY: fresh storage for the header and both aligned Cell<Value>s.
         unsafe {
-            (*header).size =
-                VectorHeader::pseudovector_slots_word(VectorTag::SymbolWithPos, logical_bytes, 2);
+            (*header).size = Cell::new(VectorHeader::pseudovector_slots_word(
+                VectorTag::SymbolWithPos,
+                logical_bytes,
+                2,
+            ));
             let fields = payload(header).cast::<Cell<Value>>();
             fields.write(Cell::new(symbol));
             fields.add(1).write(Cell::new(position));

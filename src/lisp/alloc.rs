@@ -9,8 +9,8 @@
 //! free cell's first word links the free list.
 //!
 //! The blocks, the free list, the bump pointer into the newest block and
-//! the collection's epoch are the process's, as `cons_block',
-//! `cons_free_list', `cons_block_index' and the mark state are plain
+//! the count of collections are the process's, as `cons_block',
+//! `cons_free_list', `cons_block_index' and `gcs_done' are plain
 //! globals in alloc.c: one Lisp thread runs at a time there (the global
 //! lock), and here too (a template interpreter built on one thread is
 //! used from another, one at a time, under a lock).  A collection sweeps
@@ -33,6 +33,8 @@ pub(crate) use finalizers::FinalizerList;
 pub use finalizers::{FinalizerRef, FinalizerState};
 pub use strings::StringObjectRef;
 #[cfg(test)]
+pub(crate) use strings::mapped_string_cells;
+#[cfg(test)]
 pub(crate) use strings::string_data_census;
 pub(crate) use strings::{
     CodeState, IMAGE_STRING_BLOCK_BYTES, IMAGE_STRINGS_PER_BLOCK, PendingStringData,
@@ -48,6 +50,8 @@ pub(crate) const SYMBOL_CELL_BYTES: usize = symbols::SYMBOL_CELL_SIZE;
 pub(crate) const STRING_CELL_BYTES: usize = strings::STRING_CELL_SIZE;
 #[cfg(test)]
 pub(crate) use symbols::allocated_uninterned_symbols;
+#[cfg(test)]
+pub(crate) use symbols::mapped_symbol_cells;
 pub(crate) use symbols::{
     LispFwd, SymbolInterned, SymbolText, adopt_image_symbol_blocks, allocate_symbol, free_symbols,
     image_cell_words, image_symbol_bytes, image_symbol_offset, live_symbols, sweep_symbols,
@@ -77,7 +81,7 @@ const CELL_SIZE: usize = std::mem::size_of::<ConsCell>();
 pub(crate) const CELLS_PER_BLOCK: usize = ((1 << 15) - CONS_METADATA_BYTES) / CELL_SIZE;
 /// Eight-byte float payloads and two bits per slot: the collection mark,
 /// and allocation state for checked native-word decoding. GNU has one mark
-/// bit; the allocation bit replaces this runtime's in-object FREE_MARK.
+/// bit; the allocation bit is this runtime's test of a free cell.
 pub(crate) const FLOATS_PER_BLOCK: usize = ((C_BLOCK_BYTES - 8) * 8) / (8 * 8 + 2);
 /// `SYMBOL_BLOCK_SIZE': (1020 - sizeof (struct symbol_block *)) /
 /// sizeof (struct Lisp_Symbol), a 48-byte symbol.
@@ -107,10 +111,10 @@ fn block_alignment(kind: BlockKind) -> usize {
     }
 }
 
-/// The mark word of a cell on the free list (alloc.c sets the mark bit
-/// of free cells so the sweep skips them; a live cell carries its
-/// collection's epoch, which `begin_mark_epoch' never makes this).
-pub(crate) const FREE_MARK: u32 = u32::MAX;
+/// lisp.h's `ARRAY_MARK_FLAG' (PTRDIFF_MIN): "In a string or vector, the
+/// sign bit of u.s.size is the gc mark bit", from the mark phase to the
+/// object's sweep.  A vector in a block is marked in its block's bits.
+pub(crate) const ARRAY_MARK_FLAG: usize = 1 << (usize::BITS - 1);
 
 /// alloc.c's `mem_type' of a block: what its cells are.
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -243,16 +247,15 @@ fn unregister_block(start: usize) {
 /// live is still released.
 static IMAGE_REGION_OPEN: AtomicBool = AtomicBool::new(false);
 
-/// The image's rebuilt cells of one kind (strings and symbols allocated
-/// while an image loads, vectors in the blocks registered then), for a
-/// sweep that need not read them: how many the current mark epoch has
-/// marked, raised as a mark first reaches one, and how many the last sweep
-/// that read them left (`UNKNOWN' until one has since an image load).  The
-/// mapped cells are not counted: no sweep reads them.  Only a sweep frees an
-/// image cell and none is allocated outside a load, so when the two agree
-/// every image cell that sweep left is marked again: nothing in the image
-/// died, and the sweep passes its blocks by unread, as GNU's sweeps never
-/// read its dump.
+/// The image's rebuilt vectors (the ones in the blocks registered while
+/// an image loads), for a sweep that need not read them: how many the
+/// current mark phase has marked, raised as a mark first reaches one, and
+/// how many the last sweep that read them left (`UNKNOWN' until one has
+/// since an image load).  The mapped cells are not counted: no sweep reads
+/// them.  Only a sweep frees an image cell and none is allocated outside a
+/// load, so when the two agree every image cell that sweep left is marked
+/// again: nothing in the image died, and the sweep passes its blocks by
+/// unread, as GNU's sweeps never read its dump.
 pub(crate) struct ImageCells {
     marked: AtomicUsize,
     live: AtomicUsize,
@@ -268,7 +271,7 @@ impl ImageCells {
         }
     }
 
-    /// A mark reached an image cell not yet marked in this epoch.
+    /// A mark reached an image cell not yet marked in this mark phase.
     #[inline(always)]
     pub(crate) fn note_marked(&self) {
         self.marked
@@ -303,11 +306,9 @@ fn clear_bits(words: &[Cell<usize>]) {
     }
 }
 
-/// A mark epoch begins: no image cell is marked in it yet.
-pub(crate) fn begin_image_mark_epoch() {
-    for cells in [&DUMP.strings, &DUMP.symbols, &DUMP.vectors] {
-        cells.marked.store(0, Ordering::Relaxed);
-    }
+/// A mark phase begins: no image vector is marked in it yet.
+pub(crate) fn begin_image_marks() {
+    DUMP.vectors.marked.store(0, Ordering::Relaxed);
 }
 
 /// True while an image loads: what is allocated now is the image's.
@@ -339,16 +340,17 @@ impl Drop for ImageRegion {
     }
 }
 
-/// The image's cells change: the next sweep reads them all.
+/// The image's vectors change: the next sweep reads them all.
 fn forget_image_live() {
-    for cells in [&DUMP.strings, &DUMP.symbols, &DUMP.vectors] {
-        cells.live.store(ImageCells::UNKNOWN, Ordering::Relaxed);
-    }
+    DUMP.vectors
+        .live
+        .store(ImageCells::UNKNOWN, Ordering::Relaxed);
 }
 
 /// Make the next allocation of every kind take a new block. The cells left
 /// behind stay free and return to the free lists at the next sweep (or, in
-/// an image block, stay unused).
+/// an image block, stay unused); a symbol block's, which nothing has
+/// written, are made free cells here.
 fn abandon_allocation_frontiers() {
     FREE_LIST.set(std::ptr::null_mut());
     BUMP_NEXT.set(BUMP_END.get());
@@ -1991,10 +1993,10 @@ fn new_block(kind: BlockKind) -> usize {
                     .write(FloatMarks::new())
             };
         }
-        BlockKind::Symbol => {
-            // SAFETY: the block just allocated.
-            unsafe { symbols::init_block(start) };
-        }
+        // alloc.c writes nothing in a new symbol_block: the cells no
+        // symbol was made in are told by symbol_block_index
+        // (`symbols::live_symbol_holding').
+        BlockKind::Symbol => {}
         BlockKind::String => {
             // SAFETY: the block just allocated.
             unsafe { strings::init_block(start) };
@@ -2143,8 +2145,26 @@ pub(crate) fn cons_is_mapped(address: usize) -> bool {
         == Some(&BlockOrigin::Mapped)
 }
 
+/// For tests: whether ADDRESS is in a symbol block an image's load
+/// allocated, one of its rebuilt blocks: neither mapped nor the heap's own.
+#[cfg(test)]
+pub(crate) fn symbol_is_rebuilt(address: usize) -> bool {
+    crate::lisp::runtime::ensure_held();
+    BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .by_kind[BlockKind::Symbol as usize]
+        .range(..=address)
+        .next_back()
+        .is_some_and(|(&start, &origin)| {
+            address < start + block_bytes(BlockKind::Symbol) && origin == BlockOrigin::Image
+        })
+}
+
 /// For tests: whether every mark bit of the cons, float and vector blocks
-/// is clear, as a collection's sweeps leave them.
+/// is clear, no large vector's header and no string's size word carries
+/// ARRAY_MARK_FLAG and no symbol's gcmarkbit is set, as a collection's
+/// sweeps leave them.
 #[cfg(test)]
 pub(crate) fn every_mark_bit_clear() -> bool {
     // The blocks are the runtime's (`live_conses').
@@ -2157,6 +2177,24 @@ pub(crate) fn every_mark_bit_clear() -> bool {
         // SAFETY: a registered float block's marks.
         clear(&unsafe { &*std::ptr::addr_of!((*(start as *const FloatBlock)).marks) }.marked)
     }) && vectors::every_mark_bit_clear()
+        && symbols::every_mark_bit_clear()
+        && strings::every_mark_bit_clear()
+}
+
+/// For tests: whether ADDRESS is in a string block an image's load
+/// allocated, one of its rebuilt blocks: neither mapped nor the heap's own.
+#[cfg(test)]
+pub(crate) fn string_is_rebuilt(address: usize) -> bool {
+    crate::lisp::runtime::ensure_held();
+    BLOCKS
+        .lock()
+        .unwrap_or_else(|poisoned| poisoned.into_inner())
+        .by_kind[BlockKind::String as usize]
+        .range(..=address)
+        .next_back()
+        .is_some_and(|(&start, &origin)| {
+            address < start + block_bytes(BlockKind::String) && origin == BlockOrigin::Image
+        })
 }
 
 /// For tests: a cons alone in a new block, with no other cons in its block
@@ -2227,18 +2265,14 @@ fn all_blocks() -> Vec<usize> {
     blocks_of(BlockKind::Cons)
 }
 
-/// alloc.c:sweep_conses: every cell not marked in EPOCH is dropped and
+/// alloc.c:sweep_conses: every cell not marked is dropped and
 /// put on the free list, which is rebuilt from every free cell as GNU's
 /// is (`cons_free_list = 0' first), so that a block holding nothing but
 /// free cells can be given back once more than a block's worth of free
 /// cells is at hand.  The newest block is swept up to its bump pointer
 /// (`cons_block_index'); the cells past it were never allocated.
 /// Returns the number of live conses (gcstat's `total_conses').
-pub(crate) fn sweep_conses(epoch: u32) -> usize {
-    super::types::set_sweep_pending(false);
-    if verify_heap_enabled() {
-        verify_marking(epoch);
-    }
+pub(crate) fn sweep_conses() -> usize {
     let bump_next = BUMP_NEXT.get();
     let bump_end = BUMP_END.get();
     let mut free_list: *mut ConsCell = std::ptr::null_mut();
@@ -2336,17 +2370,26 @@ pub(crate) fn sweep_conses(epoch: u32) -> usize {
     num_used
 }
 
-/// `EMAXX_GC_VERIFY': scan cons blocks around every sweep. Before sweeping,
-/// check cons-to-cons and cons-to-vectorlike mark edges; afterwards, check
-/// cons-to-cons allocation edges. Other heap fields are not verified here.
+/// `EMAXX_GC_VERIFY': scan cons blocks around the sweeps. Before them,
+/// check cons-to-cons and cons-to-vectorlike mark edges; after the conses'
+/// own, check cons-to-cons allocation edges. Other heap fields are not
+/// verified here.
 fn verify_heap_enabled() -> bool {
     static VERIFY: std::sync::OnceLock<bool> = std::sync::OnceLock::new();
     *VERIFY.get_or_init(|| std::env::var_os("EMAXX_GC_VERIFY").is_some())
 }
 
-/// Before the sweep, with the optional verifier enabled: each cons or
-/// supported vectorlike named by a marked cons must also be marked.
-fn verify_marking(epoch: u32) {
+/// With the optional verifier enabled, `verify_marking' before the first
+/// of gc_sweep's sweeps, the strings', which clears the marks it reads.
+pub(crate) fn verify_marking_before_sweeps() {
+    if verify_heap_enabled() {
+        verify_marking();
+    }
+}
+
+/// Before the sweeps: each cons, string or supported vectorlike named by a
+/// marked cons must also be marked.
+fn verify_marking() {
     for start in all_blocks() {
         for index in 0..CELLS_PER_BLOCK {
             let cell = cons_cell(start, index);
@@ -2359,7 +2402,7 @@ fn verify_marking(epoch: u32) {
             for (which, field) in [("car", &live.car), ("cdr", &live.cdr)] {
                 let value = field.get();
                 assert_ne!(
-                    vectorlike_is_marked(&value, epoch),
+                    vectorlike_is_marked(&value),
                     Some(false),
                     "marked cons {:#x} holds an unmarked vectorlike in {which}: {}",
                     cell as usize,
@@ -2370,7 +2413,7 @@ fn verify_marking(epoch: u32) {
                     let target_mark = unsafe { cons_mark_for_collection(target.as_ptr()) };
                     assert!(
                         target_mark.is_marked(),
-                        "marked cons {:#x} holds unmarked cons {:#x} (allocated {}) in {which} at epoch {epoch}",
+                        "marked cons {:#x} holds unmarked cons {:#x} (allocated {}) in {which}",
                         cell as usize,
                         target.as_ptr() as usize,
                         target_mark.allocated()
@@ -2382,27 +2425,27 @@ fn verify_marking(epoch: u32) {
 }
 
 /// The mark state of a vectorlike the value names, for the checks.
-fn vectorlike_is_marked(value: &super::types::Value, epoch: u32) -> Option<bool> {
+fn vectorlike_is_marked(value: &super::types::Value) -> Option<bool> {
     match value.kind() {
-        Kind::Vector(vector) => Some(vector.mark_bit().is_marked(epoch)),
-        Kind::Closure(lambda) => Some(lambda.mark_bit().is_marked(epoch)),
-        Kind::NativeFunction(function) => Some(function.mark_bit().is_marked(epoch)),
-        Kind::NativeCompUnit(unit) => Some(unit.mark_bit().is_marked(epoch)),
-        Kind::Buffer(buffer) => Some(buffer.mark_bit().is_marked(epoch)),
-        Kind::Marker(marker) => Some(marker.mark_bit().is_marked(epoch)),
-        Kind::Overlay(overlay) => Some(overlay.mark_bit().is_marked(epoch)),
-        Kind::StringObject(state) => Some(state.mark_bit().is_marked(epoch)),
-        Kind::BigInteger(integer) => Some(integer.mark_bit().is_marked(epoch)),
-        Kind::CharTable(table) => Some(table.mark_bit().is_marked(epoch)),
-        Kind::HashTable(table) => Some(table.mark_bit().is_marked(epoch)),
-        Kind::SubCharTable(table) => Some(table.mark_bit().is_marked(epoch)),
-        Kind::Frame(frame) => Some(frame.mark_bit().is_marked(epoch)),
-        Kind::Terminal(terminal) => Some(terminal.mark_bit().is_marked(epoch)),
-        Kind::Window(window) => Some(window.mark_bit().is_marked(epoch)),
-        Kind::Record(record) => Some(record.mark_bit().is_marked(epoch)),
-        Kind::LispRecord(record) => Some(record.mark_bit().is_marked(epoch)),
-        Kind::Finalizer(finalizer) => Some(finalizer.mark_bit().is_marked(epoch)),
-        Kind::SymbolWithPos(positioned) => Some(positioned.mark_bit().is_marked(epoch)),
+        Kind::Vector(vector) => Some(vector.mark_bit().is_marked()),
+        Kind::Closure(lambda) => Some(lambda.mark_bit().is_marked()),
+        Kind::NativeFunction(function) => Some(function.mark_bit().is_marked()),
+        Kind::NativeCompUnit(unit) => Some(unit.mark_bit().is_marked()),
+        Kind::Buffer(buffer) => Some(buffer.mark_bit().is_marked()),
+        Kind::Marker(marker) => Some(marker.mark_bit().is_marked()),
+        Kind::Overlay(overlay) => Some(overlay.mark_bit().is_marked()),
+        Kind::StringObject(state) => Some(state.mark_bit().is_marked()),
+        Kind::BigInteger(integer) => Some(integer.mark_bit().is_marked()),
+        Kind::CharTable(table) => Some(table.mark_bit().is_marked()),
+        Kind::HashTable(table) => Some(table.mark_bit().is_marked()),
+        Kind::SubCharTable(table) => Some(table.mark_bit().is_marked()),
+        Kind::Frame(frame) => Some(frame.mark_bit().is_marked()),
+        Kind::Terminal(terminal) => Some(terminal.mark_bit().is_marked()),
+        Kind::Window(window) => Some(window.mark_bit().is_marked()),
+        Kind::Record(record) => Some(record.mark_bit().is_marked()),
+        Kind::LispRecord(record) => Some(record.mark_bit().is_marked()),
+        Kind::Finalizer(finalizer) => Some(finalizer.mark_bit().is_marked()),
+        Kind::SymbolWithPos(positioned) => Some(positioned.mark_bit().is_marked()),
         _ => None,
     }
 }
@@ -2420,9 +2463,14 @@ fn describe(value: &super::types::Value) -> String {
         Kind::Symbol(symbol) => format!("symbol {}", symbol.as_str()),
         Kind::Integer(n) => format!("integer {n}"),
         Kind::Cons(cell) => format!("cons {:#x}", cell.as_ptr() as usize),
+        // A report made between the mark phase and the strings' sweep
+        // reads a size word that may carry the mark.
         Kind::StringObject(text) => format!(
             "string {:?}",
-            text.borrow().text().chars().take(24).collect::<String>()
+            String::from_utf8_lossy(text.gc_bytes())
+                .chars()
+                .take(24)
+                .collect::<String>()
         ),
         other => other.value().type_name().to_string(),
     }

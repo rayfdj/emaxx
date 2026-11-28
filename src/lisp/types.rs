@@ -68,69 +68,43 @@ impl Hasher for IdentityHasher {
 
 pub(crate) type IdentityBuildHasher = BuildHasherDefault<IdentityHasher>;
 
-/// The current collection's number; see `MarkBit'.  The process's, as
-/// the mark bits and `gc_in_progress' are alloc.c's globals: the objects
-/// carry it, whichever thread marked them.
-static GC_MARK_EPOCH: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+/// alloc.c's `gcs_done': the collections done in the process, a count
+/// that no object carries, raised when a collection's sweeps are done.
+static GCS_DONE: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
 
-/// The current collection's epoch (the last one begun).
+/// alloc.c's `gcs_done': two reads agree when no collection ended between
+/// them.
 #[inline]
-pub(crate) fn current_mark_epoch() -> u32 {
-    GC_MARK_EPOCH.load(std::sync::atomic::Ordering::Relaxed)
+pub(crate) fn gcs_done() -> u32 {
+    GCS_DONE.load(std::sync::atomic::Ordering::Relaxed)
 }
 
-/// Between a mark phase and its sweep (a checked build's guard: a second
-/// mark phase in between would give the cells born after it a newer
-/// epoch, and the sweep would free them).
+/// alloc.c:garbage_collect's `gcs_done++', which follows gc_sweep.
+pub(crate) fn count_collection_done() {
+    GCS_DONE.store(
+        gcs_done().wrapping_add(1),
+        std::sync::atomic::Ordering::Relaxed,
+    );
+}
+
+/// Between a mark phase and the end of its sweeps (a checked build's
+/// guard: a second mark phase in between would find the first's marks
+/// still set and trace nothing below them, and the sweeps would keep
+/// whatever the first alone had reached).
 static GC_SWEEP_PENDING: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
 pub(crate) fn set_sweep_pending(pending: bool) {
     GC_SWEEP_PENDING.store(pending, std::sync::atomic::Ordering::Relaxed);
 }
 
-/// Start a collection: the epoch every object marked in it will carry.
-pub(crate) fn begin_mark_epoch() -> u32 {
+/// A collection's mark phase begins: no object of the heap is marked, as
+/// the last collection's sweeps left them.
+pub(crate) fn begin_mark_phase() {
     debug_assert!(
         !GC_SWEEP_PENDING.load(std::sync::atomic::Ordering::Relaxed),
         "a mark phase began while the previous one's sweep is pending"
     );
-    let epoch = current_mark_epoch().wrapping_add(1).max(1);
-    GC_MARK_EPOCH.store(epoch, std::sync::atomic::Ordering::Relaxed);
-    crate::lisp::alloc::begin_image_mark_epoch();
-    epoch
-}
-
-/// alloc.c's mark bit, on the object: a string, a symbol or a vector too
-/// large for a vector block is marked when it carries the current
-/// collection's epoch, so the mark phase writes a word into the object
-/// instead of inserting its address into a table, and no pass clears the
-/// bits afterwards.  (A cons, a float and a vector in a block are marked in
-/// their block's bitmap, which the sweep clears.)
-#[derive(Debug, Default)]
-pub(crate) struct MarkBit(Cell<u32>);
-
-impl MarkBit {
-    /// Mark for EPOCH; true when the object was not yet marked in it.
-    pub(crate) fn mark(&self, epoch: u32) -> bool {
-        if self.0.get() == epoch {
-            return false;
-        }
-        self.0.set(epoch);
-        true
-    }
-
-    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
-        self.0.get() == epoch
-    }
-
-    /// The word itself (the allocator's free mark rides in it).
-    pub(crate) fn raw(&self) -> u32 {
-        self.0.get()
-    }
-
-    pub(crate) fn set_raw(&self, word: u32) {
-        self.0.set(word);
-    }
+    crate::lisp::alloc::begin_image_marks();
 }
 
 /// A handle to the single canonical Lisp string payload. Rust text is
@@ -249,8 +223,8 @@ static INTERNED_SYMBOL_NAMES: symbols::InternedNames = symbols::InternedNames;
 
 /// alloc.c's `sweep_symbols': an unmarked symbol is freed.  No table
 /// maps an uninterned symbol's text back to it, so nothing else lets it go.
-pub(crate) fn sweep_symbol_cells(epoch: u32) {
-    crate::lisp::alloc::sweep_symbols(epoch, |_| {});
+pub(crate) fn sweep_symbol_cells() {
+    crate::lisp::alloc::sweep_symbols(|_| {});
 }
 
 impl SymbolName {
@@ -418,24 +392,23 @@ impl SymbolName {
                 payload: Cell::new(Default::default()),
                 next: Cell::new(None),
                 flags: Cell::new(0),
-                // init_symbol's SYMBOL_UNINTERNED, the image flag unset.
+                // init_symbol's SYMBOL_UNINTERNED and its gcmarkbit of 0.
                 bits: Cell::new(0),
                 state: Cell::new(0),
-                mark: MarkBit::default(),
             },
         ))
     }
 
-    /// Mark the symbol for EPOCH; true when it was not yet marked in it.
+    /// Mark the symbol; true when it was not yet marked.
     #[inline]
-    pub(crate) fn mark(&self, epoch: u32) -> bool {
-        self.0.mark(epoch)
+    pub(crate) fn mark(&self) -> bool {
+        self.0.mark()
     }
 
-    /// Whether the symbol is marked for EPOCH.
+    /// alloc.c's `symbol_marked_p'.
     #[inline]
-    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
-        self.0.is_marked(epoch)
+    pub(crate) fn is_marked(&self) -> bool {
+        self.0.is_marked()
     }
 
     /// The interned symbol host TEXT names: oblookup in the initial
@@ -2219,16 +2192,47 @@ impl Value {
     #[inline]
     pub(crate) fn symbol_name_by_tag(&self) -> Option<&str> {
         if self.0 & TAG_MASK == TAG_SYMBOL && !matches!(self.0, 0 | 48 | 96) {
-            // SAFETY: a symbol-tagged word names a symbol cell; symbol
-            // cells are swept after the vectors and the conses. Its host
+            // SAFETY: a symbol-tagged word names a symbol cell. Its host
             // key, once written, is immutable and the borrow cannot
             // outlive this handle.  A pending key is built from the name,
-            // a string, and strings are swept after the symbols.
+            // a string: not for a sweep, which reads
+            // `built_symbol_key_by_tag'.
             let cell = unsafe { &*(self.0 as *const crate::lisp::alloc::SymbolCell) };
             Some(host_text(cell))
         } else {
             None
         }
+    }
+
+    /// The key of the symbol a word names when its tag is the symbol tag
+    /// and the key is already built, read from the word and the cell's
+    /// key alone.  Nothing of the symbol's name, a string, is read and no
+    /// key is built, so the vector sweep may ask it of a dead record's
+    /// field whatever the strings' sweep has freed.
+    #[inline]
+    pub(crate) fn built_symbol_key_by_tag(&self) -> Option<&str> {
+        if self.0 & TAG_MASK == TAG_SYMBOL && !matches!(self.0, 0 | 48 | 96) {
+            // SAFETY: a symbol-tagged word names a symbol cell, and symbol
+            // cells are swept after the vectors.  A key, once written, is
+            // immutable and the borrow cannot outlive this handle.
+            let cell = unsafe { &*(self.0 as *const crate::lisp::alloc::SymbolCell) };
+            cell.internal.get()
+        } else {
+            None
+        }
+    }
+
+    /// lisp.h's `dead_object': `make_lisp_ptr (NULL, Lisp_String)', the
+    /// word of no object, which alloc.c stores in a free symbol's function.
+    #[inline(always)]
+    pub(crate) const fn dead_object() -> Value {
+        Value::from_bits(TAG_STRING)
+    }
+
+    /// alloc.c's `deadp'.
+    #[inline(always)]
+    pub(crate) fn deadp(self) -> bool {
+        self.0 == TAG_STRING
     }
 
     /// `EQ': the same word.
@@ -2991,6 +2995,20 @@ impl Value {
     #[inline(always)]
     pub(crate) fn is_vectorlike(self) -> bool {
         self.0 & TAG_MASK == TAG_VECTORLIKE
+    }
+
+    /// The mark of the vectorlike object this word names, whatever its
+    /// pseudovector type.
+    ///
+    /// # Safety
+    /// The word names an allocated vectorlike object that is no static
+    /// subr (`builtin_ref'), kept while the mark is used.
+    #[inline(always)]
+    pub(crate) unsafe fn vectorlike_mark<'a>(self) -> crate::lisp::alloc::vectors::VectorMark<'a> {
+        debug_assert!(self.is_vectorlike());
+        let header = self.0.wrapping_sub(TAG_VECTORLIKE) as *mut crate::lisp::alloc::VectorHeader;
+        // SAFETY: the caller's contract.
+        unsafe { crate::lisp::alloc::vectors::header_mark(header) }
     }
 
     /// FLOATP, by the tag alone.

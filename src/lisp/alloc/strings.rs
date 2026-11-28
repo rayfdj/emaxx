@@ -2,8 +2,10 @@
 //! at the four-word header, rather than a vector header and RefCell wrapper.
 //!
 //! Rust borrows still need dynamic exclusivity checks. The sixteen bytes after
-//! each header hold that check, the GC epoch and the pure allocation flag; they
-//! are allocator overhead, not part of Lisp_String. Data uses GNU sblocks;
+//! each header hold that check, where the cell is and the verifier's state
+//! of its bytes; they are allocator overhead, not part of Lisp_String. The
+//! mark is lisp.h's ARRAY_MARK_FLAG in the size word and a free cell is one
+//! whose data pointer is null, as alloc.c has them. Data uses GNU sblocks;
 //! borrowed data blocks remain stationary until their Rust guards end.
 
 mod data;
@@ -18,8 +20,8 @@ pub(crate) fn string_data_census() -> (usize, usize, usize) {
     data::census()
 }
 
-use super::super::types::{LispError, MarkBit, SharedStringState, Value};
-use super::{BlockKind, FREE_MARK, blocks_of, new_block, release_block, sweep_blocks_of};
+use super::super::types::{LispError, SharedStringState, Value};
+use super::{BlockKind, blocks_of, new_block, release_block, sweep_blocks_of};
 use std::cell::{Cell, UnsafeCell};
 use std::ops::{Deref, DerefMut};
 use std::ptr::NonNull;
@@ -29,25 +31,28 @@ use std::sync::atomic::{AtomicUsize, Ordering};
 pub(crate) struct StringCell {
     state: UnsafeCell<SharedStringState>,
     borrows: Cell<isize>,
-    mark: MarkBit,
-    pure: bool,
-    permanent_empty: bool,
+    /// Where the cell is, which is what alloc.c asks of a string's address
+    /// before it reads or sets its mark: `HEAP_CELL', `DUMPED_CELL',
+    /// `PURE_CELL' or `PERMANENT_CELL'.
+    origin: u8,
     /// A `CodeState': whether the bytecode verifier holds a result for
     /// this string as a function's code.
     code: Cell<u8>,
-    /// Where the cell is: `HEAP_CELL', `IMAGE_CELL' (allocated while an
-    /// image loaded, in one of its rebuilt blocks, see `ImageCells') or
-    /// `DUMPED_CELL' (one of the image's mapped cells, which no sweep reads,
-    /// marked in the dump's mark_bits, `DUMP').
-    origin: u8,
 }
 
-/// A heap string's `origin'.
+/// A string of the heap's blocks, the ones an image's load allocated among
+/// them: its mark is `ARRAY_MARK_FLAG' in its size word, set by the mark
+/// phase and cleared by `sweep_strings'.
 const HEAP_CELL: u8 = 0;
-/// A string the image's load rebuilt, in one of its blocks.
-const IMAGE_CELL: u8 = 1;
-/// One of the image's mapped strings.
-const DUMPED_CELL: u8 = 2;
+/// One of the image's mapped strings (pdumper_object_p), which no sweep
+/// reads: its mark is in the dump's mark_bits (`DUMP').
+const DUMPED_CELL: u8 = 1;
+/// A string of pure storage (PURE_P): never marked, never freed.
+const PURE_CELL: u8 = 2;
+/// One of the two empty strings (`make_empty_string'), which is in no
+/// block and so in no sweep: never marked, never freed, as GNU's, which
+/// init_strings makes pure strings.
+const PERMANENT_CELL: u8 = 3;
 
 /// The bytecode verifier's view of a string (see `bytecode::verify'): no
 /// result, a result for the current bytes, or results made stale by a
@@ -69,24 +74,45 @@ const _: () = {
 };
 
 impl StringCell {
-    fn new(state: SharedStringState, pure: bool) -> Self {
-        let mark = MarkBit::default();
-        mark.set_raw(super::super::types::current_mark_epoch());
+    /// A cell of the heap holding STATE, unmarked: a string is made with
+    /// its size and nothing more in its size word, as alloc.c's is.
+    fn new(state: SharedStringState) -> Self {
         Self {
             state: UnsafeCell::new(state),
             borrows: Cell::new(0),
-            mark,
-            pure,
-            permanent_empty: false,
+            origin: HEAP_CELL,
             code: Cell::new(CodeState::Unverified as u8),
-            origin: if super::image_region_open() {
-                IMAGE_CELL
-            } else {
-                HEAP_CELL
-            },
         }
     }
 }
+
+/// `u.s.data' of CELL, lisp.h's fourth word of a Lisp_String, read as a
+/// word: null in a free cell and in no other.
+///
+/// # Safety
+/// CELL is a cell of a string block, allocated or free, or one of the
+/// permanent empty strings.
+#[inline(always)]
+unsafe fn data_word(cell: *const StringCell) -> usize {
+    // SAFETY: the caller's contract; the word is a word in either state.
+    unsafe { cell.cast::<usize>().add(DATA_WORD).read() }
+}
+
+/// Make CELL a free cell: its data null, as allocate_string leaves each
+/// string of a new block ("Every string on a free list should have NULL
+/// data pointer") and sweep_strings a string it frees ("Reset the
+/// strings's `data' member so that we know it's free").
+///
+/// # Safety
+/// CELL is a cell of a string block that holds no string.
+#[inline(always)]
+unsafe fn set_free(cell: *mut StringCell) {
+    // SAFETY: the caller's contract.
+    unsafe { cell.cast::<usize>().add(DATA_WORD).write(0) };
+}
+
+/// The index of `u.s.data' among a cell's words.
+const DATA_WORD: usize = SharedStringState::DATA_OFFSET / std::mem::size_of::<usize>();
 
 #[repr(transparent)]
 #[derive(Clone, Copy)]
@@ -121,7 +147,7 @@ impl StringObjectRef {
     }
 
     pub(crate) fn is_pure(&self) -> bool {
-        self.cell().pure
+        self.cell().origin == PURE_CELL
     }
 
     pub(crate) fn is_empty_singleton(&self) -> bool {
@@ -214,6 +240,18 @@ impl StringObjectRef {
         state.props.has_properties()
     }
 
+    /// The string's bytes for a report the collector makes between its
+    /// mark phase and the strings' sweep, when the size word may carry the
+    /// mark (alloc.c's `string_bytes'): no guard is counted, and none
+    /// that could store into the string is alive in a collection.
+    pub(crate) fn gc_bytes(&self) -> &[u8] {
+        let cell = self.cell();
+        debug_assert!(cell.borrows.get() >= 0, "string mutably borrowed");
+        // SAFETY: with no mutable guard alive, nothing changes the state
+        // while this shared reference to it is read.
+        unsafe { &*cell.state.get() }.gc_bytes()
+    }
+
     pub fn borrow(&self) -> StringBorrow<'_> {
         let cell = self.cell();
         let count = cell.borrows.get();
@@ -228,10 +266,13 @@ impl StringObjectRef {
 
     /// Collection cannot run while this guard is alive: tracing would alias
     /// its exclusive access to the string state. The collector checks this
-    /// before starting a mark epoch or reclaiming any object.
+    /// before starting its mark phase or reclaiming any object.
     pub(crate) fn borrow_mut(&self) -> StringBorrowMut<'_> {
         let cell = self.cell();
-        assert!(!cell.pure, "pure string cannot be mutably borrowed");
+        assert!(
+            cell.origin != PURE_CELL,
+            "pure string cannot be mutably borrowed"
+        );
         assert_eq!(cell.borrows.get(), 0, "string already borrowed");
         cell.borrows.set(-1);
         guard_taken();
@@ -330,29 +371,65 @@ pub(crate) fn string_guards_live() -> bool {
 pub(crate) struct StringMark<'a>(&'a StringCell);
 
 impl StringMark<'_> {
-    pub(crate) fn is_marked(&self, epoch: u32) -> bool {
-        if self.0.pure || self.0.permanent_empty {
-            return true;
-        }
-        if self.0.origin == DUMPED_CELL {
-            return super::DUMP.is_marked(std::ptr::from_ref(self.0) as usize);
-        }
-        self.0.mark.is_marked(epoch)
+    /// The cell's state for the collector, which runs while no mutable
+    /// guard is alive (`borrowed_string_roots' refuses a collection that
+    /// would start under one).
+    #[inline(always)]
+    fn state(&self) -> &SharedStringState {
+        debug_assert!(self.0.borrows.get() >= 0, "string mutably borrowed");
+        // SAFETY: with no mutable guard alive, shared references to the
+        // state are all there are, and its size word is a cell.
+        unsafe { &*self.0.state.get() }
     }
 
-    pub(crate) fn mark(&self, epoch: u32) -> bool {
-        // Pure strings have no properties and no collectable children.
-        if self.0.pure {
-            return false;
+    /// alloc.c's `string_marked_p', as survives_gc_p asks it: the size
+    /// word's `ARRAY_MARK_FLAG' (XSTRING_MARKED_P), the dump's mark of a
+    /// mapped string (pdumper_marked_p), and true of a string no sweep
+    /// frees (survives_gc_p's `|| PURE_P').
+    #[inline]
+    pub(crate) fn is_marked(&self) -> bool {
+        match self.0.origin {
+            HEAP_CELL => self.state().gc_marked(),
+            DUMPED_CELL => super::DUMP.is_marked(std::ptr::from_ref(self.0) as usize),
+            origin => {
+                debug_assert!(
+                    origin == PURE_CELL || origin == PERMANENT_CELL,
+                    "the mark of a freed string cell at {:#x} is read",
+                    std::ptr::from_ref(self.0) as usize
+                );
+                true
+            }
         }
-        if self.0.origin == DUMPED_CELL {
-            return super::DUMP.mark(std::ptr::from_ref(self.0) as usize);
+    }
+
+    /// alloc.c's `set_string_marked' after mark_object's test of
+    /// `string_marked_p': true when the string was not yet marked.  A pure
+    /// string is never marked (mark_object returns at PURE_P: it has no
+    /// properties and nothing to trace), and neither is a permanent empty
+    /// one, which no sweep would unmark.
+    #[inline]
+    pub(crate) fn mark(&self) -> bool {
+        match self.0.origin {
+            HEAP_CELL => {
+                // mark_object's CHECK_ALLOCATED_AND_LIVE (live_string_p).
+                debug_assert!(
+                    // SAFETY: a cell of a string block.
+                    unsafe { data_word(self.0) } != 0,
+                    "a free string cell at {:#x} is marked",
+                    std::ptr::from_ref(self.0) as usize
+                );
+                self.state().gc_mark()
+            }
+            DUMPED_CELL => super::DUMP.mark(std::ptr::from_ref(self.0) as usize),
+            origin => {
+                debug_assert!(
+                    origin == PURE_CELL || origin == PERMANENT_CELL,
+                    "a freed string cell at {:#x} is marked",
+                    std::ptr::from_ref(self.0) as usize
+                );
+                false
+            }
         }
-        let marked = self.0.mark.mark(epoch);
-        if marked && self.0.origin == IMAGE_CELL {
-            super::DUMP.strings.note_marked();
-        }
-        marked
     }
 }
 
@@ -395,8 +472,8 @@ fn make_empty_string(multibyte: bool) -> usize {
     let state = SharedStringState::empty(multibyte);
     // Dumped empty strings retain their singleton identities, but are not
     // PURE_P at runtime: the first purecopy must allocate a new header.
-    let mut cell = StringCell::new(state, false);
-    cell.permanent_empty = true;
+    let mut cell = StringCell::new(state);
+    cell.origin = PERMANENT_CELL;
     let address = Box::into_raw(Box::new(cell)) as usize;
     slot.set(address);
     address
@@ -504,7 +581,7 @@ impl Drop for StringConstruction {
         unsafe {
             let cell = self.0;
             std::ptr::drop_in_place((*cell).state.get());
-            (*cell).mark.set_raw(FREE_MARK);
+            set_free(cell);
             cell.cast::<*mut StringCell>().write(FREE_LIST.get());
             FREE_LIST.set(cell);
         }
@@ -525,7 +602,7 @@ pub(crate) fn allocate_string<E>(
     let cell = take_cell();
     // SAFETY: initialize a valid empty header before exposing its final
     // address. The construction guard also rejects reentrant collection.
-    unsafe { cell.write(StringCell::new(SharedStringState::empty(multibyte), false)) };
+    unsafe { cell.write(StringCell::new(SharedStringState::empty(multibyte))) };
     let construction = StringConstruction(cell);
     let handle = unsafe {
         (*cell).borrows.set(-1);
@@ -533,7 +610,9 @@ pub(crate) fn allocate_string<E>(
         let mut guard = StringBorrowMut(&*cell);
         initialize(&mut guard)?;
         drop(guard);
-        (*cell).pure = kind == StringAllocation::Pure;
+        if kind == StringAllocation::Pure {
+            (*cell).origin = PURE_CELL;
+        }
         StringObjectRef::from_raw(cell)
     };
     let state = handle.borrow();
@@ -622,7 +701,9 @@ pub(crate) const fn image_string_bytes(count: usize) -> usize {
 /// them -- the size, the byte size, and the image offsets of the
 /// properties record and of the data -- or refuses the image, in which
 /// case no block is adopted.  A cell's properties are empty until the
-/// loader gives it its own.
+/// loader gives it its own.  The cells after the last, to the end of its
+/// block, are made free cells, their data null whatever the image holds
+/// there (on no free list: the image's blocks are never allocated from).
 ///
 /// # Safety
 /// START is aligned to a block and the `image_string_bytes' bytes from it
@@ -639,7 +720,6 @@ pub(crate) unsafe fn adopt_image_string_blocks<E>(
         start.is_multiple_of(super::BLOCK_ALIGN),
         "unaligned image strings"
     );
-    let epoch = super::super::types::current_mark_epoch();
     for index in 0..count {
         let cell = (start + image_string_offset(index)) as *mut StringCell;
         // SAFETY: the caller's contract: a cell of the blocks, whose first
@@ -648,16 +728,11 @@ pub(crate) unsafe fn adopt_image_string_blocks<E>(
         unsafe {
             let words = cell.cast::<[u64; 4]>().read();
             let state = state(index, words)?;
-            let mark = MarkBit::default();
-            mark.set_raw(epoch);
             cell.write(StringCell {
                 state: UnsafeCell::new(state),
                 borrows: Cell::new(0),
-                mark,
-                pure: false,
-                permanent_empty: false,
-                code: Cell::new(CodeState::Unverified as u8),
                 origin: DUMPED_CELL,
+                code: Cell::new(CodeState::Unverified as u8),
             });
         }
     }
@@ -666,44 +741,41 @@ pub(crate) unsafe fn adopt_image_string_blocks<E>(
         let base = start + block * IMAGE_STRING_BLOCK_BYTES;
         for index in (count - block * STRINGS_PER_BLOCK).min(STRINGS_PER_BLOCK)..STRINGS_PER_BLOCK {
             let cell = (base + index * STRING_CELL_SIZE) as *mut StringCell;
-            // SAFETY: an unused cell of the block: only its mark is read.
-            unsafe {
-                std::ptr::addr_of_mut!((*cell).mark).write(MarkBit::default());
-                (*cell).mark.set_raw(FREE_MARK);
-            }
+            // SAFETY: an unused cell of the block.
+            unsafe { set_free(cell) };
         }
         blocks.push((base, STRINGS_PER_BLOCK * STRING_CELL_SIZE));
     }
     super::register_image_blocks(BlockKind::String, &blocks);
-    // The image's strings changed, with or without an image region open:
-    // the next sweep reads them all.
-    super::forget_image_live();
     Ok(())
 }
 
+/// Make every cell of a fresh block a free one, as alloc.c's
+/// allocate_string does for a new string_block (`s->u.s.data = NULL').
+///
 /// # Safety
 /// START is a newly allocated string block, with no initialized payloads.
 pub(super) unsafe fn init_block(start: usize) {
     for index in 0..STRINGS_PER_BLOCK {
-        let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
-        // SAFETY: only the mark word is accessed until a cell is allocated.
-        unsafe {
-            std::ptr::addr_of_mut!((*cell).mark).write(MarkBit::default());
-            (*cell).mark.set_raw(FREE_MARK);
-        }
+        // SAFETY: inside the block, which holds no string yet.
+        unsafe { set_free((start + index * STRING_CELL_SIZE) as *mut StringCell) };
     }
 }
 
+/// alloc.c's `live_string_holding': the allocated cell containing
+/// ADDRESS, or None (`s->u.s.data != NULL').
+///
 /// # Safety
-/// START is a registered string block; every mark word is initialized.
+/// START is a registered string block; every cell's data word is
+/// initialized.
 pub(super) unsafe fn live_string_holding(start: usize, address: usize) -> Option<*mut StringCell> {
     let index = (address - start) / STRING_CELL_SIZE;
     if index >= STRINGS_PER_BLOCK {
         return None;
     }
     let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
-    // SAFETY: inside the block; the mark is initialized even in free cells.
-    (unsafe { (*cell).mark.raw() } != FREE_MARK).then_some(cell)
+    // SAFETY: inside the block; the data word is a word even in free cells.
+    (unsafe { data_word(cell) } != 0).then_some(cell)
 }
 
 /// A Rust borrow may live in host storage outside the conservative stack.
@@ -712,7 +784,7 @@ pub(super) unsafe fn live_string_holding(start: usize, address: usize) -> Option
 /// lookup is added to string access; this scan belongs to collection.
 ///
 /// A live exclusive guard may expose an `&mut SharedStringState`. Reject the
-/// collection before its mark epoch begins instead of reading through that
+/// collection before its mark phase begins instead of reading through that
 /// reference or discovering the conflict after other objects were swept.
 pub(crate) fn borrowed_string_roots() -> Vec<Value> {
     // With no guard alive no cell is borrowed: the walk below, a read of
@@ -723,11 +795,11 @@ pub(crate) fn borrowed_string_roots() -> Vec<Value> {
     }
     let mut roots = Vec::new();
     let mut inspect = |cell: *mut StringCell| {
-        // SAFETY: block mark words are initialized even in free cells. The
+        // SAFETY: a cell's data word is initialized even in free cells. The
         // remaining metadata is read only for allocated cells; no string
         // payload is accessed while checking for an exclusive borrow.
         unsafe {
-            if (*cell).mark.raw() != FREE_MARK {
+            if data_word(cell) != 0 {
                 let count = (*cell).borrows.get();
                 assert!(
                     count >= 0,
@@ -756,25 +828,25 @@ pub(crate) fn borrowed_string_roots() -> Vec<Value> {
     roots
 }
 
-/// alloc.c:sweep_strings runs after symbol names are no longer needed.
-/// Returns gcstat's `total_free_strings': the free cells of the blocks it
-/// kept.
-pub(crate) fn sweep_strings(epoch: u32) -> usize {
+/// alloc.c's `sweep_strings', the first of gc_sweep's sweeps: a cell whose
+/// data is null was on the free list and goes there again; a marked
+/// string is kept and unmarked (XUNMARK_STRING) before its bytes are
+/// counted; an unmarked one is freed, its data null from then on.  The
+/// free list is rebuilt from every free cell, and a block holding nothing
+/// but free cells is given back once more than a block's worth of free
+/// cells is at hand.  Every block outside the image's mapped ones is read
+/// at every collection, the ones an image's load allocated among them, as
+/// alloc.c sweeps all that is not its dump; their strings stay out of the
+/// census and their freed cells off the free list.  Then
+/// free_large_strings and compact_small_strings (`data::sweep'), which
+/// read sizes that carry no mark by then.  Returns gcstat's
+/// `total_free_strings': the free cells of the blocks it kept.
+pub(crate) fn sweep_strings() -> usize {
     let mut free_list = std::ptr::null_mut();
     let mut free_count = 0;
     let (mut strings, mut bytes, mut spans) = (0, 0, 0);
     let mut released = Vec::new();
-    // When no image string died, the image's blocks are left unread
-    // (checked builds read them and assert so).
-    let image_unchanged = super::DUMP.strings.unchanged();
-    let mut image_live = 0;
     for (start, image_block) in sweep_blocks_of(BlockKind::String) {
-        if image_block && image_unchanged {
-            if cfg!(debug_assertions) {
-                assert_image_strings_marked(start, epoch);
-            }
-            continue;
-        }
         let limit = if BUMP_END.get() == start + STRINGS_PER_BLOCK * STRING_CELL_SIZE {
             (BUMP_NEXT.get() - start) / STRING_CELL_SIZE
         } else {
@@ -784,24 +856,23 @@ pub(crate) fn sweep_strings(epoch: u32) -> usize {
         let mut block_free = 0;
         for index in 0..limit {
             let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
-            // SAFETY: every mark is initialized; other fields are read only
-            // after confirming the cell contains an allocated object.
+            // SAFETY: every cell's data word is initialized; other fields
+            // are read only after confirming the cell contains an
+            // allocated object, and no mutable guard is alive.
             unsafe {
-                let mark = (*cell).mark.raw();
-                if mark != FREE_MARK {
-                    if (*cell).pure {
+                if data_word(cell) != 0 {
+                    if (*cell).origin == PURE_CELL {
                         continue;
                     }
-                    if mark == epoch {
-                        image_live += usize::from((*cell).origin == IMAGE_CELL);
-                        if image_block {
-                            continue;
+                    let state = &*(*cell).state.get();
+                    if state.gc_unmark() {
+                        // An image object stays out of gcstat's object
+                        // totals, as a dumped one does.
+                        if !image_block {
+                            strings += 1;
+                            bytes += state.storage_bytes();
+                            spans += state.props.interval_count();
                         }
-                        let handle = StringObjectRef::from_raw(cell);
-                        let state = handle.borrow();
-                        strings += 1;
-                        bytes += state.storage_bytes();
-                        spans += state.props.interval_count();
                         continue;
                     }
                     debug_assert_eq!((*cell).borrows.get(), 0, "unmarked string borrow");
@@ -809,7 +880,12 @@ pub(crate) fn sweep_strings(epoch: u32) -> usize {
                         crate::lisp::bytecode::verify::forget(cell as usize);
                     }
                     std::ptr::drop_in_place((*cell).state.get());
-                    (*cell).mark.set_raw(FREE_MARK);
+                    if cfg!(debug_assertions) {
+                        // What a reader of the freed string would meet: a
+                        // borrow count no guard can be taken on.
+                        std::ptr::write_bytes(cell.cast::<u8>(), 0xA5, STRING_CELL_SIZE);
+                    }
+                    set_free(cell);
                 }
                 block_free += 1;
                 if image_block {
@@ -831,9 +907,6 @@ pub(crate) fn sweep_strings(epoch: u32) -> usize {
         }
     }
     FREE_LIST.set(free_list);
-    if !image_unchanged {
-        super::DUMP.strings.set_live(image_live);
-    }
     for start in released {
         release_block(start, BlockKind::String);
     }
@@ -844,22 +917,41 @@ pub(crate) fn sweep_strings(epoch: u32) -> usize {
     free_count
 }
 
-/// A checked build's test of an image block a sweep leaves unread: every
-/// allocated string in it is marked (or pure, which is never marked).
-fn assert_image_strings_marked(start: usize, epoch: u32) {
-    for index in 0..STRINGS_PER_BLOCK {
-        let cell = (start + index * STRING_CELL_SIZE) as *mut StringCell;
-        // SAFETY: every mark is initialized; `pure' is read only for an
-        // allocated cell.
-        unsafe {
-            let mark = (*cell).mark.raw();
-            assert!(
-                mark == FREE_MARK || mark == epoch || (*cell).pure,
-                "an unread image block holds a dead string at {:#x}",
-                cell as usize
-            );
+/// `super::every_mark_bit_clear' for the strings: no string of a block
+/// and neither permanent empty string carries `ARRAY_MARK_FLAG' in its
+/// size word.
+#[cfg(test)]
+pub(super) fn every_mark_bit_clear() -> bool {
+    let unmarked = |cell: *const StringCell| {
+        // SAFETY: a cell of a registered string block or a permanent empty
+        // string: its data word is initialized, and the size word of one
+        // that holds a string is read as the collector reads it.
+        unsafe { data_word(cell) == 0 || !(*(*cell).state.get()).gc_marked() }
+    };
+    blocks_of(BlockKind::String).into_iter().all(|start| {
+        (0..STRINGS_PER_BLOCK)
+            .all(|index| unmarked((start + index * STRING_CELL_SIZE) as *const StringCell))
+    }) && [EMPTY_UNIBYTE.get(), EMPTY_MULTIBYTE.get()]
+        .into_iter()
+        .all(|address| address == 0 || unmarked(address as *const StringCell))
+}
+
+/// For tests: the cells of the image's mapped string blocks that hold a
+/// string, and the ones that are free.
+#[cfg(test)]
+pub(crate) fn mapped_string_cells() -> [usize; 2] {
+    // The blocks are the runtime's (`alloc::live_conses').
+    crate::lisp::runtime::ensure_held();
+    let mut cells = [0; 2];
+    for start in super::mapped_blocks_of(BlockKind::String) {
+        for index in 0..STRINGS_PER_BLOCK {
+            let address = start + index * STRING_CELL_SIZE;
+            // SAFETY: a registered string block.
+            let found = unsafe { live_string_holding(start, address) };
+            cells[usize::from(found.is_none())] += 1;
         }
     }
+    cells
 }
 
 pub(crate) fn live_string_object_census() -> (usize, usize, usize) {
@@ -870,4 +962,225 @@ pub(crate) fn live_string_object_census() -> (usize, usize, usize) {
         LIVE_BYTES.load(Ordering::Relaxed),
         LIVE_SPANS.load(Ordering::Relaxed),
     )
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::lisp::eval::Interpreter;
+    use crate::lisp::types::{Env, Kind, Value};
+    use crate::lisp::{json, primitives};
+
+    // The witnessed string is made in a frame of its own, cleared before
+    // the collection that expects it dead, and kept as its word's
+    // complement: no word of the test's names it.
+    #[inline(never)]
+    fn witnessed_string(interpreter: &mut Interpreter, table: &Value) -> usize {
+        let string = primitives::call(
+            interpreter,
+            "make-string",
+            &[Value::Integer(5), Value::Integer(120)],
+            &mut Env::new(),
+        )
+        .expect("make a string");
+        primitives::call(
+            interpreter,
+            "puthash",
+            &[string, Value::T, *table],
+            &mut Env::new(),
+        )
+        .expect("witness the string");
+        !string.word()
+    }
+
+    #[inline(never)]
+    fn witnesses_after_collection(interpreter: &mut Interpreter, table: &Value) -> usize {
+        crate::lisp::alloc::clobber_stack();
+        let Kind::HashTable(id) = table.kind() else {
+            panic!("a hash table");
+        };
+        primitives::call(interpreter, "garbage-collect", &[], &mut Env::new()).expect("collect");
+        id.count()
+    }
+
+    /// The word of `u.s.data', lisp.h's fourth word of a Lisp_String, in
+    /// the string cell whose word's complement is COMPLEMENT, read as a
+    /// word whatever the cell holds.
+    #[inline(never)]
+    fn data_word(complement: usize) -> usize {
+        let cell = (!complement & !7) as *const usize;
+        // SAFETY: a cell of a registered string block, allocated or free;
+        // its first four words are words in either state.
+        unsafe { cell.add(3).read() }
+    }
+
+    /// Whether the conservative scan takes that cell's word for a string
+    /// (alloc.c's live_string_holding).
+    #[inline(never)]
+    fn scan_finds(complement: usize) -> bool {
+        crate::lisp::alloc::conservative_value(!complement).is_some()
+    }
+
+    #[inline(never)]
+    fn kept_string(interpreter: &mut Interpreter, table: &Value, holder: &str) {
+        let string = primitives::call(
+            interpreter,
+            "make-string",
+            &[Value::Integer(5), Value::Integer(107)],
+            &mut Env::new(),
+        )
+        .expect("make a string");
+        let Kind::StringObject(text) = string.kind() else {
+            panic!("a string");
+        };
+        assert!(
+            !text.mark_bit().is_marked(),
+            "allocate_string makes a string unmarked"
+        );
+        primitives::call(
+            interpreter,
+            "puthash",
+            &[string, Value::T, *table],
+            &mut Env::new(),
+        )
+        .expect("witness the string");
+        interpreter.set_global_binding(holder, string);
+    }
+
+    /// The length of the string HOLDER holds, read in a frame of its own.
+    #[inline(never)]
+    fn held_length(interpreter: &Interpreter, holder: &str) -> usize {
+        let held = interpreter
+            .global_binding_value(holder)
+            .expect("the holder's value");
+        let Kind::StringObject(text) = held.kind() else {
+            panic!("a string");
+        };
+        text.borrow().len()
+    }
+
+    #[test]
+    fn the_sweep_that_keeps_a_string_clears_its_mark() {
+        // alloc.c:sweep_strings, of a string whose size word carries
+        // ARRAY_MARK_FLAG: "String is live; unmark it and its intervals.
+        // XUNMARK_STRING (s);" -- the string it keeps is unmarked again,
+        // so its length reads as it was made and the next collection
+        // frees it once nothing holds it.
+        let _runtime = crate::Runtime::lock();
+        let mut interpreter = Interpreter::new();
+        let table = json::make_hash_table(&mut interpreter, "eq", Vec::new());
+        let Kind::HashTable(id) = table.kind() else {
+            panic!("a hash table");
+        };
+        id.set_weakness(1);
+        interpreter.set_global_binding("kept-string-witnesses", table);
+        kept_string(&mut interpreter, &table, "kept-string-holder");
+        for _ in 0..2 {
+            assert_eq!(
+                witnesses_after_collection(&mut interpreter, &table),
+                1,
+                "the string a variable holds is kept"
+            );
+            assert!(
+                crate::lisp::alloc::every_mark_bit_clear(),
+                "the sweep left no string marked"
+            );
+            assert_eq!(
+                held_length(&interpreter, "kept-string-holder"),
+                5,
+                "its length is as it was made"
+            );
+        }
+        interpreter.set_global_binding("kept-string-holder", Value::Nil);
+        assert_eq!(
+            witnesses_after_collection(&mut interpreter, &table),
+            0,
+            "the string nothing holds is freed by the next collection"
+        );
+    }
+
+    #[test]
+    fn the_permanent_empty_strings_are_never_marked_and_always_survive() {
+        // alloc.c's init_strings makes empty_unibyte_string and
+        // empty_multibyte_string pure strings: mark_object returns at
+        // PURE_P before it sets a mark, and survives_gc_p answers true of
+        // a pure object.  The two here are in no block, so no sweep would
+        // clear a mark in their size words: none is ever set, and a weak
+        // table keeps the entry of one whatever else holds it.
+        let _runtime = crate::Runtime::lock();
+        let mut interpreter = Interpreter::new();
+        let table = json::make_hash_table(&mut interpreter, "eq", Vec::new());
+        let Kind::HashTable(id) = table.kind() else {
+            panic!("a hash table");
+        };
+        id.set_weakness(1);
+        interpreter.set_global_binding("empty-string-witnesses", table);
+        for multibyte in [false, true] {
+            let empty = Value::StringObject(super::empty_string(multibyte));
+            let Kind::StringObject(text) = empty.kind() else {
+                panic!("a string");
+            };
+            assert!(text.is_empty_singleton() && !text.is_pure());
+            assert!(
+                text.mark_bit().is_marked(),
+                "survives_gc_p of a permanent empty string"
+            );
+            assert!(
+                !text.mark_bit().mark(),
+                "a permanent empty string is not marked"
+            );
+            primitives::call(
+                &mut interpreter,
+                "puthash",
+                &[empty, Value::T, table],
+                &mut Env::new(),
+            )
+            .expect("witness the empty string");
+        }
+        for _ in 0..2 {
+            assert_eq!(
+                witnesses_after_collection(&mut interpreter, &table),
+                2,
+                "both empty strings survive"
+            );
+            assert!(
+                crate::lisp::alloc::every_mark_bit_clear(),
+                "neither empty string's size word carries a mark"
+            );
+        }
+        for multibyte in [false, true] {
+            assert_eq!(super::empty_string(multibyte).borrow().len(), 0);
+        }
+    }
+
+    #[test]
+    fn a_freed_string_s_data_is_null() {
+        // alloc.c:sweep_strings puts an unmarked string on the free list
+        // with `s->u.s.data = NULL' ("Reset the strings's `data' member so
+        // that we know it's free"), allocate_string gives every string of
+        // a new block the same ("Every string on a free list should have
+        // NULL data pointer"), and live_string_holding takes a cell for a
+        // string only if `s->u.s.data' is not null.
+        // What the cell holds is read with the runtime held, so that no
+        // other thread's string takes the freed cell, and judged once the
+        // runtime is given back.
+        let (made, freed, witnesses) = {
+            let _runtime = crate::Runtime::lock();
+            let mut interpreter = Interpreter::new();
+            let table = json::make_hash_table(&mut interpreter, "eq", Vec::new());
+            let Kind::HashTable(id) = table.kind() else {
+                panic!("a hash table");
+            };
+            id.set_weakness(1);
+            interpreter.set_global_binding("null-data-witnesses", table);
+            let string = witnessed_string(&mut interpreter, &table);
+            let made = (data_word(string), scan_finds(string));
+            let witnesses = witnesses_after_collection(&mut interpreter, &table);
+            (made, (data_word(string), scan_finds(string)), witnesses)
+        };
+        assert_ne!(made.0, 0, "a string's data is its bytes");
+        assert!(made.1, "the live cell is found");
+        assert_eq!(witnesses, 0, "the string nothing holds is freed");
+        assert_eq!(freed.0, 0, "the freed cell's data is null");
+        assert!(!freed.1, "live_string_holding refuses the freed cell");
+    }
 }

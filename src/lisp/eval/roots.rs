@@ -597,4 +597,63 @@ mod tests {
                 .all(Option::is_none)
         );
     }
+
+    /// thread.c:mark_threads marks the state of a thread that waits for
+    /// global_lock in the middle of its Lisp, as one does in
+    /// sys_cond_wait.  Here the other OS thread's interpreter is inside
+    /// `let' and `call-process' when it gives the runtime back: the
+    /// process-test permit it asks for there (`mark_process_test') is
+    /// this thread's, and the harness lends the runtime while it waits.
+    /// This thread takes the runtime then and collects, viewing that
+    /// state (its lisp_eval_depth above 0); the other goes on once this
+    /// thread has exited and its permit has gone.
+    #[test]
+    fn a_collection_views_an_interpreter_waiting_in_the_middle_of_its_lisp() {
+        use std::sync::mpsc;
+        let (start_tx, start_rx) = mpsc::channel();
+        let (ready_tx, ready_rx) = mpsc::channel();
+        let collector = std::thread::spawn(move || {
+            // The permit before the runtime, as every process test takes
+            // the two.
+            crate::test_support::mark_process_test();
+            let mut interpreter = Interpreter::new();
+            crate::lisp::runtime::release_while(|| {
+                start_tx.send(()).expect("start the evaluating thread");
+                ready_rx.recv().expect("the evaluating thread's editor");
+            });
+            // The runtime again: the other thread lent it from inside
+            // its call-process, still evaluating.
+            primitives::call(&mut interpreter, "garbage-collect", &[], &mut Env::new())
+                .expect("collect while the other interpreter waits");
+        });
+        let evaluator = std::thread::spawn(move || {
+            start_rx
+                .recv()
+                .expect("the collecting thread lends the runtime");
+            let mut interpreter = crate::test_support::initialized_gnu_early_lisp_interpreter();
+            interpreter.select_symbol_owner();
+            let mut environment = Env::new();
+            let source = "(let ((default-directory \"/\")) \
+                          (list 'done (call-process \"/usr/bin/true\" nil nil nil)))";
+            let mut offset = 0;
+            let form = crate::lisp::read_next_load_form(
+                &mut interpreter,
+                source,
+                &mut offset,
+                &mut environment,
+            )
+            .expect("read the form")
+            .expect("one form");
+            ready_tx.send(()).expect("announce the editor");
+            let value = interpreter
+                .eval(&form, &mut environment)
+                .expect("evaluate across the other thread's collection");
+            assert_eq!(
+                value,
+                Value::list([Value::symbol("done"), Value::Integer(0)])
+            );
+        });
+        collector.join().expect("the collecting thread");
+        evaluator.join().expect("the evaluating thread");
+    }
 }

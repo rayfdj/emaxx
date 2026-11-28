@@ -206,6 +206,13 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   bit of the dump's two bitsets and the image is never swept, at 24%
   more instructions an explicit collection (33.8M against GNU's
   54.5M).
+  Round 402: the second half's first part; a symbol's mark is its
+  gcmarkbit and a large vector's its header's flag, the sweep clears
+  them, and neither pays the collection's number at its allocation
+  (an explicit collection 33.1M); strings follow.  Round 404: a
+  string's mark is its size word's flag and strings are swept first,
+  so no heap object carries the collection's number and allocation
+  pays for no mark (an explicit collection 32.8M).
 - **In progress: A2.5, A4.7, C5.1, C5.3 and D43** (runtime ownership
   and thread access; the plan: docs/plans/runtime-ownership.md, stages
   0 to 9).  Round 388: stages 0 to 2; the runtime lock names its
@@ -241,6 +248,14 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   that is not its own; C5.3's gate, redone, was passed by the review
   in seven new ways and is held back again, and whether the item
   closes without it is the owner's to decide.
+  Round 401: A2.5's aliasing half begun from a census; no collection
+  runs while a quit is handled, as eval.c; four native helpers keep
+  no local reference across a call into Lisp; the references passed
+  as arguments along the native call path are the next round's.
+  Round 406: the plain and nested native paths hold no reference the
+  aliasing rules forbid (a model of them passes both of Rust's
+  models), and round 401's assertion states the real condition, so
+  the library passes at four test threads again.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -262,7 +277,16 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   native code's `funcall' of byte code enters it in place (548.1 to
   458.2 instructions against GNU's 316.0) and `apply' has its own
   entry (915.1 to 717.1 against 545.0); a `mapc' callback is 351.7
-  against 288.9 until the next stage.
+  against 288.9 until the next stage.  Round 403: byte code entered
+  from C enters its own frame, as exec_byte_code does; a `mapc'
+  callback 331.7 against 288.9, a closure called by `mapatoms' 451.3,
+  under GNU's 458.6 again.
+  Round 405: the trace latch read where an error is traced and
+  Ffuncall's exit taking the record its callee just tested; a `mapc'
+  callback 315.7 against 288.9.
+  Round 407: the byte-code loop's state is its own, as
+  exec_byte_code's locals are; a `mapc' callback 298.7 against 288.9,
+  every probe lower.
 
 ## Where things stand — 15 October 2026
 
@@ -21717,6 +21741,587 @@ setup_process_coding_systems's check now refuses). A 13-form
   is folded into another here: the inventory of the native entries,
   which a library test checks, is updated in the commit that gives
   `apply' its entry, so that no landed commit fails that test.
+- **Round 401: no collection while a quit is handled, four native
+  helpers that keep no local reference across a call into Lisp, and a
+  census of what Rust's aliasing rules forbid here (M2, A2.5, the first
+  stages of the plan of aliasing and lifetimes; none closed).**  **The
+  plan**: /home/user/emaxx-work/m2/aliasing-plan.md is the working copy
+  (stages A0 to A7) and /home/user/emaxx-work/m2/aliasing/census-a0.md
+  its census.  GNU's C has no rule that a pointer be the only path to
+  its memory; Rust's references have, in both of its aliasing models,
+  and the census asked where the unsafe code here breaks it.  **Found
+  sound as it stands**: no frame holds a reference into an interpreter's
+  state across a thread's suspension (there is one suspension point, and
+  every such reference is made through the shell and ends at the call);
+  and the collector's views of another interpreter's state are defined
+  in both models, since the owner holds a state by the one pointer its
+  allocation gave, the registry stores that pointer's address, and every
+  reference of the owner or the collector is made from it for a
+  statement.  What no type checks is that the other interpreter runs no
+  Lisp; a collection now asserts, in checked builds, that its thread
+  holds the runtime and that the viewed state is at depth 0.  **A bug
+  the census found**: of 24 Rust structures that hold a slice across
+  something that can collect, one was real.  The regexp matcher reads a
+  string's data in place, and its quit check can enter the debugger;
+  eval.c's probably_quit inhibits the collection around
+  process_quit_flag as around the pending signals, and here only the
+  signals were covered, so a debugger that collected moved the string
+  under the match.  From Lisp: native code that sets `quit-flag' and
+  calls `string-match' got nil for a matching string, 8 times of 8,
+  where GNU answers 0.  It is fixed as in C.  **Lisp sees**, as in GNU:
+  `garbage-collect' called from a debugger, a handler or a kill-emacs
+  hook that a pending quit entered returns nil and collects nothing, and
+  the next allocation after it collects.  **The helpers**: all 62
+  functions of the native runtime that make a reference from the active
+  call's pointers were read.  Four kept a local one across a call that
+  runs Lisp and used it after (the native funcall, `get', the unbinding
+  of several entries, the sanitizer's assertion); each now ends it at
+  the call and makes it again, at no instruction's cost (a native
+  funcall 548.1 before and after).  **What that does not end**: the same
+  helpers, and the plain native funcall's two arms, the nested entry and
+  the unwinding, pass such references as arguments into calls that run
+  Lisp, where they are held for the whole call; and a helper nested
+  under the evaluator makes its references from the outer call's
+  pointer, which is foreign to the evaluator's frames between.  Those
+  are undefined when a thread is suspended underneath (and at once in
+  the stricter model), their fix is a change of how a native call's
+  context is passed, and it is the next round of this plan, which starts
+  from a measured prototype.  The four fixtures of the helpers park a
+  thread under exactly such an argument, and pass before and after: this
+  kind of fault shows only to a checker of the models, which needs a
+  nightly toolchain.  **Also**: the suspend trampoline's symbol is
+  global and hidden, so a library test binary links in the dev profile,
+  which it had not since the trampoline was written (CI builds the
+  gate's profile only); and two programs compared with GNU collect while
+  threads are parked in each of five waits, with native, interpreted and
+  byte-compiled workers, and inside three nested native calls.  **The
+  independent review** (the one question: does the round cheat or break
+  something) found every commit clean.  It compared this build, round
+  397's and GNU with a quit noticed at 19 sites (eval, funcall, the
+  waits, byte-code and native loops, the matchers, sort, mapcar, the
+  reader, format, file and process calls) and in a debugger for a quit,
+  a handler under `with-local-quit', a timer, a process filter, a Lisp
+  thread and `kill-emacs': GNU's answers here, where the build before
+  differed in every one.  It measured the helpers' probes unchanged,
+  found no correct path that trips the new assertion in a process (two
+  ways a test could: a clone copies the depth, and an uncaught nesting
+  error leaves it raised), agreed with the census's account of the
+  collector's views, and found no holder of a slice that the census
+  missed over walkers whose function collects and grows what they walk.
+  It asked for two changes, both made in the round: the first form of
+  the helpers' commit message claimed more than the change does, and the
+  two programs' first form compared a weak table's count that depends on
+  stale stack words and could not catch one of two overlapping scans
+  failing alone.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,694 passed, 0 failed, 2 ignored; cli
+  30, cli_parity 191, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 4 (three more: the helpers' fixtures,
+  the quit under a match, the collections under parked threads and
+  nested calls), package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementer's own run had one
+  failure that is not the round's and is recorded below: a cli case
+  hung once where a SIGTERM arrived before a blocking open, and passed
+  three times of three alone.  The round audit reports no hard
+  finding, 687 changed lines with 3 tests and 2 assertions added, and
+  no other note.  Two commits of the branch are folded into others
+  here: the stop's test landed with round 398, and the review's
+  strengthening of the two stress programs is in their own commit.
+- **Round 402: a symbol's mark is its gcmarkbit and a large vector's its
+  header's flag, cleared by the sweep, as alloc.c's (M2, stage R16 of
+  A4.1 and A4.2, second half, first part; none closed).**  **Before**: a
+  symbol and a large vector kept the number of the collection that
+  marked them in a mark word of their own, written at every allocation
+  and compared at every test; round 399 put the mapped image's marks in
+  the dump's bitsets, after which nothing needed that number but habit.
+  **Large vectors**: the mark is ARRAY_MARK_FLAG, bit 63 of the header's
+  size word, and sweep_vectors clears it before it counts.  The word
+  that followed each large vector is gone from the heap, the image's
+  writer and its loader, and a load writes nothing into a mapped large
+  vector.  A vector's length is ASIZE, with lisp.h's eassume as a debug
+  assertion that no marked size is read outside the collector; the trace
+  reads gc_asize.  The empty vector is never marked and always survives,
+  as GNU's pure zero_vector.  **Symbols**: the mark is gcmarkbit, a bit
+  of the symbol's own bits; the mark word is gone and the cell keeps its
+  size.  A free cell is one whose function is dead_object (), which the
+  sweep, a fresh block and the loader (for the unused cells of the
+  image's last block) write, and which live_symbol_holding's test reads;
+  no Lisp value equals it.  The symbol blocks an image load rebuilds are
+  swept at every collection, as GNU sweeps everything outside its dump,
+  and the side count that let the sweep skip them is gone with its
+  update on every mark.  **The number** is now a count of collections,
+  read by the handler search's memo and by tests; strings alone still
+  carry it, until the next part.  **One arm**: the collector marks a
+  vectorlike by its header before it looks at its type, as mark_object
+  tests vector_marked_p; nineteen arms of the same code are one.
+  **Cost** (before = round 399's build, instructions): an explicit
+  collection 33,820,602 to 33,128,170 (GNU 54,503,808); `make-symbol'
+  1,390.9 to 1,369.7 (1,964.6), and without collections 416.9 to 413.9
+  (405.0); a 300-slot vector 48,824.5 to 47,793.0 (78,035.0), without
+  collections 2,209.0 to 2,202.1 (3,553.3); a 4-slot vector 1,410.0 to
+  1,397.3 (1,596.6), and without collections 497.0 to 500.5 (479.9), the
+  one probe that rose, by an alignment instruction the compiler put in
+  the free list's scan; a cons loop 2,390.4 to 2,385.9 (2,461.2), a
+  float 609.9 to 606.5 (656.5), a multibyte `concat' 2,713.8 to 2,685.4
+  (3,172.0).  The rebuilt symbol blocks cost a collection about 20,000
+  instructions, 2,499 cells at 8.  The tracer's count moves about 2%
+  with the layout of its code alone: before the last commit the same
+  tree measured 34.47M, above the round's start, so a difference of that
+  size in the collection's figure is not a finding.  Private memory
+  around the first collection is unchanged.  **Lisp sees nothing
+  change.**  **Still to do, the next part**: strings (the mark in the
+  size word, strings swept first as gc_sweep sweeps them, a free string
+  a null data pointer, the rebuilt string blocks swept), and a symbol
+  block's cells left uninitialized as GNU leaves them.  **The
+  independent review** (the one question: does the round cheat or break
+  something) found the six commits clean.  It compared this build, round
+  399's and GNU on weak tables of the four kinds keyed and valued by 23
+  kinds of object (symbols interned, uninterned and dumped; vectors of 3
+  to 5,000 slots; records, closures, bool-vectors, a char-table, hash
+  tables, markers, an overlay, a finalizer, a bignum); symbols whose
+  function cells hold nil, a cons, the symbol itself, a subr, fixnums,
+  an empty string and vectors; 10,000 symbols interned and uninterned
+  with collections between; and a dump, a load, mutation, churn, five
+  collections and a second dump and load: the same answers, with and
+  without the collector's verifier.  It found no read of a flagged size
+  inside a collection (four raw readers of the size word have no
+  assertion and are reached only outside one), no way for a live
+  symbol's function to equal the dead marker, the single arm equivalent
+  to the nineteen, the seven changed assertions each converted to an
+  equal or stronger one, and the figures above from its own measurement.
+  It explained the one mutation the implementer had not: with the flag
+  left set the census adds a flagged size and overflows, and the test
+  that guards the clearing fails by three of its own assertions besides.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,702 passed, 0 failed, 2 ignored (eight
+  library tests more); cli 30, cli_parity 191, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 4,
+  package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The machine restarted while
+  cli_parity ran, and the integration targets were run again whole.
+  The implementer's run of the whole library at one test thread and
+  at four: 3,701 passed, 0 failed, each time.  The round audit reports
+  no hard finding, 1,472 changed lines with 8 tests and 65 assertions
+  added; its seven notes of a changed assertion are the layout and
+  placement checks of the two mark words that are gone, each replaced
+  by an equal or stronger one, as the review read them.
+- **Round 403: byte code entered from C enters its own frame, as
+  exec_byte_code does (M2, D17, stage 2 of the plan of the call paths;
+  none closed).**  **GNU**: Ffuncall and funcall_lambda bind a
+  dynamic-binding function's formals and call exec_byte_code, which
+  takes its frame on the byte-code stack, pushes the arguments, runs,
+  and returns at the entry frame's Breturn, with pc and the quit counter
+  its own locals.  **Before**: each caller from Rust marshalled the
+  activation, entering the frame and pushing the arguments before the
+  verified loop, which received pc and the quit counter as parameters
+  and a third word as a field of the record its helpers take.  **Step
+  1**: pc, the quit counter and the count of frames an operation's error
+  leaves are one record the helpers' record refers to once; the loop and
+  three of its helpers lose those parameters.  A first form made them
+  three fields of the helpers' record and was measured and dropped: the
+  helpers then wrote into that record, and the compiler reloaded the
+  interpreter, the environment and the frame bases through it in the hot
+  paths (the lexical recursion 365.1, the dynamic one 637.1, over GNU's
+  636.2).  **Step 2**: the verified loop enters the frame and pushes the
+  arguments itself, and the entry frame's Breturn leaves it and returns
+  the value; a dynamic-binding function's formals are bound before its
+  frame is entered, in funcall_lambda's order.  **Then** Ffuncall's own
+  record is passed down, so the activation's test of the backtrace is
+  against it and no mark is kept.  **A fix the review asked for**: with
+  the formals bound first, a frame that did not fit signalled from a
+  path that skipped the activation's end, so the bindings stayed on the
+  specpdl after the signal, which a catcher directly above the call saw
+  (an interpreted `condition-case' read the callee's argument where GNU
+  reads the outer value; through a process filter, the value after it
+  was the process).  The overflow is now signalled inside the bindings
+  and the activation ended, as GNU's unwinding to the catch unbinds
+  them.  **Counts** (before = round 400's build, instructions): a
+  byte-compiled `mapc' callback 351.7 to 331.7 (GNU 288.9), of
+  `mapatoms' 352.4 to 332.4 (298.9), of `maphash' 353.9 to 333.9
+  (291.1), a closure called by `mapatoms' 468.3 to 451.3 (458.6, under
+  GNU's again), native `funcall' of byte code 458.2 to 444.1 (316.0),
+  native `apply' 717.1 to 702.1 (545.0), an element of native `mapcar'
+  576.1 to 562.1 (550.5); the lexical recursion 359.1 to 349.1 (314.9),
+  byte-code calls 443.2 to 437.9 (468.0), the dynamic recursion 634.1 to
+  627.1 (636.2).  One guard rose, the byte-code loop's base, 97.6 to
+  100.6, by three alignment instructions on its path; its other
+  instructions are 96.6 before and after.  The plan expected 45 off the
+  `mapc' callback and this gave 20.  **What is left of it**, by GNU's
+  boundaries: Ffuncall's part is 17 under GNU's, the map loop 5.6 over,
+  and the activation 54 over (166 against exec_byte_code's 112): the
+  record the loop's helpers take, about 46, which GNU keeps as
+  exec_byte_code's locals; the trace latch 7; the marks and tests at the
+  return, 12; the tests of an Option and a Result, 8, about 4 of them
+  forced by Rust's errors as values; the frame's entry and exit, about
+  14 against 5; Ffuncall's exit, about 20 against 6.  The next stage
+  takes up the record as the loop's own locals, a form tried here (the
+  entry 23 instructions cheaper, the loop's own 25 dearer) and kept as a
+  lead.  **Lisp sees one change**, toward GNU: a dynamic-binding
+  byte-code function called from C whose frame does not fit has its
+  formals bound before the overflow and unbound by the unwinding, so a
+  watcher of a formal hears the let and the unlet, and a wrong number of
+  arguments is signalled before the overflow when the stack is full.
+  **The independent reviews** (the one question: does the round cheat or
+  break something) compared GNU 30.2 and the builds before and after
+  each step on activations ended by a value, a signal from the entry
+  frame and from a called frame, a throw through two activations, a
+  quit, the debugger at entry and at exit, the overflow at three frame
+  sizes, a code string changed by `aset' under the call, nested
+  activations, a thread switch and a collection with the collector's
+  verifier, from `mapc', `mapcar', `maphash', `mapatoms', `apply',
+  native `funcall', `sort''s predicate, hooks, a timer, a process filter
+  and threads; found no way into the unchecked loop with a frame that
+  was not sized, no reference held across a call into Lisp, and the
+  numbers above.  The first review found the break above; the second
+  found the fix clean against every early end of such an activation (a
+  wrong number of arguments, a constant or watched formal whose binding
+  signals or throws, an invalid argument list, a quit while binding, the
+  depth limit) with interpreted, byte-code and Rust catchers.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,703 passed, 0 failed, 2 ignored (one
+  library test more); cli 30, cli_parity 196 (five new cases),
+  ert_runner 3, native_comp_identity 1, native_thread_continuations 4,
+  package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementers' runs of the
+  library at one test thread and at four: every group passed.  The
+  round audit reports no hard finding, 1,308 changed lines with 6
+  tests and 25 assertions added; its six notes of a changed assertion
+  are five that read the frames' count of an error through the new
+  record, the same assertions, and the entry's assertion that a
+  caller is admitted, which no longer excuses the dynamic entry.
+- **Round 404: a string's mark is in its size word and strings are swept
+  first, the count of collections is gcs_done, and a new symbol block is
+  not written (M2, stage R16 of A4.1 and A4.2, second half, second part;
+  none closed).**  **GNU**: alloc.c marks a string with ARRAY_MARK_FLAG
+  in its size, sweeps strings first in gc_sweep's order so that the
+  later sweeps read unmarked sizes, tells a free string by its null data
+  pointer (live_string_holding), raises gcs_done when a collection is
+  done, and leaves a symbol block's cells unwritten, telling a live
+  symbol by the block's index (live_symbol_holding's
+  symbol_block_index).  **Before**: a string kept the number of the
+  collection that marked it in a mark word of its own, written at each
+  allocation, the string blocks an image load rebuilt were skipped by
+  the sweep while a side count said none had died, the count of
+  collections was raised at the mark's start, and a new symbol block's
+  cells were all written before the first was handed out.  **Now**: the
+  string's mark is the flag in its size word, which is a Cell, since a
+  shared borrow of a string may be alive across a collection; a mapped
+  string's mark is the dump's bit and a pure string and the two
+  permanent empty strings are never marked, as PURE_P; the string sweep
+  runs first and unmarks before it counts; a free string's data pointer
+  is null; the rebuilt string blocks are swept at every collection, and
+  the side count, its update at every mark and the image-region test at
+  every allocation are gone; a checked build stops if a string is made
+  between the mark's start and the string sweep (GNU aborts while
+  gc_in_progress in signal_or_quit and module_assert_thread).  Before
+  strings could be swept first, the note a freed record leaves had to
+  stop reading its type's name: it now takes the type symbol's key only
+  if it is already built, and the purge drops an id it was given no name
+  for from every type's set.  The count of collections is gcs_done,
+  raised after the sweeps and before the finalizers run (alloc.c raises
+  it after run_finalizers; the handler search's memo, which GNU has not,
+  must see it before any Lisp runs; `gcs-done' is a separate cell and is
+  raised where it was).  A new symbol block is not written; the live
+  test reads the allocation frontier, and the two places where a block
+  stops being the current one before it is full (an image region opening
+  or closing, and the first allocation of a thread that did not hold the
+  runtime) free its unused cells.  The new block is taken out of line,
+  as a cons's is: inlined, it had made the symbol's allocation too large
+  to be inlined into `make-symbol', 27 instructions more.  **Counts**
+  (before = round 402's build, instructions): an explicit collection
+  33,128,027 to 32,764,850 (GNU 54,504,281), the tracer's string mark
+  now testing one byte where it tested two; `make-string' 1,695.2 to
+  1,679.1 (2,265.6), and without collections 641.8 to 635.8 (584.9); a
+  multibyte `concat' 2,685.4 to 2,665.7 (3,172.1), without collections
+  1,299.5 to 1,293.5 (944.3); `make-symbol' 1,369.7 to 1,358.1
+  (1,964.6), without collections 413.9 to 412.2 (405.0); a cons loop
+  2,385.9 to 2,384.2 (2,461.2); a float 606.5 to 604.7 (656.5); a
+  300-slot vector 47,816.2 to 47,383.6 (78,032.9).  No probe rose.
+  Private memory around the first collection is unchanged.  **Lisp sees
+  nothing change.**  With this round no heap object carries the
+  collection's number, and allocation pays for no mark at all, as in
+  GNU.  **The independent review** (the one question: does the round
+  cheat or break something) found the nine commits clean.  It compared
+  this build, round 402's and GNU on strings of every kind (unibyte,
+  multibyte, with properties, pure, the empty ones, mapped, read,
+  concatenated, sliced, formatted, made, widened by `aset', taken from a
+  buffer) as weak-table keys and values in all four weaknesses, 100,000
+  strings of mixed sizes made and dropped with the survivors read back,
+  symbol churn and Lisp threads allocating, six GNU files byte-compiled
+  to identical output, a stress of 6,000 steps with a collection every
+  50, `gcs-done' read from a finalizer, `post-gc-hook' and the code
+  after a collection, and a dump made by this build, loaded, mutated,
+  collected and dumped again, with and without the collector's verifier:
+  the same answers.  It found no read of a marked size in a release
+  build, nothing left unswept that keeps a mark in its own word, no
+  later sweep that reads a string, the frontier sound when the runtime
+  moves between OS threads, the seven changed assertions each converted
+  or gone with the skip they guarded, and the figures above from its own
+  measurement.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,715 passed, 0 failed, 2 ignored
+  (twelve library tests more); cli 30, cli_parity 196, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 4,
+  package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three
+  that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementer's run of the
+  library at one test thread and at four: 3,713 passed, 0 failed.  The
+  round audit reports no hard finding, 1,681 changed lines with 12
+  tests and 60 assertions added; its one note of new state is the
+  count of collections renamed gcs_done, and its seven notes of a
+  changed assertion are each converted (a string's purity read from
+  its origin byte, two bounds read through the length) or gone with
+  the skip of the rebuilt blocks that they guarded.
+- **Round 405: the trace latch read only where an error is traced, and
+  Ffuncall's exit takes the record its callee's return just tested (M2,
+  D17, the plan of the call paths; none closed).**  **The latch**: the
+  diagnostic trace of byte-code errors (EMAXX_TRACE_LOAD_ERRORS) was
+  read at each entry of the byte-code loop and on each plain call from
+  byte code; it is now read only on the paths that trace an error, and
+  the plain arms report an error as the failed call operation, as the
+  full arm does.  **The exit**: GNU's Ffuncall pops its backtrace record
+  after funcall_lambda returns, with no second test of its place.  Here
+  the byte-code call from Rust tested the backtrace's length on its fast
+  return and then popped the record with a second bounds test; the
+  activation now hands its fast return and its other ends to the caller
+  apart, so the fast return pops the record it has just tested without
+  testing again, and every other end (a signal, a throw, a quit, a
+  record marked for the debugger, a value returned with bindings or
+  records left, a dynamic-binding callee, a `&rest' one, a closure the
+  entry table does not hold) leaves as before, inline.  A first form of
+  that split sent those other ends through an out-of-line exit, and the
+  review measured them dearer (a dynamic-binding `mapc' callback 903.5
+  to 931.5, a `&rest' one 1,112.0 to 1,140.2); the form landed keeps
+  their inline exit, behind a small trait whose methods are forced
+  inline, and the two shapes are guard probes from this round on.
+  **Counts** (before = round 403's build, instructions a call): a
+  byte-compiled `mapc' callback 331.7 to 315.7 (GNU 288.9), of
+  `mapatoms' 332.4 to 316.4 (298.9), of `maphash' 333.9 to 317.9
+  (291.1), a closure called by `mapatoms' 451.3 to 435.3 (458.6), native
+  `funcall' of byte code 444.1 to 433.1 (316.0), byte code to a subr
+  345.7 to 337.6 (339.0), `process-name' 395.6 to 387.6 (371.0), byte
+  code to native 326.6 to 324.6 (337.0); a dynamic-binding `mapc'
+  callback 910.7 to 903.7 (871.9) and a `&rest' one 1,035.2 to 1,019.2
+  (889.7) at the new probes' counts.  The guards did not move but one,
+  `mapc' of a subr, 193.7 to 195.7, one instruction more besides
+  alignment.  Three forms were tried and dropped: the trace read inside
+  the plain arms (it kept a value alive across the closure arm: the
+  lexical recursion 10 more), the two results merged (native `funcall' 5
+  more), and the frame's room test as one checked add (no gain).  **What
+  is left** of the `mapc' callback's 26.8: the record the loop's helpers
+  take, built by the caller and unpacked at the loop's head, about 45,
+  which GNU keeps as exec_byte_code's locals; the frame's room test, 8
+  instructions against 1 or 2; the profiler's tests at the record's push
+  and pop, about 6; the fast return's tests of the specpdl and the
+  backtrace, about 6; and the map loop's extra parameters, about 5;
+  against which the one function doing the work of GNU's three saves
+  about 37.  **Lisp sees nothing change.**  **The independent reviews**
+  (the one question: does the round cheat or break something) found both
+  steps correct: the record popped without the test is always the one
+  just tested, built in one place right after the length test, and every
+  other end reaches the checked path; 69 programs ending in every way a
+  call can end (values, signals, throws, quits through `quit-flag', the
+  debugger at exit with records marked and unmarked and marked inside a
+  thread, `debug-on-next-call', thread switches, nested activations,
+  collections, the depth limit, a callback that redefines itself, both
+  profilers), from `mapc', `mapcar', `maphash', `mapatoms', `apply',
+  `funcall', `sort', the hooks, `mapconcat', a timer, a process filter
+  and sentinel, `signal-hook-function' and `handler-bind', gave GNU's
+  answers, with and without the collector's verifier and with the trace
+  on.  The first review found the dearer ends; the second found them
+  back at their cost and the rest unchanged.
+  Validation of the round's commits (gate profile, one test thread a
+  process): the grouped gate 3,715 passed, 0 failed, 2 ignored; cli
+  30, cli_parity 196, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 4, package_lifecycle 5,
+  runtime_ownership 7 and runtime_forgotten_handle 1; the doctests,
+  three passing and three that must fail to compile; the harness's
+  own tests 59; clippy `-D warnings' and rustfmt clean.  The
+  implementer's run of the library at one test thread and at four:
+  every group passed.  The round audit reports no hard finding, 252
+  changed lines with 1 assertion added; its one note is a line of a
+  comment that names the oracle, rewrapped and not changed.
+- **Round 406: the native call path holds no reference Rust's aliasing
+  rules forbid on its plain and nested paths, and a collection's view of
+  another state asserts the real condition (M2, A2.5, the first round of
+  the native call's context; none closed).**  **The rules**: a Rust
+  reference to memory is invalidated by an access through another path,
+  and a function's `&mut' argument is protected for the whole call;
+  GNU's C reaches the interpreter through current_thread and the C
+  globals by plain pointers and has no such rule.  The design
+  (/home/user/emaxx-work/m2/aliasing/a2-design.md, the working copy)
+  found the native call path undefined under both of Rust's models on
+  ordinary paths, not only at a thread switch: the record of an active
+  native call was made from references that were used again after it,
+  the heap's and the collector's pointers were made through the shared
+  native state's Box, which every later access and a thread switch
+  re-made, `invoke_nested' wrote through its `&mut self' before a callee
+  read the same memory, and a nested call's helpers made their
+  references from the outer call's record.  **Now**: the shared native
+  state is owned by its allocation's raw pointer, as the editor state
+  already was, one generic owner for both; a call's pointers are made
+  once, from the caller's own reference, which is not used again until
+  the call returns; a native call nested in another stores its own
+  interpreter's pointer in the record and puts the outer one back on
+  every exit, the escape included, which is the one cost (the
+  requirement is named S-DERIVED in the code: a load, a save, a store, a
+  reload and a store back where the nested call is made, 5
+  instructions); the plain funcall's arms and the nested entry pass raw
+  pointers, not references, across the callee, and the exit debugger
+  takes the three pointers and makes its reference after the debugger.
+  **A model**: a model of these shapes outside the tree
+  (/home/user/emaxx-work/m2/aliasing/model/, 147 lines) was run under
+  Miri with Stacked Borrows and Tree Borrows, on a nightly toolchain
+  used for that run only: today's shape was reported undefined in all
+  six findings under the first and five of six under the second, and the
+  design passed all twelve.  A model checks the reading of the rules,
+  not the code, and it leaves out the environment, the collection
+  trampoline, the thread driver's writes and the non-local exit.  **The
+  assertion of round 401 corrected**: it took a viewed state's
+  evaluation depth of 0 to mean that interpreter runs no Lisp, and three
+  groups of the library aborted on it at four test threads: interpreters
+  on other OS threads waiting in the middle of their Lisp for a test's
+  permit, with the runtime given back.  It now asserts the hazard
+  itself, that every native call active on this thread is the collecting
+  interpreter's, through a link from each call's record to the one it
+  nests in (the link the record's guard held before).  Two tests fail on
+  the old condition: a collection viewing an interpreter that waits
+  mid-evaluation on another thread, and the hazard built in a child
+  process, which stops at the new assertion.  The library passes whole
+  at four test threads again, twice.  **Counts** (before = round 401's
+  code, instructions): native `funcall' 458.2 to 453.1 (GNU 316.0),
+  native `apply' 717.2 to 712.1 (545.0), an element of native `mapcar'
+  597.1 to 591.6 (550.5), byte-code calls 443.6 to 440.6, the lexical
+  recursion 359.1 to 356.1, a `mapc' callback 351.7 to 350.7; byte code
+  to native 328.6 to 334.6 (337.0) and interpreted code to native
+  1,968.0 to 1,973.0 (1,801.0), five of each the requirement's.  **Lisp
+  sees nothing change.**  **The independent review** (the one question:
+  does the round cheat or break something) found the seven commits
+  clean: with gdb on the parked stacks of the fixtures, the converted
+  frames are there (the plain arms, the byte-code arm, the nested
+  entries from byte code and from the evaluator, the exit debugger);
+  nine programs of native, interpreted and byte-compiled calls nested up
+  to six deep, with yields at each level on four threads, errors, throws
+  and quits through the nestings, the exit debugger for each kind of
+  callee and collections with a `post-gc-hook' that yields gave the same
+  output as the build before and as GNU but for a count of collections
+  that differed from GNU before as after; it rebuilt the old condition
+  and saw both new tests fail; and its numbers are those above.  It
+  found two places the design had not listed, both the next round's: a
+  collection that starts from the evaluator or the byte-code loop under
+  an active native call makes its references from the outer record while
+  evaluator frames hold protected references (undefined in the first
+  model at once and in the second at a thread switch in `post-gc-hook'),
+  and the thread's pointer handed to generated code is ended by later
+  writes through its Box before generated code reads it.
+  Validation of the round's commits, recreated on round 405 (gate
+  profile, one test thread a process): the last commit's change to
+  eval.rs was merged by hand, the collector's new argument kept with
+  round 404's calls that take no epoch, and one doc line it brought,
+  past the column limit, rewrapped; nothing else differs from the
+  reviewed commits.  The grouped gate 3,717 passed, 0 failed, 2 ignored;
+  cli 30, cli_parity 196, ert_runner 3, native_comp_identity 1,
+  native_thread_continuations 4, package_lifecycle 5, runtime_ownership
+  7 and runtime_forgotten_handle 1; the doctests, three passing and
+  three that must fail to compile; the harness's own tests 59; clippy
+  `-D warnings' and rustfmt clean.  The implementer's run of the library
+  at one test thread and at four, twice: every group passed.  The round
+  audit reports no hard finding, 1,015 changed lines with 2 tests and 15
+  assertions added; its notes are three assertions rewritten with the
+  same or a stronger condition (round 401's, which now states that every
+  native call active on the thread is the collector's, and two in tests
+  that read the interpreter through the record's pointer) and one
+  process spawned, the new test's child.
+- **Round 407: the byte-code loop's state is its own, as
+  exec_byte_code's locals are (M2, D17, the plan of the call paths; none
+  closed).**  **GNU**: exec_byte_code keeps the program, pc, the quit
+  counter and the bases of its frames and handlers as its own locals,
+  and a callee reaches none of them.  **Before**: the caller from Rust
+  built a record of that state, the verified loop unpacked it at its
+  head, and the helpers the loop calls took it with the interpreter and
+  the environment.  **Now**: the state (the program, pc, the count of
+  frames an operation's error leaves, the quit counter, the frames' and
+  handlers' bases) lives in the loop's own frame; the helpers take a
+  record of three words (the interpreter, the environment and the
+  state's address) that none of them writes; and the loop hands its
+  state out and back, when it leaves an activation for the outer loop to
+  resume, through one record that is its last parameter.  Four forms
+  were measured before this one: the state owned by the loop as a form
+  of two rounds ago kept it (the bases stored three times, the
+  interpreter and environment spilled; 316.7), separate locals (the
+  state's padding copied; 315.7), the bases in the state but the program
+  outside it (a `&rest' callback 17 more at the resume), and this one.
+  The frame's room test as one compare of a 32-bit depth was built and
+  dropped (a `mapc' callback 292.7, but byte code to a subr and
+  `process-name' each 4 more, a spill and three reloads in a path none
+  of the change runs), as were the map loop's parameters in a function
+  of its own (no gain).  **Counts** (before = round 405's build,
+  instructions): a byte-compiled `mapc' callback 315.7 to 298.7 (GNU
+  288.9), of `mapatoms' 316.4 to 299.4 (298.9), of `maphash' 317.9 to
+  300.9 (291.1), a closure called by `mapatoms' 435.3 to 417.3 (458.6),
+  a dynamic-binding `mapc' callback 903.7 to 892.7 (871.9), a `&rest'
+  one 1,019.2 to 1,005.2 (889.7), native `funcall' of byte code 433.1 to
+  418.1 (316.0), the lexical recursion 349.1 to 343.1 (314.9), the
+  dynamic one 626.1 to 617.1 (636.2), byte code to a subr 337.6 to 331.7
+  (339.0), `process-name' 387.6 to 381.7 (371.0), byte code to native
+  324.6 to 317.7 (337.0), `mapc' of a subr 195.7 to 191.7 (178.9), the
+  loop's base 100.6 to 98.7.  No probe rose.  The loop's code is 504
+  bytes larger (the copies at the resume and the exits, alignment,
+  address computations); the cache simulation shows no instruction-cache
+  miss on any probe, before or after.  **What is left** of the `mapc'
+  callback's 9.8: Ffuncall's part is level with GNU's; the loop's entry
+  is 4 over exec_byte_code's (its room test 8 instructions against 2,
+  the state's stores at entry 8, the helpers' record 5, against GNU's
+  stack protector and own locals), and the map loop 5 over mapcar1's (a
+  name and the environment passed on the stack).  **Lisp sees nothing
+  change.**  **The independent review** (the one question: does the
+  round cheat or break something) compared GNU 30.2 and the builds
+  before and after on six programs byte-compiled by GNU (signals, throws
+  and quits out of nested activations with the outer loop going on; the
+  debugger at entry and at exit in calls and callbacks; `aset' of a
+  caller's code string and of one two frames below; the stack's overflow
+  at an entry from C and between byte-code frames; collections in
+  callbacks; `mapc', `mapcar', `maphash', `mapatoms', `apply', `sort''s
+  predicate, `mapconcat', a timer and a process filter; threads parked
+  in `thread-yield', a mutex, a condition variable and `sleep-for' and
+  signalled while parked; dynamic, `&optional' and `&rest' callees;
+  signalling operations under `condition-case' and `handler-bind'), with
+  and without the collector's verifier: the same answers, threads'
+  shared traces apart, whose order changes from run to run in GNU
+  itself.  It read every way out of the loop, found the state handed out
+  and back always the resuming activation's and no path reaching it
+  twice, recompiled the new test's byte code in GNU, saw the tests fail
+  under mutations of the frames' base, pc, the program and the state
+  kept after a resume, and measured the figures above.  It found the
+  handlers' base at a resume guarded by no test (a mutation of it passes
+  every test, though a program of its own shows it, `(outer (300) 2)'
+  for GNU's `(outer (300) 1)'); a test of it is the next call-path
+  round's first commit.
+  Validation of the round's commits, recreated on round 406 with changes
+  identical to the reviewed branch's (the same patch identifier), in the
+  gate profile with one test thread a process: the grouped gate 3,717
+  passed, 1 failed, 2 ignored, the failure the performance runner's own
+  test `interpreter_workload_validates_all_cases_and_sample_counts',
+  which has failed before under load at the runner's check that each
+  sample's time is positive (an open question to the owner), and passed
+  three times of three alone; cli 30, cli_parity 196, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 4,
+  package_lifecycle 5, runtime_ownership 7 and runtime_forgotten_handle
+  1; the doctests, three passing and three that must fail to compile;
+  the harness's own tests 59; clippy `-D warnings' and rustfmt clean.
+  The implementer's run of the library at one test thread and at four:
+  every group passed, one at four threads only when run alone, the
+  memory limit having stopped it beside another worktree's tests.  The
+  round audit reports no hard finding, 574 changed lines with 1 test and
+  5 assertions added; its one note is the entry's debug assertion,
+  rewritten on the entry program with the same two conditions.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -25368,6 +25973,120 @@ ert-tests as a whole 26,307 ms against 27,211.
   stage, three doctests passing and three that must fail to compile,
   none failed.
 
+**On `7b9f75b`** (round 400): the frozen run (run 45829281469) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 61.7 s against 53.9 s (1.145), test bodies 256.3 s
+  against 241.2 s (1.063), in all 1.078 (GNU's suite took 295 s).  The
+  widest body gaps are tramp-tests (18.5 s against 15.7 s), comp-tests
+  (14.1 against 12.4), process-tests (2.63 against 1.63),
+  semantic-utest-ia (3.06 against 2.35) and mule-tests (2.17 against
+  1.53).  Both editors passed the eglot test, and GNU's threads test
+  did not abort.  **The bodies' ratio across the last runs** (1.021,
+  1.032, 1.044, 1.063 on rounds 396, 398, 399 and 400) is not a
+  slowing of four points.  File by file against round 396's run, with
+  GNU's times scaled to the runner, Emaxx's excess grew by 10.1 s, of
+  which 5.6 s is eglot-tests alone: in round 396's run GNU's side sat
+  out the race's 10 s timeout there (35.3 s against Emaxx's 29.0),
+  which flattered that run's ratio by about four points; without that
+  file the two runs read 1.058 and 1.078.  Another 2.1 s is three
+  files whose GNU times were outliers in one run or the other
+  (ert-tests, info-xref-tests, epg-tests).  What is left, about 2.4 s
+  in 210, is spread over tramp, comp, process and many small files
+  (27 files' excess up by more than 20 ms, 16 down), and is the size
+  expected of round 399's dearer collection.  A single run does not
+  resolve less than that: the same commit has read 1.025 and 1.080 on
+  two attempts.  The Rust gate (run 45829276776) passed: 3,701 library
+  tests, the eight integration targets (239; the two new parity
+  cases), the binaries' tests (63) and the doc stage, three doctests
+  passing and three that must fail to compile, none failed.
+
+**On `688c684`** (round 401): the frozen run (run 45846899019) passed
+  on its first attempt, every outcome matching, on a slow runner
+  (GNU's suite took 341 s).  Setup 81.1 s against 68.3 s (1.187), test
+  bodies 295.9 s against 272.7 s (1.085), in all 1.106; the earlier
+  runs on such a runner gave 1.093 to 1.121 in all.  The widest body
+  gaps are tramp-tests (22.0 s against 19.1 s), comp-tests (16.8
+  against 14.7), ert-tests (41.0 against 39.3), process-tests (3.01
+  against 1.61) and semantic-utest-ia (3.97 against 2.72).  The Rust
+  gate (run 45846893656) passed: 3,701 library tests, the eight
+  integration targets (242), the binaries' tests (63) and the doc
+  stage, three doctests passing and three that must fail to compile,
+  none failed.
+
+**On `2179c8a`** (round 402): the frozen run (run 46039724518) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt.  Setup 52.9 s against 46.1 s (1.148), test bodies 231.5 s
+  against 223.0 s (1.038), in all 1.057 (GNU's suite took 269 s; round
+  398's run on a runner of that speed gave 1.032 for the bodies).  The
+  widest body gaps are tramp-tests (15.2 s against 13.4 s), comp-tests
+  (11.8 against 10.3), semantic-utest-ia (2.75 against 1.97),
+  process-tests (2.20 against 1.50) and mule-tests (1.86 against 1.31).
+  Both editors passed the eglot test.  The Rust gate (run 46039718612)
+  passed: 3,709 library tests (eight more), the eight integration
+  targets (242), the binaries' tests (63) and the doc stage, three
+  doctests passing and three that must fail to compile, none failed.
+
+**On `f4a8a73`** (round 403): the frozen run (run 46052133914) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, and round 394's rule was exercised for the second time, the
+  first with the race on Emaxx's side:
+  `eglot-test-rust-completion-exit-function' passed for GNU and timed
+  out for Emaxx, the acceptance was reported, and the file's outcomes
+  count as matching.  Setup 54.2 s against 47.3 s (1.147), test bodies
+  238.5 s against 223.4 s (1.068), in all 1.082 (GNU's suite took 271
+  s); the eglot file's 35.5 s against 30.5 s is the timeout's 10 s on
+  Emaxx's side, and without it the bodies read 1.052.  The widest other
+  body gaps are tramp-tests (15.2 s against 13.7 s), comp-tests (11.7
+  against 10.6), semantic-utest-ia (2.82 against 2.05) and process-tests
+  (2.19 against 1.51).  The Rust gate (run 46052129657) passed: 3,710
+  library tests (one more), the eight integration targets (247; five new
+  cases), the binaries' tests (63) and the doc stage, three doctests
+  passing and three that must fail to compile, none failed.
+
+**On `a0d857d`** (round 404): the frozen run (run 46067250356) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, and round 394's rule was exercised a third time, with the
+  race on GNU's side again: `eglot-test-rust-completion-exit-function'
+  timed out for GNU and passed for Emaxx, and the acceptance was
+  reported.  Setup 52.6 s against 46.1 s (1.141), test bodies 230.5 s
+  against 226.6 s (1.017), in all 1.038 (GNU's suite took 273 s); GNU's
+  10 s timeout in the eglot file (36.1 s against Emaxx's 29.7) flatters
+  the bodies' ratio, which reads 1.054 without that file.  The widest
+  body gaps are tramp-tests (15.2 s against 13.6 s), comp-tests (11.5
+  against 9.9), semantic-utest-ia (2.65 against 1.87) and process-tests
+  (2.20 against 1.50).  The Rust gate (run 46067246634) passed: 3,722
+  library tests (twelve more), the eight integration targets (247), the
+  binaries' tests (63) and the doc stage, three doctests passing and
+  three that must fail to compile, none failed.
+
+**On `e31075e`** (round 405): the frozen run (run 46076764762) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, the eglot race accepted again on GNU's side (37.9 s against
+  33.1 s in that file).  Setup 66.9 s against 59.4 s (1.127), test
+  bodies 262.9 s against 258.7 s (1.016), in all 1.037 (GNU's suite took
+  318 s); without the eglot file the bodies read 1.041.  The widest body
+  gaps are tramp-tests (18.6 s against 16.6 s), comp-tests (15.4 against
+  13.9), process-tests (3.02 against 1.79), mule-tests (2.49 against
+  1.75) and semantic-utest-ia (3.21 against 2.61).  The Rust gate (run
+  46076761610) passed: 3,722 library tests (as round 404's), the eight
+  integration targets (247), the binaries' tests (63) and the doc stage,
+  three doctests passing and three that must fail to compile, none
+  failed.
+
+**On `9f0d464`** (round 406): the frozen run (run 46085405549) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, eglot passing on both sides (29.6 s against 30.6 s in that
+  file).  Setup 51.4 s against 46.3 s (1.109), test bodies 225.6 s
+  against 220.9 s (1.021), in all 1.037 (GNU's suite took 267 s);
+  without the eglot file the bodies read 1.030.  The widest body gaps
+  are tramp-tests (14.9 s against 13.4 s), comp-tests (11.0 against
+  9.6), process-tests (2.17 against 1.53), semantic-utest-ia (2.52
+  against 2.01) and mule-tests (1.78 against 1.33).  The Rust gate (run
+  46085403214) passed: 3,724 library tests (two more), the eight
+  integration targets (247), the binaries' tests (63) and the doc stage,
+  three doctests passing and three that must fail to compile, none
+  failed.
+
 **The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
   25 Nov by running the one test alone.
   `eglot-test-rust-completion-exit-function' connects twice
@@ -25394,6 +26113,118 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 407 and its review), within the
+  plan's later stages or outside the round.**  One line each: no test
+  guards the handlers' base the loop takes back at a resume (the next
+  round's first commit); the test of a frame deeper than 2^32 words
+  checks the `error' condition and not its message; GNU 30.2 crashes on
+  a byte-code function whose stack depth is `most-positive-fixnum' (a
+  pointer sum overflows), where Emaxx signals the overflow; four
+  byte-code library tests fail outside the gate's layout, where GNU's
+  Lisp files are not found on the expected path; a gate run at four test
+  threads was killed by the memory limit while another worktree's test
+  binary of 4.2 GB ran beside it.
+- **Found after the scope lock (round 406 and its review), within the
+  plan's later stages or outside the round.**  One line each, the next
+  round's first: the collection trampoline (`maybe_gc' from the
+  evaluator and the byte-code loop under an active native call) makes
+  `&mut' references from the outer call's record while evaluator frames
+  hold protected references derived from the same memory; the thread
+  pointer published to generated code at a call's start is ended by the
+  next write through the thread's Box (a handler's push, a non-local
+  exit's preparation); the interpreter half of the nested entry's
+  put-back assertion compares addresses, which every pointer to the one
+  interpreter shares, so it cannot fail; the new assertion would not see
+  a second interpreter evaluating interpreted code on this thread with
+  no native call between, which only test code could do; the trampolines
+  for suspension and collection carry no unwinding information, so
+  debuggers' backtraces through them are guesses.
+- **Found after the scope lock (round 405 and its reviews), within the
+  plan's later stages or outside the round.**  One line each:
+  `(byte-compile (lambda () (funcall 'car 1 2)))' makes code of stack
+  depth 0 that ends the process with "validated bytecode never
+  underflows" and loses its buffered output, where GNU returns nil; byte
+  code whose declared depth is too small for its own pushes aborts the
+  process from a function that cannot unwind; lexical `&rest' callbacks
+  from C run in the unverified loop, about 1,130 instructions against
+  GNU's 885; the trace of an error a full call makes ("bytecode call ...
+  failed") is reached by no input found, its kind being GNU's signal by
+  then; the trace prints a subr as `#<builtin car>' where GNU prints
+  `#<subr car>'.
+- **Found after the scope lock (round 404 and its review), within the
+  plan's later stages or outside the round.**  One line each: `gcs-done'
+  is 1 at the start of a batch session in GNU and 0 here;
+  `memory-use-counts' at startup differs between two builds installed
+  under paths of different lengths, by a few strings and conses; the
+  error of `(length obarray)' prints the obarray's count as 18,554 and
+  the backtrace as 17,832; the checked build's guard counts ordinary
+  strings only, so it would not see a pure or image string made during a
+  collection (none is made there today); the purge's fallback for a
+  freed record whose note has no name walks every type's set; no test
+  pins the order of the sweeps itself, only its consequence that no
+  freed name is read; register_block costs 31.8 instructions a symbol in
+  `make-symbol' (a BTreeMap insert under a mutex, 668 a block of 21); a
+  thread that allocates without the runtime abandons the current block
+  for conses, floats, string cells and symbols, where GNU never leaves
+  its current block early; 107 lint suppressions remain in src from
+  before the rule against them (M3's A8.13).
+- **Found after the scope lock (round 403 and its reviews), within the
+  plan's later stages or outside the round.**  One line each: GNU
+  signals `setting-constant' a second time while it unbinds the entry it
+  pushed for a `nil' or `t' formal, so a hook or handler runs twice
+  there, and Emaxx signals once; hand-made byte code that reads below
+  its frame (`(make-byte-code 257 "\001\207" [] 2)') panics on an index
+  out of bounds in the loop where GNU returns; a backtrace of a native
+  function with many optional arguments lacks GNU's trailing nils;
+  `(funcall #'car x x)' in a byte-compiled function compiles to a
+  function of stack depth 0, which GNU crashes on through `mapcar' and
+  Emaxx signals an overflow for; the byte-code error trace is silent
+  while an internal handler is active, which at top level of a dumped
+  session is always; a function whose declared stack depth is 65,535 or
+  more is never verified and runs in the unverified loop; the image
+  beside a relinked gate binary is not rebuilt by the ert runner's tests
+  as by the others; the comparison case of a mode line's `:eval' tests
+  nothing in batch, where `format-mode-line' returns ""; alignment
+  instructions inside the verified loop move by three or four on a probe
+  from one build to the next, so a guard's figure is read with its count
+  of other instructions; 86 lint suppressions remain in the tree from
+  before the rule against them (M3's A8.13).
+- **Found after the scope lock (round 402 and its review), within the
+  plan's later stages or outside the round.**  One line each: a fresh
+  symbol block is initialized cell by cell, where GNU initializes none
+  and tests the block's index (the next part's); GNU chains large
+  vectors through a link, and here the sweep takes them from the block
+  registry at 53,600 instructions a collection; small vectors are marked
+  in their block's bitmap, so every vector's mark computes its footprint
+  to tell a large one, and a mapped bool-vector's mark test is 35
+  instructions, 100,698 times a collection; the free lists are scanned
+  3.46 steps for a small vector in the probe; the first collection
+  dirties 424 kB where GNU's dirties 4; four raw readers of a vector's
+  size word (sxhash, the dumper's footprint, the sweep's cleanup and its
+  count) have no assertion that the size is unmarked, and none is
+  reached in a collection today; a stale stack word keeps the last large
+  bool-vector of a weak-key batch alive in about a third of runs, here
+  and in round 399's build, never in GNU; two builds installed under
+  different paths differ by a few string bytes in the census; the
+  round's two test commits each fail at their own commit, by design, and
+  the second leaves the runtime poisoned for the tests after it there.
+- **Found after the scope lock (round 401 and its review), within the
+  plan's later stages or outside the round.**  One line each: a SIGTERM
+  that arrives before a blocking `open' is lost (the signal is recorded
+  and nothing tests it before the open), where GNU terminates from the
+  handler, and a pending fatal signal's work is run from the quit check
+  outside its inhibition of the collection; in a Lisp thread that is not
+  the main one a quit with `debug-on-quit' enters the debugger, where
+  GNU's does not unless `debug-on-signal' is set and the thread ends
+  with the quit; an uncaught nesting error at a top-level `eval' from
+  Rust leaves the evaluation depth raised by one; a quit's debugger can
+  still store into the subject string of a suspended match, as in C;
+  GNU's own `format' reads a relocated format string when
+  `print-unreadable-function' collects, where Emaxx prints the right
+  text; the leak tests of native code measure resident memory and are
+  sensitive to other tests' memory; the second stress program's first
+  form depended on compiler flags through stale stack words, which any
+  count of a weak table after a collection does.
 - **Found after the scope lock (round 400 and its review), within the
   plan's later stages or outside the round.**  One line each: Fapply
   pads a native-compiled function of more than eight parameters, a SUBRP

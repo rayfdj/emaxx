@@ -1397,15 +1397,14 @@ fn next_record_owner() -> u32 {
 /// The shared allocator can also sweep objects owned by parked interpreters.
 /// Keep their doomed objects until their own evaluator can run the callbacks.
 fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReachability) {
-    let epoch = marked.epoch;
     let active_state = std::ptr::from_ref::<InterpreterState>(active) as usize;
     let states = crate::lisp::alloc::live_states();
-    active.queue_doomed_finalizers(epoch);
+    active.queue_doomed_finalizers();
     for &state in &states {
         if state != active_state {
             // SAFETY: the registered state is parked during serialized GC.
-            let other = unsafe { Interpreter::registered_gc_view(state) };
-            other.queue_doomed_finalizers(epoch);
+            let other = unsafe { Interpreter::registered_gc_view(state, active) };
+            other.queue_doomed_finalizers();
         }
     }
     // SAFETY: the list stays intact while tracing; callbacks run after GC.
@@ -1415,8 +1414,8 @@ fn prepare_finalizers_in_live_states(active: &Interpreter, marked: &mut LispReac
     for state in states {
         if state != active_state {
             // SAFETY: as above; only Lisp marks are updated in this phase.
-            let other = unsafe { Interpreter::registered_gc_view(state) };
-            let mut other_marked = LispReachability::with_epoch(epoch);
+            let other = unsafe { Interpreter::registered_gc_view(state, active) };
+            let mut other_marked = LispReachability::in_collection();
             other.mark_doomed_finalizers(&mut other_marked);
         }
     }
@@ -1444,7 +1443,7 @@ pub(crate) fn purge_freed_records_in_live_states(active: &mut Interpreter) {
         }
         // SAFETY: the registered allocation remains alive during this
         // serialized sweep cleanup. Only its freed-record indexes change.
-        let mut other = unsafe { Interpreter::registered_gc_view(state) };
+        let mut other = unsafe { Interpreter::registered_gc_view(state, &raw const *active) };
         other.purge_freed_records(&freed);
     }
 }
@@ -1462,9 +1461,12 @@ impl RecordState {
 
     /// `symbol_type_name' for the sweep, which must not read the type
     /// tag's object: a dead record's type may be a class record the same
-    /// sweep has already freed.  The word's tag alone decides.
-    pub(crate) fn symbol_type_name_by_tag(&self) -> Option<&str> {
-        self.type_tag.symbol_name_by_tag()
+    /// sweep has already freed.  The word's tag alone decides, and the
+    /// name is the symbol's key as it stands: the registry files an id
+    /// under a key it had built, and a key not yet built would be made
+    /// from the symbol's name, a string, which a sweep must not read.
+    pub(crate) fn built_symbol_type_name_by_tag(&self) -> Option<&str> {
+        self.type_tag.built_symbol_key_by_tag()
     }
 
     pub(crate) fn has_symbol_type(&self, name: &str) -> bool {
@@ -4856,11 +4858,6 @@ pub(crate) struct LispReachability {
     /// Whether an object was marked since `trace_pending' last answered.
     reached: bool,
     weak_tables: Vec<crate::lisp::types::HashTableRef>,
-    /// This collection's number: a string, symbol or large vector is
-    /// marked by carrying it (alloc.c's mark bit, on the object); a cons,
-    /// float or vector in a block by its block's mark bit, which the sweep
-    /// clears; the other kinds are marked by address or id below.
-    epoch: u32,
     /// The retention pass after the live sets are taken: every slot of
     /// every record is traced, a weak table's actual entries included, so
     /// the objects a never-swept record holds stay allocated.
@@ -4868,44 +4865,31 @@ pub(crate) struct LispReachability {
 }
 
 impl LispReachability {
-    /// A marker for another interpreter state in the same collection:
-    /// the same epoch on the objects (conses, vectors, strings, symbols
-    /// are the process's), its own sets for the kinds marked by id (a
-    /// record id names a different object in each state).
-    pub(crate) fn with_epoch(epoch: u32) -> Self {
-        let mut marker = Self::default_without_epoch();
-        marker.epoch = epoch;
-        marker
-    }
-}
-
-impl LispReachability {
-    /// A collection's mark phase starts (`weak_hash_reachability', which
-    /// only the collector runs, and its sweeps follow): its own epoch, so
-    /// nothing is marked in it yet.
-    fn for_collection() -> Self {
-        let mut marker = Self::default_without_epoch();
-        marker.epoch = crate::lisp::types::begin_mark_epoch();
-        marker
-    }
-}
-
-impl LispReachability {
-    fn default_without_epoch() -> Self {
+    /// A marker for an interpreter state's roots in the collection under
+    /// way.  The marks are on the objects, the process's: a cons, float or
+    /// vector in a block is marked in its block's bits, a large vector and
+    /// a string by ARRAY_MARK_FLAG in its size word and a symbol by its
+    /// gcmarkbit, which the sweeps clear.  The work list and the weak
+    /// tables the marker finds are its own.
+    pub(crate) fn in_collection() -> Self {
         Self {
             pending: Vec::new(),
             reached: false,
             weak_tables: Vec::new(),
             retaining: false,
-            epoch: 0,
         }
+    }
+
+    /// A collection's mark phase starts (`weak_hash_reachability', which
+    /// only the collector runs, and its sweeps follow): no object of the
+    /// heap is marked, as the last collection's sweeps left them.
+    fn for_collection() -> Self {
+        crate::lisp::types::begin_mark_phase();
+        Self::in_collection()
     }
 }
 
 pub(crate) struct WeakHashReachability {
-    /// The collection's epoch: the mark every reached object carries,
-    /// which the sweep tests.
-    pub(crate) epoch: u32,
     pub(crate) tables: Vec<WeakHashTableReachability>,
 }
 
@@ -4915,31 +4899,36 @@ impl LispReachability {
     fn contains(&self, value: &Value) -> bool {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => true,
-            Kind::BigInteger(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::BigInteger(_)
+            | Kind::Vector(_)
+            | Kind::Closure(_)
+            | Kind::NativeFunction(_)
+            | Kind::NativeCompUnit(_)
+            | Kind::Buffer(_)
+            | Kind::Marker(_)
+            | Kind::Overlay(_)
+            | Kind::HashTable(_)
+            | Kind::CharTable(_)
+            | Kind::SubCharTable(_)
+            | Kind::Frame(_)
+            | Kind::Terminal(_)
+            | Kind::Window(_)
+            | Kind::SymbolWithPos(_)
+            | Kind::Record(_)
+            | Kind::LispRecord(_)
+            | Kind::BoolVector(_)
+            | Kind::Finalizer(_) => {
+                // alloc.c:survives_gc_p's vector_marked_p, by the header
+                // alone whatever the pseudovector's type.
+                // SAFETY: a vectorlike of the heap or the image.
+                unsafe { value.vectorlike_mark() }.is_marked()
+            }
             Kind::Float(value) => value.mark_bit().is_marked(),
-            Kind::StringObject(value) => value.mark_bit().is_marked(self.epoch),
+            Kind::StringObject(value) => value.mark_bit().is_marked(),
             // alloc.c:survives_gc_p tests the symbol's mark. A live owner's
             // obarray marks its symbols; a retired owner's names are not roots.
-            Kind::Symbol(symbol) => symbol.is_marked(self.epoch),
+            Kind::Symbol(symbol) => symbol.is_marked(),
             Kind::Cons(value) => value.mark_bit().is_marked(),
-            Kind::Vector(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Closure(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::NativeFunction(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::NativeCompUnit(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Buffer(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Marker(marker) => marker.mark_bit().is_marked(self.epoch),
-            Kind::Overlay(overlay) => overlay.mark_bit().is_marked(self.epoch),
-            Kind::HashTable(table) => table.mark_bit().is_marked(self.epoch),
-            Kind::CharTable(table) => table.mark_bit().is_marked(self.epoch),
-            Kind::SubCharTable(table) => table.mark_bit().is_marked(self.epoch),
-            Kind::Frame(frame) => frame.mark_bit().is_marked(self.epoch),
-            Kind::Terminal(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Window(window) => window.mark_bit().is_marked(self.epoch),
-            Kind::SymbolWithPos(value) => value.mark_bit().is_marked(self.epoch),
-            Kind::Record(record) => record.mark_bit().is_marked(self.epoch),
-            Kind::LispRecord(record) => record.mark_bit().is_marked(self.epoch),
-            Kind::BoolVector(vector) => vector.mark_bit().is_marked(self.epoch),
-            Kind::Finalizer(object) => object.mark_bit().is_marked(self.epoch),
         }
     }
 
@@ -4998,29 +4987,35 @@ impl LispReachability {
     fn mark_object(&mut self, value: &Value) -> bool {
         match value.kind() {
             Kind::Nil | Kind::T | Kind::Integer(_) | Kind::BuiltinFunc(_) | Kind::Unbound => false,
-            Kind::BigInteger(value) => value.mark_bit().mark(self.epoch),
+            Kind::BigInteger(_)
+            | Kind::Vector(_)
+            | Kind::Closure(_)
+            | Kind::NativeFunction(_)
+            | Kind::NativeCompUnit(_)
+            | Kind::Buffer(_)
+            | Kind::Marker(_)
+            | Kind::Overlay(_)
+            | Kind::HashTable(_)
+            | Kind::CharTable(_)
+            | Kind::SubCharTable(_)
+            | Kind::Frame(_)
+            | Kind::Terminal(_)
+            | Kind::Window(_)
+            | Kind::SymbolWithPos(_)
+            | Kind::Record(_)
+            | Kind::LispRecord(_)
+            | Kind::BoolVector(_)
+            | Kind::Finalizer(_) => {
+                // alloc.c:mark_object tests vector_marked_p and sets the
+                // mark by the header alone, before it looks at the
+                // pseudovector's type.
+                // SAFETY: a vectorlike of the heap or the image.
+                unsafe { value.vectorlike_mark() }.mark()
+            }
             Kind::Float(value) => value.mark_bit().mark(),
-            Kind::StringObject(value) => value.mark_bit().mark(self.epoch),
-            Kind::Symbol(symbol) => symbol.mark(self.epoch),
+            Kind::StringObject(value) => value.mark_bit().mark(),
+            Kind::Symbol(symbol) => symbol.mark(),
             Kind::Cons(value) => value.mark_bit().mark(),
-            Kind::Vector(value) => value.mark_bit().mark(self.epoch),
-            Kind::Closure(value) => value.mark_bit().mark(self.epoch),
-            Kind::NativeFunction(value) => value.mark_bit().mark(self.epoch),
-            Kind::NativeCompUnit(value) => value.mark_bit().mark(self.epoch),
-            Kind::Buffer(value) => value.mark_bit().mark(self.epoch),
-            Kind::Marker(marker) => marker.mark_bit().mark(self.epoch),
-            Kind::Overlay(overlay) => overlay.mark_bit().mark(self.epoch),
-            Kind::HashTable(table) => table.mark_bit().mark(self.epoch),
-            Kind::CharTable(table) => table.mark_bit().mark(self.epoch),
-            Kind::SubCharTable(table) => table.mark_bit().mark(self.epoch),
-            Kind::Frame(frame) => frame.mark_bit().mark(self.epoch),
-            Kind::Terminal(value) => value.mark_bit().mark(self.epoch),
-            Kind::Window(window) => window.mark_bit().mark(self.epoch),
-            Kind::SymbolWithPos(value) => value.mark_bit().mark(self.epoch),
-            Kind::Record(record) => record.mark_bit().mark(self.epoch),
-            Kind::LispRecord(record) => record.mark_bit().mark(self.epoch),
-            Kind::BoolVector(vector) => vector.mark_bit().mark(self.epoch),
-            Kind::Finalizer(object) => object.mark_bit().mark(self.epoch),
         }
     }
 
@@ -5074,8 +5069,9 @@ impl LispReachability {
                 self.enqueue(&cell.car.get());
             }
             Kind::Vector(vector) => {
-                // Slot by slot, in place.
-                for child in vector.slots() {
+                // Slot by slot, in place; a large vector's size word
+                // carries its mark by now (lisp.h's gc_asize).
+                for child in vector.gc_slots() {
                     self.enqueue(&child);
                 }
             }
@@ -5403,13 +5399,21 @@ impl Interpreter {
                 }
                 _ => continue,
             }
-            if let Some(type_name) = record.type_name.as_deref()
-                && let Some(ids) = self.record_ids_by_type_index.get_mut(type_name)
-            {
-                ids.remove(&id);
-                if ids.is_empty() {
-                    self.record_ids_by_type_index.remove(type_name);
+            match record.type_name.as_deref() {
+                Some(type_name) => {
+                    if let Some(ids) = self.record_ids_by_type_index.get_mut(type_name) {
+                        ids.remove(&id);
+                        if ids.is_empty() {
+                            self.record_ids_by_type_index.remove(type_name);
+                        }
+                    }
                 }
+                // The sweep read no name for it: the id leaves whichever
+                // name it was filed under.
+                None => self.record_ids_by_type_index.retain(|_, ids| {
+                    ids.remove(&id);
+                    !ids.is_empty()
+                }),
             }
             // The side tables that know an object by id go with it: the
             // sqlite handle (sqlite.c's finalizer closes the database),
@@ -5718,16 +5722,15 @@ impl Interpreter {
             }
             // SAFETY: the registered allocation stays alive and parked
             // while this collection reads its roots. The view owns no box.
-            let other = unsafe { Interpreter::registered_gc_view(state) };
-            // Its own marker for the kinds marked by id (a record id names
-            // a different object in each state), this collection's epoch
-            // on the objects; every record it keeps is retained as this
-            // state's are below.
+            let other = unsafe { Interpreter::registered_gc_view(state, self) };
+            // Its own marker (its work list and the weak tables it finds),
+            // the marks on the objects themselves, the process's; every
+            // record it keeps is retained as this state's are below.
             // Nothing sweeps that state's weak tables in this collection,
             // so their entries are held as strongly as the rest: retaining
             // from the first root.
-            let mut other_marked = LispReachability::with_epoch(marked.epoch);
-            // These roots share the allocator and this collection's epoch.
+            let mut other_marked = LispReachability::in_collection();
+            // These roots share the allocator and this collection's marks.
             other_marked.retaining = true;
             other.mark_static_roots_into(&mut other_marked);
         }
@@ -5786,10 +5789,7 @@ impl Interpreter {
                 (table, remove)
             })
             .collect();
-        WeakHashReachability {
-            epoch: marked.epoch,
-            tables,
-        }
+        WeakHashReachability { tables }
     }
 
     /// The windows this state's C-side structures hold and that the
@@ -6121,6 +6121,8 @@ impl Interpreter {
         // Preserve the allocation's original writable pointer provenance.
         // Deriving this from an &InterpreterState would only grant shared
         // access, while the sweep must later clean up freed-record indexes.
+        // The cast exposes that provenance, and `registered_gc_view's cast
+        // back takes it up: the collector's pointer is the owner's.
         let state = self.state.as_ref().expect("active interpreter state");
         crate::lisp::alloc::register_state(state.0.as_ptr() as usize);
     }
@@ -6753,26 +6755,54 @@ pub struct Interpreter {
     continuations: continuations::ThreadContinuations,
 }
 
-/// Own one stable state allocation while the root registry and suspended
-/// continuations retain raw pointers into it. Moving this owner makes no
-/// uniqueness assertion about the pointed-to state. Only its final Drop
-/// restores the Box, after execution and borrowed GC views have ended.
-struct InterpreterStateOwner(std::ptr::NonNull<InterpreterState>);
+/// Own one stable allocation by the raw pointer `Box::into_raw' gave.
+/// Moving this owner makes no uniqueness assertion about what it points to,
+/// and every reference into the allocation is made from that one pointer,
+/// as is any place of it another module publishes (`as_ptr').  Only its
+/// final Drop restores the Box.  It owns the editor state
+/// (`InterpreterStateOwner') and the native runtime's shared state
+/// (native_comp/runtime.rs), for the same reason.
+///
+/// The editor state: the root registry and suspended continuations retain
+/// raw pointers into it, and its Drop comes after execution and borrowed
+/// GC views have ended.
+///
+/// The pointer is the one `Box::into_raw' gave, and every reference into
+/// the state is made from it: the shell's `Deref' and `DerefMut' for the
+/// interpreter that owns it, `registered_gc_view' for a collection in
+/// another (the registry keeps this pointer's address, its provenance
+/// exposed).  They are siblings, so each must be dead before the next is
+/// made and used: the owner's end with the statement that borrows the
+/// shell, and the collector's are made only while the owner is not
+/// executing (see `registered_gc_view').  A Box here instead would be
+/// retagged as unique at every move of the owner, and a collector's
+/// access through the registry's older pointer would then conflict with
+/// the Box's next use.
+pub(crate) struct StateOwner<T>(std::ptr::NonNull<T>);
 
-impl InterpreterStateOwner {
-    fn new(state: InterpreterState) -> Self {
+type InterpreterStateOwner = StateOwner<InterpreterState>;
+
+impl<T> StateOwner<T> {
+    pub(crate) fn new(state: T) -> Self {
         Self(std::ptr::NonNull::new(Box::into_raw(Box::new(state))).expect("allocated state"))
+    }
+
+    /// The allocation's own pointer, for a place of it made with no
+    /// reference between (`&raw mut (*pointer).field').
+    #[inline(always)]
+    pub(crate) fn as_ptr(&self) -> *mut T {
+        self.0.as_ptr()
     }
 }
 
-impl Clone for InterpreterStateOwner {
+impl<T: Clone> Clone for StateOwner<T> {
     fn clone(&self) -> Self {
         Self::new((**self).clone())
     }
 }
 
-impl std::ops::Deref for InterpreterStateOwner {
-    type Target = InterpreterState;
+impl<T> std::ops::Deref for StateOwner<T> {
+    type Target = T;
 
     fn deref(&self) -> &Self::Target {
         // SAFETY: the active owner or a scoped GC view keeps the allocation
@@ -6781,7 +6811,7 @@ impl std::ops::Deref for InterpreterStateOwner {
     }
 }
 
-impl std::ops::DerefMut for InterpreterStateOwner {
+impl<T> std::ops::DerefMut for StateOwner<T> {
     fn deref_mut(&mut self) -> &mut Self::Target {
         // SAFETY: execution is serialized; ownership transfers leave the
         // old shell parked. GC's mutable view is restricted to sweep cleanup.
@@ -6789,7 +6819,7 @@ impl std::ops::DerefMut for InterpreterStateOwner {
     }
 }
 
-impl Drop for InterpreterStateOwner {
+impl<T> Drop for StateOwner<T> {
     fn drop(&mut self) {
         // SAFETY: new consumes exactly one Box. Continuations transfer this
         // owner, Clone allocates a distinct state, and GC views never drop it.
@@ -6805,16 +6835,49 @@ impl Interpreter {
     /// STATE must remain registered and allocated for the entire view. The
     /// caller may only read roots or perform serialized sweep cleanup, must
     /// respect outstanding field borrows, and must not take or drop the state.
-    unsafe fn registered_gc_view(state: usize) -> std::mem::ManuallyDrop<Self> {
+    ///
+    /// The view's references are made from the owner's own pointer
+    /// (`register_state_as_root'), beside the owner's.  That is sound
+    /// while no reference the owner made is used again after the view's:
+    /// while the interpreter that owns STATE is not executing.  It is
+    /// another interpreter's than COLLECTOR, the collecting one (the Lisp
+    /// threads of one interpreter share its state), so it is either idle
+    /// on this OS thread (the tests' image template, a test's second
+    /// interpreter) or belongs to an OS thread that waits for the runtime,
+    /// which this one holds for the whole collection, as thread.c's
+    /// mark_threads reads the thread_state of threads that wait for
+    /// global_lock.  Such a thread may wait in the middle of its Lisp, its
+    /// lisp_eval_depth above 0, as a GNU thread does in thread_select or
+    /// sys_cond_wait: it runs nothing until it holds the runtime again.
+    /// What would be executing is an interpreter whose evaluation is
+    /// under way on this OS thread, below
+    /// the collection.  Checked builds assert that neither is so: the
+    /// runtime held, and every native call active on this thread
+    /// COLLECTOR's, the only way another interpreter's Lisp runs under
+    /// this one's (`native_comp::native_calls_are_all').
+    unsafe fn registered_gc_view(
+        state: usize,
+        collector: *const Interpreter,
+    ) -> std::mem::ManuallyDrop<Self> {
         let pointer = std::ptr::NonNull::new(state as *mut InterpreterState)
             .expect("registered state is non-null");
         // Construct all potentially fallible fields before the non-owning
         // owner-shaped reference, so unwinding cannot drop the live state.
         let continuations = continuations::ThreadContinuations::default();
-        std::mem::ManuallyDrop::new(Self {
-            state: Some(InterpreterStateOwner(pointer)),
+        let view = std::mem::ManuallyDrop::new(Self {
+            state: Some(StateOwner(pointer)),
             continuations,
-        })
+        });
+        debug_assert!(
+            crate::lisp::runtime::held(),
+            "a collection views another state only while its OS thread holds the runtime"
+        );
+        debug_assert!(
+            crate::lisp::native_comp::native_calls_are_all(collector),
+            "a collection views another interpreter's state only while no other \
+             interpreter's evaluation is under way on its OS thread"
+        );
+        view
     }
 }
 
@@ -7422,7 +7485,10 @@ pub(crate) struct HandlerSearch {
     error: usize,
     condition: usize,
     generation: u64,
-    epoch: u32,
+    /// The collections done when the search was made (`gcs_done'): a
+    /// collection since may have freed the condition's symbol and made
+    /// another in its cell.
+    collections: u32,
     /// The innermost module boundary or matching entry; the search stops
     /// at the innermost matching `condition-case'.
     pub(crate) decisive: Option<usize>,

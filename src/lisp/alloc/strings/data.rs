@@ -308,8 +308,9 @@ impl Chain {
 /// keep its entire block outside the moving chain; the next collection
 /// can compact it once the borrow ends. No registry or per-read lookup.
 pub(super) fn sweep() {
-    // SAFETY: string headers have been swept and all exclusive borrows
-    // rejected before the GC epoch. Dead entries no longer name headers.
+    // SAFETY: string headers have been swept, their sizes carrying no mark
+    // any more, and all exclusive borrows were rejected before the mark
+    // phase. Dead entries no longer name headers.
     unsafe {
         let mut block = LARGE.load(Ordering::Relaxed);
         let mut large = Chain::default();

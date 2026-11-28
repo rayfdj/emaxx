@@ -33,8 +33,11 @@ impl LispRecordRef {
         let header = allocate_vectorlike(logical_bytes);
         // SAFETY: fresh aligned storage for the header and COUNT Lisp cells.
         unsafe {
-            (*header).size =
-                VectorHeader::pseudovector_slots_word(VectorTag::Record, logical_bytes, count);
+            (*header).size = Cell::new(VectorHeader::pseudovector_slots_word(
+                VectorTag::Record,
+                logical_bytes,
+                count,
+            ));
             let fields = payload(header).cast::<Cell<Value>>();
             fields.write(Cell::new(type_tag));
             for index in 1..count {
@@ -55,7 +58,7 @@ impl LispRecordRef {
     #[inline]
     pub(crate) fn len(&self) -> usize {
         // SAFETY: the handle names a live record; its size never changes.
-        unsafe { self.0.as_ref() }.size & PSEUDOVECTOR_SIZE_MASK
+        unsafe { self.0.as_ref() }.size.get() & PSEUDOVECTOR_SIZE_MASK
     }
 
     #[inline]
@@ -120,5 +123,5 @@ impl std::fmt::Debug for LispRecordRef {
 /// # Safety
 /// HEADER is a live vector header already identified as PVEC_RECORD.
 pub(crate) unsafe fn record_has_inline_slots(header: *mut VectorHeader) -> bool {
-    unsafe { (*header).size & PSEUDOVECTOR_SIZE_MASK != 0 }
+    unsafe { (*header).size.get() & PSEUDOVECTOR_SIZE_MASK != 0 }
 }

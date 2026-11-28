@@ -16,6 +16,7 @@ core::arch::global_asm!(
     r#"
     .section __TEXT,__text,regular,pure_instructions
     .p2align 2
+    .globl _emaxx_native_suspend_trampoline
     .private_extern _emaxx_native_suspend_trampoline
 _emaxx_native_suspend_trampoline:
     sub sp, sp, #96
@@ -45,6 +46,7 @@ core::arch::global_asm!(
     r#"
     .text
     .p2align 4
+    .globl emaxx_native_suspend_trampoline
     .hidden emaxx_native_suspend_trampoline
     .type emaxx_native_suspend_trampoline, @function
 emaxx_native_suspend_trampoline:
@@ -208,7 +210,7 @@ pub(crate) fn with_thread_suspended<R>(
                 // SAFETY: these are the current callback's native owner and
                 // environment, not a different or already parked thread.
                 let active = unsafe { &*active };
-                assert_eq!(active.interpreter, std::ptr::from_mut(interpreter));
+                assert_eq!(active.interpreter.get(), std::ptr::from_mut(interpreter));
                 (active.runtime, Some(unsafe { &*active.environment.get() }))
             };
             if runtime.is_null() {
@@ -292,7 +294,7 @@ pub(crate) fn invoke_suspension_probe(interpreter: &mut Interpreter) -> Result<V
         // Keep an actual native-only cons word live across the call. It is
         // intentionally absent from Rust Value roots and relocation arrays.
         let word = with_active_heap(|heap| heap.cons((17 << FIXNUM_BITS) | TAG_FIXNUM_LOW, 0));
-        let interpreter = with_active(|active| active.interpreter);
+        let interpreter = with_active(|active| active.interpreter.get());
         let result = crate::lisp::eval::continuations::suspend(unsafe { &mut *interpreter });
         if let Err(error) = result {
             with_active(|active| remember_helper_error(active, error));

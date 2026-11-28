@@ -20,7 +20,7 @@
 //! its objects is a heap object and never leaves, so no later mapping can
 //! share an address with one listed or read another's bits.
 //!
-//! The image's rebuilt cells' counts (`ImageCells') are kept here too.
+//! The image's rebuilt vectors' counts (`ImageCells') are kept here too.
 //!
 //! Nothing here takes a lock: a mark, the conservative scan, a sweep and
 //! a load all run on the OS thread that holds the runtime (alloc.c's
@@ -81,9 +81,7 @@ pub(crate) struct DumpPrivate {
     only_start: AtomicUsize,
     only_len: AtomicUsize,
     only_marks: AtomicPtr<Cell<usize>>,
-    /// The rebuilt strings, symbols and vectors of the images.
-    pub(crate) strings: ImageCells,
-    pub(crate) symbols: ImageCells,
+    /// The rebuilt vectors of the images.
     pub(crate) vectors: ImageCells,
 }
 
@@ -95,8 +93,6 @@ pub(crate) static DUMP: DumpPrivate = DumpPrivate {
     only_start: AtomicUsize::new(0),
     only_len: AtomicUsize::new(0),
     only_marks: AtomicPtr::new(std::ptr::null_mut()),
-    strings: ImageCells::new(),
-    symbols: ImageCells::new(),
     vectors: ImageCells::new(),
 };
 

@@ -3690,3 +3690,264 @@ fn each_mapped_image_has_its_own_marks_in_sequence_and_at_once() {
         );
     }
 }
+
+/// The load of an image whose root lists an uninterned symbol, in a frame
+/// of its own: the loaded symbol, which the load rebuilds in one of its
+/// own blocks, goes to a variable of TARGET.
+#[inline(never)]
+fn load_uninterned_symbol(target: &mut Interpreter) {
+    let mut interp = Interpreter::new();
+    let symbol = crate::lisp::primitives::call(
+        &mut interp,
+        "make-symbol",
+        &[Value::String("rebuilt".into())],
+        &mut crate::lisp::types::Env::new(),
+    )
+    .expect("make a symbol");
+    let graph = Value::list([symbol]);
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+    // pdumper_load's region: what the load allocates is the image's, in
+    // blocks of its own.
+    let region = crate::lisp::alloc::ImageRegion::open();
+    let image = load_image(&bytes, target).expect("the graph loads");
+    drop(region);
+    let loaded = loaded_root(&image, RootSlot::LoadPath)
+        .car()
+        .expect("the symbol");
+    let Kind::Symbol(name) = loaded.kind() else {
+        panic!("not a symbol: {loaded}");
+    };
+    assert!(
+        crate::lisp::alloc::symbol_is_rebuilt(name.identity_ptr()),
+        "the load rebuilt the uninterned symbol in a block of its own"
+    );
+    assert!(!name.is_marked(), "a rebuilt symbol is made unmarked");
+    target.select_symbol_owner();
+    target.set_symbol_value_cell("zz-rebuilt-symbol", loaded);
+}
+
+#[test]
+fn a_rebuilt_symbol_s_block_is_swept_at_every_collection() {
+    // alloc.c sweeps every symbol block that is not its dump at every
+    // collection: sweep_symbols clears the gcmarkbit of each symbol it
+    // keeps and frees each one that is not marked.  A symbol the load
+    // rebuilt is such a symbol: kept, and unmarked again, while a variable
+    // holds it through several collections, and freed by the first one
+    // after nothing does.
+    let _runtime = crate::Runtime::lock();
+    let mut target = Interpreter::new();
+    load_uninterned_symbol(&mut target);
+    crate::lisp::alloc::clobber_stack();
+    lisp_step(
+        &mut target,
+        "(progn
+           (setq zz-rebuilt-witness (make-hash-table :test 'eq :weakness 'key))
+           (puthash zz-rebuilt-symbol t zz-rebuilt-witness)
+           (setq load-path nil)
+           nil)",
+    );
+    for _ in 0..3 {
+        assert_eq!(
+            lisp_step(
+                &mut target,
+                "(progn (garbage-collect) (hash-table-count zz-rebuilt-witness))"
+            ),
+            Value::Integer(1),
+            "the rebuilt symbol a variable holds is kept"
+        );
+        assert!(
+            crate::lisp::alloc::every_mark_bit_clear(),
+            "the sweep left no rebuilt symbol marked"
+        );
+    }
+    assert_eq!(
+        lisp_step(&mut target, "(symbol-name zz-rebuilt-symbol)").to_string(),
+        "\"rebuilt\""
+    );
+    lisp_step(&mut target, "(progn (setq zz-rebuilt-symbol nil) nil)");
+    assert_eq!(
+        lisp_step(
+            &mut target,
+            "(progn (garbage-collect) (hash-table-count zz-rebuilt-witness))"
+        ),
+        Value::Integer(0),
+        "the rebuilt symbol nothing holds is freed by the next collection"
+    );
+}
+
+#[test]
+fn the_unused_cells_of_the_image_s_last_symbol_block_are_free() {
+    // The image's symbols are cells of its blocks where it is mapped, as
+    // many as it holds, and nothing is written for one of them.  The
+    // cells after the last, to the end of its block, are free cells:
+    // their function is dead_object (), alloc.c's free symbol, which
+    // live_symbol_holding takes for no symbol.
+    let _runtime = crate::Runtime::lock();
+    let mut interp = Interpreter::new();
+    let graph = Value::list(
+        (0..5).map(|index| Value::symbol(format!("zz-mapped-symbol-{index}").as_str())),
+    );
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+    let mut target = Interpreter::new();
+    let [held_before, free_before] = crate::lisp::alloc::mapped_symbol_cells();
+    let image = load_image(&bytes, &mut target).expect("the graph loads");
+    let count = image.header.symbol_blocks.nr_entries as usize;
+    let per_block = crate::lisp::alloc::SYMBOLS_PER_BLOCK;
+    assert!(count >= 5, "the image maps the graph's symbols");
+    assert!(
+        !count.is_multiple_of(per_block),
+        "the image's last symbol block has unused cells"
+    );
+    let [held, free] = crate::lisp::alloc::mapped_symbol_cells();
+    assert_eq!(
+        held - held_before,
+        count,
+        "each of the image's symbols is found in its cell"
+    );
+    assert_eq!(
+        free - free_before,
+        count.div_ceil(per_block) * per_block - count,
+        "the rest of the last block is free cells"
+    );
+}
+
+/// A string made while an image's region is open, in a frame of its own:
+/// what is allocated then is the image's, in blocks of its own, a string
+/// as a symbol the load rebuilds (`load_uninterned_symbol').  It goes to a
+/// variable of TARGET.
+#[inline(never)]
+fn make_string_in_image_region(target: &mut Interpreter) {
+    let mut interp = Interpreter::new();
+    let graph = Value::list([Value::string("zz-mapped-beside-the-rebuilt")]);
+    let bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+    // pdumper_load's region: the image's own strings are mapped, and a
+    // string allocated before the region closes is in a block of the
+    // load's.
+    let region = crate::lisp::alloc::ImageRegion::open();
+    let image = load_image(&bytes, target).expect("the graph loads");
+    let string = crate::lisp::primitives::call(
+        target,
+        "make-string",
+        &[Value::Integer(7), Value::Integer(114)],
+        &mut crate::lisp::types::Env::new(),
+    )
+    .expect("make a string");
+    drop(region);
+    let mapped = loaded_root(&image, RootSlot::LoadPath)
+        .car()
+        .expect("the mapped string");
+    for (value, rebuilt) in [(string, true), (mapped, false)] {
+        let Kind::StringObject(text) = value.kind() else {
+            panic!("not a string: {value}");
+        };
+        assert_eq!(
+            crate::lisp::alloc::string_is_rebuilt(text.identity()),
+            rebuilt,
+            "a string made in the region is in a block of the load's; a mapped one is not"
+        );
+        assert!(!text.mark_bit().is_marked(), "a string is made unmarked");
+    }
+    target.select_symbol_owner();
+    target.set_symbol_value_cell("zz-rebuilt-string", string);
+}
+
+#[test]
+fn a_rebuilt_string_s_block_is_swept_at_every_collection() {
+    // alloc.c sweeps every string block that is not its dump at every
+    // collection: sweep_strings unmarks each string it keeps
+    // (XUNMARK_STRING) and frees each one that is not marked.  A string
+    // in a block an image's load allocated is such a string: kept, and
+    // unmarked again, while a variable holds it through several
+    // collections, and freed by the first one after nothing does.
+    let _runtime = crate::Runtime::lock();
+    let mut target = Interpreter::new();
+    make_string_in_image_region(&mut target);
+    crate::lisp::alloc::clobber_stack();
+    lisp_step(
+        &mut target,
+        "(progn
+           (setq zz-rebuilt-witness (make-hash-table :test 'eq :weakness 'key))
+           (puthash zz-rebuilt-string t zz-rebuilt-witness)
+           (setq load-path nil)
+           nil)",
+    );
+    for _ in 0..3 {
+        assert_eq!(
+            lisp_step(
+                &mut target,
+                "(progn (garbage-collect) (hash-table-count zz-rebuilt-witness))"
+            ),
+            Value::Integer(1),
+            "the rebuilt string a variable holds is kept"
+        );
+        assert!(
+            crate::lisp::alloc::every_mark_bit_clear(),
+            "the sweep left no rebuilt string marked"
+        );
+    }
+    // What comes back names no string: the test's frame must not hold it.
+    assert_eq!(
+        lisp_step(
+            &mut target,
+            "(list (length zz-rebuilt-string) (equal zz-rebuilt-string \"rrrrrrr\"))"
+        )
+        .to_string(),
+        "(7 t)"
+    );
+    lisp_step(&mut target, "(progn (setq zz-rebuilt-string nil) nil)");
+    assert_eq!(
+        lisp_step(
+            &mut target,
+            "(progn (garbage-collect) (hash-table-count zz-rebuilt-witness))"
+        ),
+        Value::Integer(0),
+        "the rebuilt string nothing holds is freed by the next collection"
+    );
+}
+
+#[test]
+fn the_unused_cells_of_the_image_s_last_string_block_are_free() {
+    // The image's strings are cells of its blocks where it is mapped, as
+    // many as it holds.  The cells after the last, to the end of its
+    // block, are free cells: their data is null, alloc.c's free string,
+    // which live_string_holding takes for no string.  The loader makes
+    // them so whatever the image holds there: the dumper leaves those
+    // cells zero, and this image has a word put in the data of each.
+    let _runtime = crate::Runtime::lock();
+    let mut interp = Interpreter::new();
+    let graph = Value::list(
+        (0..5).map(|index| Value::string(format!("zz-mapped-string-{index}").as_str())),
+    );
+    let mut bytes = dump(&mut interp, vec![(RootSlot::LoadPath, graph)]);
+    let header = validate_header(&bytes).expect("the image's header");
+    let count = header.string_blocks.nr_entries as usize;
+    let per_block = crate::lisp::alloc::IMAGE_STRINGS_PER_BLOCK;
+    let unused = count.div_ceil(per_block) * per_block - count;
+    assert!(count >= 5, "the image maps the graph's strings");
+    assert!(
+        unused != 0,
+        "the image's last string block has unused cells"
+    );
+    for index in count..count + unused {
+        let data = header.string_blocks.offset as usize
+            + crate::lisp::alloc::image_string_offset(index)
+            + 3 * std::mem::size_of::<u64>();
+        assert_eq!(bytes[data..data + 8], [0; 8], "the dumper left it zero");
+        bytes[data..data + 8].copy_from_slice(&0x1000_u64.to_le_bytes());
+    }
+    let mut target = Interpreter::new();
+    let [held_before, free_before] = crate::lisp::alloc::mapped_string_cells();
+    let image = load_image(&bytes, &mut target).expect("the graph loads");
+    assert_eq!(image.header.string_blocks.nr_entries as usize, count);
+    let [held, free] = crate::lisp::alloc::mapped_string_cells();
+    assert_eq!(
+        held - held_before,
+        count,
+        "each of the image's strings is found in its cell"
+    );
+    assert_eq!(
+        free - free_before,
+        unused,
+        "the rest of the last block is free cells"
+    );
+}

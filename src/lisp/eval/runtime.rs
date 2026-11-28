@@ -2773,11 +2773,11 @@ impl Interpreter {
     }
 
     /// alloc.c:queue_doomed_finalizers, before marking any doomed callback.
-    pub(crate) fn queue_doomed_finalizers(&self, epoch: u32) {
+    pub(crate) fn queue_doomed_finalizers(&self) {
         // SAFETY: only the currently yielded member moves. No allocation,
         // Lisp invocation or sweep occurs during this traversal.
         for object in unsafe { self.finalizers.iter() } {
-            if !object.mark_bit().is_marked(epoch) && !object.function().is_nil() {
+            if !object.mark_bit().is_marked() && !object.function().is_nil() {
                 self.doomed_finalizers.append(object);
             }
         }
