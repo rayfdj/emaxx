@@ -191,6 +191,23 @@ fn a_throw_out_of_a_collection_the_evaluator_began_reaches_native_code() {
     run_cases("native-collect-exit", &cases, true);
 }
 
+/// eval.c:funcall_lambda's unbinding of a native function compiled with
+/// dynamic binding, after its body signalled: a watcher of the parameter
+/// conses enough to collect while the signal is on its way to the
+/// handler, which then gets the signal's data whole.  The collector's
+/// verifier is on in each editor's environment.
+#[test]
+fn a_signal_out_of_a_native_dynamic_function_outlives_its_unbinding() {
+    let cases = [(
+        "dynamic-unbind-collect",
+        include_str!("fixtures/native-dynamic-unbind-collect.el"),
+        None,
+        "(t ((err (wrong-type-argument listp 3)) 5) nil ((let 2) (unlet nil) (let 4) \
+         (unlet nil)))\n",
+    )];
+    run_cases("native-dynamic-unbind", &cases, true);
+}
+
 /// eval.c:probably_quit inhibits the collection while a quit is
 /// processed.  Native code sets `quit-flag' and calls `string-match' with
 /// no call entry between, so the matcher's own maybe_quit finds the quit
