@@ -140,6 +140,57 @@ fn native_helpers_go_on_after_their_callee_parks_the_thread() {
     run_cases("native-helper-yield", &cases, true);
 }
 
+/// eval.c:unwind_to_catch out of alloc.c:garbage_collect's Lisp when
+/// lisp.h:maybe_gc began the collection in the evaluator's own frames
+/// under native code's funcall: post-gc-hook (or a finalizer) throws to a
+/// catch in that native code, which goes on calling Lisp, consing and
+/// collecting.  The evaluator runs in the native call's environment, or
+/// in one of its own under `eval' (lexical and dynamic); a hook that
+/// signals, caught by safe_run_hooks, is the control with no exit.  The
+/// collector's verifier is on in each editor's environment.
+#[test]
+fn a_throw_out_of_a_collection_the_evaluator_began_reaches_native_code() {
+    let cases = [
+        (
+            "same-env",
+            include_str!("fixtures/native-collect-exit-same-env.el"),
+            None,
+            "((thrown (1 2 3) (3 4 7)) t (10 (1 2 3) (3 4 7)))\n",
+        ),
+        (
+            "eval-lexical",
+            include_str!("fixtures/native-collect-exit-eval-lexical.el"),
+            None,
+            "((thrown (1 2 3) (3 4 7)) t (10 (1 2 3) (3 4 7)))\n",
+        ),
+        (
+            "eval-dynamic",
+            include_str!("fixtures/native-collect-exit-eval-dynamic.el"),
+            None,
+            "((thrown (1 2 3) (3 4 7)) t (10 (1 2 3) (3 4 7)))\n",
+        ),
+        (
+            "then-collect",
+            include_str!("fixtures/native-collect-exit-then-collect.el"),
+            None,
+            "((thrown 2000 (1 2 3)) t)\n",
+        ),
+        (
+            "finalizer",
+            include_str!("fixtures/native-collect-exit-finalizer.el"),
+            None,
+            "((fin-thrown (1 2 3) (3 4 7)) t)\n",
+        ),
+        (
+            "hook-signal",
+            include_str!("fixtures/native-collect-exit-hook-signal.el"),
+            None,
+            "((5000 (1 2 3) (3 4 7)) t)\n",
+        ),
+    ];
+    run_cases("native-collect-exit", &cases, true);
+}
+
 /// eval.c:probably_quit inhibits the collection while a quit is
 /// processed.  Native code sets `quit-flag' and calls `string-match' with
 /// no call entry between, so the matcher's own maybe_quit finds the quit
