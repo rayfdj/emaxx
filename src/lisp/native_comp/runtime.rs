@@ -2430,14 +2430,27 @@ impl NativeRuntime {
     /// buffer that the generated `_setjmp` initialized.  A null result means
     /// the outer native-call escape is not installed yet; capability remains
     /// disabled in that state.
-    fn prepare_nonlocal_exit(
-        &mut self,
+    ///
+    /// The runtime is reached through RUNTIME for each statement: an undo
+    /// between them can run Lisp, and native code it calls makes its own
+    /// references from the active call's pointer (S-DERIVED).  INTERPRETER
+    /// and ENVIRONMENT are the undo's: every frame under it is theirs.
+    ///
+    /// # Safety
+    ///
+    /// RUNTIME is the active call's runtime, live for the call, with no
+    /// reference made from it live in the caller.
+    unsafe fn prepare_nonlocal_exit(
+        runtime: *mut NativeRuntime,
         interpreter: &mut Interpreter,
         environment: &mut Env,
         mut error: LispError,
     ) -> *mut c_void {
+        // SAFETY (each `&*runtime' and `&mut *runtime' below): the
+        // caller's; the reference ends with its statement, or before the
+        // next undo.
         let Some((lisp_eval_depth, backtrace_depth, escape_buffer)) =
-            self.current_call().map(|call| {
+            unsafe { &*runtime }.current_call().map(|call| {
                 (
                     call.lisp_eval_depth,
                     call.backtrace_depth,
@@ -2449,60 +2462,69 @@ impl NativeRuntime {
         };
         // Generated code can pop a handler immediately before a runtime
         // helper signals. GNU searches the live thread handler list.
-        if let Err(sync_error) = self.sync_handlers(interpreter) {
-            self.remember_error(sync_error);
+        if let Err(sync_error) = unsafe { &mut *runtime }.sync_handlers(interpreter) {
+            unsafe { &mut *runtime }.remember_error(sync_error);
             return escape_buffer;
         }
         // The call's depths, the handlers' once the popped ones are gone.
-        let handler_depth = self.call_depth(PUSHED_HANDLERS);
-        let unwind_depth = self.call_specpdl_depth(interpreter);
+        let handler_depth = unsafe { &*runtime }.call_depth(PUSHED_HANDLERS);
+        let unwind_depth = unsafe { &*runtime }.call_specpdl_depth(interpreter);
         'dispatch: loop {
-            let target_index = self.matching_handler(interpreter, environment, &error);
+            let target_index =
+                unsafe { &mut *runtime }.matching_handler(interpreter, environment, &error);
             let retained_handlers = target_index.map_or(handler_depth, |index| index + 1);
             // eval.c:unwind_to_catch unbinds to EACH handler's pdlcount
             // before removing that handler. Cleanup may throw or signal to
             // an inner handler that the original exit was going to bypass.
             // Removing all inner handlers first changes that control flow.
-            while self.handlers.len() > retained_handlers {
-                let boundary = self.handlers.last().expect("inner handler").unwind_depth;
+            while unsafe { &*runtime }.handlers.len() > retained_handlers {
+                let boundary = unsafe { &*runtime }
+                    .handlers
+                    .last()
+                    .expect("inner handler")
+                    .unwind_depth;
                 while interpreter.specpdl_index() > boundary {
                     // The error is not in pending_error or handler storage
                     // yet. Cleanup can collect its boxed Lisp payload.
                     let result = interpreter.with_lisp_stack_roots(&error, |interpreter| {
-                        self.unwind_one(interpreter, environment)
+                        Self::unwind_one(interpreter, environment)
                     });
                     if let Err(unwind_error) = result {
                         error = unwind_error;
                         continue 'dispatch;
                     }
                 }
-                let next = self
+                let shell = unsafe { &mut *runtime };
+                let next = shell
                     .handlers
                     .len()
                     .checked_sub(2)
-                    .map(|index| self.handlers[index].address())
+                    .map(|index| shell.handlers[index].address())
                     .unwrap_or(std::ptr::null_mut());
-                self.thread.set_handler(next);
-                if let Err(sync_error) = self.sync_handlers(interpreter) {
-                    self.remember_error(sync_error);
+                shell.thread.set_handler(next);
+                if let Err(sync_error) = shell.sync_handlers(interpreter) {
+                    shell.remember_error(sync_error);
                     return escape_buffer;
                 }
             }
-            let boundary =
-                target_index.map_or(unwind_depth, |index| self.handlers[index].unwind_depth);
+            let boundary = target_index.map_or(unwind_depth, |index| {
+                unsafe { &*runtime }.handlers[index].unwind_depth
+            });
             while interpreter.specpdl_index() > boundary {
                 let result = interpreter.with_lisp_stack_roots(&error, |interpreter| {
-                    self.unwind_one(interpreter, environment)
+                    Self::unwind_one(interpreter, environment)
                 });
                 if let Err(unwind_error) = result {
                     error = unwind_error;
                     continue 'dispatch;
                 }
             }
+            // No undo is left: the rest runs no Lisp.
+            let shell = unsafe { &mut *runtime };
             let Some(target_index) = target_index else {
                 interpreter.lisp_eval_depth = lisp_eval_depth;
                 interpreter.truncate_backtrace_frames(backtrace_depth);
-                self.remember_error(error);
+                shell.remember_error(error);
                 return escape_buffer;
             };
             let value = match error.kind() {
@@ -2510,14 +2532,14 @@ impl NativeRuntime {
                 LispErrorKind::Terminate(_) => unreachable!("termination cannot match a handler"),
                 _ => &crate::lisp::eval::error_condition_value(&error),
             };
-            let encoded = match self.heap.encode(value) {
+            let encoded = match shell.heap.encode(value) {
                 Ok(encoded) => encoded,
                 Err(encode_error) => {
-                    self.remember_error(super::lisp::native_ice(&encode_error));
+                    shell.remember_error(super::lisp::native_ice(&encode_error));
                     return escape_buffer;
                 }
             };
-            let target = &mut self.handlers[target_index];
+            let target = &mut shell.handlers[target_index];
             interpreter.lisp_eval_depth = target.lisp_eval_depth;
             interpreter.truncate_backtrace_frames(target.backtrace_depth);
             target.storage.set_value(encoded);
@@ -2533,12 +2555,9 @@ impl NativeRuntime {
     }
 
     /// unbind_to's step over the innermost entry of INTERPRETER's specpdl,
-    /// one of the call's own.
-    fn unwind_one(
-        &mut self,
-        interpreter: &mut Interpreter,
-        environment: &mut Env,
-    ) -> Result<(), LispError> {
+    /// one of the call's own.  The undo can run Lisp, so it is given no
+    /// runtime: native code under it reaches the active call's own.
+    fn unwind_one(interpreter: &mut Interpreter, environment: &mut Env) -> Result<(), LispError> {
         let Some(entry) = interpreter.pop_specpdl_entry() else {
             return Err(super::lisp::native_ice(
                 "native byte-unbind exceeded the dynamic binding stack",
@@ -5953,11 +5972,15 @@ fn remember_helper_error(active: &ActiveCall, error: LispError) {
         Ok(()) => interpreter.signal_or_quit(error, environment),
         Err(error) => error,
     };
-    let jump_buffer = unsafe { &mut *active.runtime }.prepare_nonlocal_exit(
-        unsafe { &mut *active.interpreter.get() },
-        unsafe { &mut *active.environment.get() },
-        error,
-    );
+    // SAFETY: the active call's runtime, no reference to it live here.
+    let jump_buffer = unsafe {
+        NativeRuntime::prepare_nonlocal_exit(
+            active.runtime,
+            &mut *active.interpreter.get(),
+            &mut *active.environment.get(),
+            error,
+        )
+    };
     if !jump_buffer.is_null() {
         unsafe { jump_nonlocal(jump_buffer) };
     }
@@ -6123,12 +6146,11 @@ fn unbind_n_running(active: &ActiveCall, count: usize) -> Result<(), LispError> 
         // An entry's undo can run Lisp (a cleanup, a watcher), whose
         // native code makes its own references from these pointers and
         // which may switch threads: each entry is undone through
-        // references of its own.
+        // references of its own, and with none to the runtime.
         let interpreter = unsafe { &mut *active.interpreter.get() };
         let environment = unsafe { &mut *active.environment.get() };
-        let runtime = unsafe { &mut *active.runtime };
         if !interpreter.unbind_plain_innermost() {
-            runtime.unwind_one(interpreter, environment)?;
+            NativeRuntime::unwind_one(interpreter, environment)?;
         }
     }
     Ok(())
@@ -12799,13 +12821,8 @@ mod tests {
         }
 
         #[inline(never)]
-        fn execute_cleanup(
-            runtime: &mut NativeRuntime,
-            interpreter: &mut Interpreter,
-            environment: &mut Env,
-        ) {
-            runtime
-                .unwind_one(interpreter, environment)
+        fn execute_cleanup(interpreter: &mut Interpreter, environment: &mut Env) {
+            NativeRuntime::unwind_one(interpreter, environment)
                 .expect("pending cleanup executes after collection");
         }
 
@@ -12822,7 +12839,7 @@ mod tests {
                 "a pending native cleanup was freed"
             );
         }
-        execute_cleanup(&mut runtime, &mut interpreter, &mut environment);
+        execute_cleanup(&mut interpreter, &mut environment);
         assert_eq!(
             interpreter.symbol_value("native-cleanup-collection-count"),
             Some(Value::Integer(1))
@@ -14667,7 +14684,15 @@ mod tests {
         // is no collection's root (as a signal's data is the signaling C
         // frame's until it is thrown).
         let error = wrong_type_argument("stringp", Value::Nil);
-        let jump = runtime.prepare_nonlocal_exit(&mut interpreter, &mut environment, error);
+        // SAFETY: the runtime is this test's, no reference to it live.
+        let jump = unsafe {
+            NativeRuntime::prepare_nonlocal_exit(
+                &mut runtime,
+                &mut interpreter,
+                &mut environment,
+                error,
+            )
+        };
         assert_eq!(jump, unsafe {
             handler.cast::<u8>().add(HANDLER_JMP_OFFSET).cast()
         });
@@ -14723,21 +14748,29 @@ mod tests {
             0,
             "the depth below the call's first handler"
         );
-        let caught = runtime.prepare_nonlocal_exit(
-            &mut interpreter,
-            &mut environment,
-            wrong_type_argument("stringp", Value::Nil),
-        );
+        // SAFETY: the runtime is this test's, no reference to it live.
+        let caught = unsafe {
+            NativeRuntime::prepare_nonlocal_exit(
+                &mut runtime,
+                &mut interpreter,
+                &mut environment,
+                wrong_type_argument("stringp", Value::Nil),
+            )
+        };
         assert_eq!(caught, unsafe {
             handler.cast::<u8>().add(HANDLER_JMP_OFFSET).cast()
         });
         runtime.thread.set_handler(std::ptr::null_mut());
         // With its handler popped, a signal leaves the call.
-        let escape = runtime.prepare_nonlocal_exit(
-            &mut interpreter,
-            &mut environment,
-            wrong_type_argument("integerp", Value::Nil),
-        );
+        // SAFETY: the runtime is this test's, no reference to it live.
+        let escape = unsafe {
+            NativeRuntime::prepare_nonlocal_exit(
+                &mut runtime,
+                &mut interpreter,
+                &mut environment,
+                wrong_type_argument("integerp", Value::Nil),
+            )
+        };
         assert_eq!(escape, inner.escape_buffer);
         assert!(runtime.handlers.is_empty());
         let error = runtime
