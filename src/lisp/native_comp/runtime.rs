@@ -698,6 +698,8 @@ struct ActiveCall {
 // of native code makes its reference from must be derived from the Rust
 // frame that entered that native code, not from an outer call's record.
 // GNU has no such rule: every frame reads the global current_thread.
+// The same holds for a collection the evaluator starts under an active
+// call (`maybe_gc_active'), whose frames the collection's Lisp runs under.
 // Keeps: at a native call nested in an active call (`invoke_nested'), the
 // load of the record's interpreter pointer, the store of the entering
 // frame's own and the store back when the callee returns (3; the address
@@ -1015,10 +1017,18 @@ pub(crate) fn current_runtime() -> *mut NativeRuntime {
     }
 }
 
-/// eval.c:lisp.h:maybe_gc's active native boundary. The assembly trampoline
+/// eval.c:lisp.h:maybe_gc's active native boundary, for a frame of the
+/// evaluator that holds INTERPRETER and ENVIRONMENT. The assembly trampoline
 /// spills callee-saved registers before the conservative collector scans the
 /// stack, exactly as the generated native call path does.
-pub(crate) fn maybe_gc_active() {
+///
+/// The collection makes its references from the active call's record, and
+/// INTERPRETER and ENVIRONMENT, protected in the evaluator's frames for as
+/// long as it lasts, are derived from what the record named when native
+/// code entered the evaluator.  So the record names them while the
+/// collection runs, and the outer call's are put back after, as a nested
+/// call names its own (`invoke_nested', S-DERIVED).
+fn maybe_gc_active(interpreter: &mut Interpreter, environment: &mut Env) {
     if active_collection_cannot_be_due() {
         return;
     }
@@ -1038,12 +1048,31 @@ pub(crate) fn maybe_gc_active() {
     {
         return;
     }
+    // SAFETY: a non-null active call is live for its synchronous extent,
+    // which contains this one.
+    let record = unsafe { &*active };
+    // Another interpreter's call (only a test makes one, see
+    // `native_calls_are_all'): the collection is that call's, as it stands.
+    let own = std::ptr::eq(record.interpreter.get(), interpreter);
+    let outer = own.then(|| {
+        (
+            record.interpreter.replace(interpreter),
+            record.environment.replace(environment),
+        )
+    });
     #[cfg(any(
         all(target_os = "macos", target_arch = "aarch64"),
         all(target_os = "linux", target_arch = "x86_64")
     ))]
     unsafe {
         emaxx_native_gc_trampoline();
+    }
+    if let Some((outer_interpreter, outer_environment)) = outer {
+        // Every call nested in the collection put this frame's back.
+        debug_assert!(std::ptr::eq(record.interpreter.get(), interpreter));
+        debug_assert!(std::ptr::eq(record.environment.get(), environment));
+        record.interpreter.set(outer_interpreter);
+        record.environment.set(outer_environment);
     }
 }
 
@@ -1135,7 +1164,7 @@ pub(crate) fn maybe_gc(interpreter: &mut Interpreter, environment: &mut Env) {
         return;
     }
     if !ACTIVE_CALL.with(|active| active.get().is_null()) {
-        maybe_gc_active();
+        maybe_gc_active(interpreter, environment);
         return;
     }
     // lisp.h:maybe_gc's `consing_until_gc < 0' on the owning runtime.
@@ -6304,6 +6333,8 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
 extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
     // Do not hold an ActiveCall or NativeRuntime reference across callbacks:
     // finalizers/hooks can reenter native Lisp in this same activation.
+    // The record names the frame that asked for the collection: generated
+    // code's call, or the evaluator's (`maybe_gc_active').
     let (interpreter, environment, runtime) = with_active(|active| {
         (
             active.interpreter.get(),
