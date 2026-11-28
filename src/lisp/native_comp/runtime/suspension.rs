@@ -79,7 +79,7 @@ unsafe extern "C" {
     );
 }
 
-fn with_spilled_registers<R>(body: impl FnOnce(*const NativeWord) -> R) -> R {
+pub(super) fn with_spilled_registers<R>(body: impl FnOnce(*const NativeWord) -> R) -> R {
     struct Invocation<F, R> {
         body: Option<F>,
         result: Option<Result<R, Box<dyn Any + Send>>>,

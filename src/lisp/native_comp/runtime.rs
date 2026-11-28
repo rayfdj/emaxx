@@ -1058,6 +1058,18 @@ fn maybe_gc_active(interpreter: &mut Interpreter, environment: &mut Env) {
 /// inlined in the evaluator's hot frames, the naming moved their blocks,
 /// and alignment no-ops came to lie on the path every form takes
 /// (interp-to-native +22.0, conses +26.0 an iteration).
+///
+/// A non-local exit out of the collection's Lisp (a throw or a signal from
+/// post-gc-hook or a finalizer, a quit) is made here, once the outer
+/// pointers are back: its target may be a catch of the active call, on
+/// the far side of frames whose environment the record would otherwise
+/// go on naming (`eval's own, on its stack).  It is prepared while this
+/// frame's pointers are named: handler-bind, the debugger and the cleanups
+/// it runs are Lisp under the evaluator's frames, which still hold their
+/// references (S-DERIVED).  Only the collection's own answer to that Lisp
+/// can leave this window for the active call's targets: every entry into
+/// generated code inside it links a call frame whose escape record
+/// catches its helpers' exits (a2-design.md 14).
 #[cold]
 #[inline(never)]
 fn collect_naming(record: &ActiveCall, interpreter: &mut Interpreter, environment: &mut Env) {
@@ -1070,19 +1082,23 @@ fn collect_naming(record: &ActiveCall, interpreter: &mut Interpreter, environmen
             record.environment.replace(environment),
         )
     });
-    #[cfg(any(
-        all(target_os = "macos", target_arch = "aarch64"),
-        all(target_os = "linux", target_arch = "x86_64")
-    ))]
-    unsafe {
-        emaxx_native_gc_trampoline();
-    }
+    // The registers spilled and the stack top taken as the trampoline does
+    // for generated code (`emaxx_native_gc_trampoline').
+    let jump_buffer = match suspension::with_spilled_registers(collect_active) {
+        Ok(()) => std::ptr::null_mut(),
+        Err(error) => prepare_helper_exit(record, error),
+    };
     if let Some((outer_interpreter, outer_environment)) = outer {
         // Every call nested in the collection put this frame's back.
         debug_assert!(std::ptr::eq(record.interpreter.get(), interpreter));
         debug_assert!(std::ptr::eq(record.environment.get(), environment));
         record.interpreter.set(outer_interpreter);
         record.environment.set(outer_environment);
+    }
+    if !jump_buffer.is_null() {
+        // SAFETY: the buffer prepare_helper_exit answered, a target of the
+        // active call's, live below this frame.
+        unsafe { jump_nonlocal(jump_buffer) };
     }
 }
 
@@ -5981,6 +5997,18 @@ unsafe fn jump_nonlocal(buffer: *mut c_void) -> ! {
 }
 
 fn remember_helper_error(active: &ActiveCall, error: LispError) {
+    let jump_buffer = prepare_helper_exit(active, error);
+    if !jump_buffer.is_null() {
+        unsafe { jump_nonlocal(jump_buffer) };
+    }
+}
+
+/// `remember_helper_error' but its jump: ERROR settled, the handlers
+/// searched and the specpdl unwound to the target (eval.c:signal_or_quit,
+/// unwind_to_catch), whose buffer is answered for the caller to jump to,
+/// or null.
+#[inline(always)]
+fn prepare_helper_exit(active: &ActiveCall, error: LispError) -> *mut c_void {
     // signal_or_quit runs handler-bind before unwind_to_catch removes the
     // signaling activations. Native helpers can signal without entering
     // Ffuncall, so settling only at that outer boundary loses their frames.
@@ -5991,16 +6019,13 @@ fn remember_helper_error(active: &ActiveCall, error: LispError) {
         Err(error) => error,
     };
     // SAFETY: the active call's runtime, no reference to it live here.
-    let jump_buffer = unsafe {
+    unsafe {
         NativeRuntime::prepare_nonlocal_exit(
             active.runtime,
             &mut *active.interpreter.get(),
             &mut *active.environment.get(),
             error,
         )
-    };
-    if !jump_buffer.is_null() {
-        unsafe { jump_nonlocal(jump_buffer) };
     }
 }
 
@@ -6374,12 +6399,26 @@ extern "C" fn runtime_specbind(symbol: NativeWord, value: NativeWord) {
     });
 }
 
+/// alloc.c:garbage_collect for generated code, through the trampoline
+/// that spills its registers: an error of the collection's Lisp leaves as
+/// a helper's does.
 #[unsafe(no_mangle)]
 extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
+    if let Err(error) = collect_active(stack_top) {
+        with_active(|active| remember_helper_error(active, error));
+    }
+}
+
+/// The collection of the active call's heap below STACK_TOP, the registers
+/// spilled above it, for generated code (`emaxx_native_gc_collect') and
+/// for the evaluator (`collect_naming').  An error of its Lisp (the
+/// compaction's undo-outer-limit-function, a finalizer, post-gc-hook) is
+/// answered, not taken: the caller makes the exit.
+fn collect_active(stack_top: *const NativeWord) -> Result<(), LispError> {
     // Do not hold an ActiveCall or NativeRuntime reference across callbacks:
     // finalizers/hooks can reenter native Lisp in this same activation.
     // The record names the frame that asked for the collection: generated
-    // code's call, or the evaluator's (`maybe_gc_active').
+    // code's call, or the evaluator's (`collect_naming').
     let (interpreter, environment, runtime) = with_active(|active| {
         (
             active.interpreter.get(),
@@ -6392,11 +6431,11 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
         // scope ends before compact_buffers can invoke Lisp.
         let interpreter = unsafe { &mut *interpreter };
         if interpreter.garbage_collection_is_inhibited() {
-            return;
+            return Ok(());
         }
         let runtime = unsafe { &mut *runtime };
         if !runtime.heap.collection_might_be_due() {
-            return;
+            return Ok(());
         }
         let threshold = interpreter
             .symbol_value_cell("gc-cons-threshold")
@@ -6413,7 +6452,7 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
         runtime.heap.collection_due(threshold, percentage)
     };
     if !due {
-        return;
+        return Ok(());
     }
     // alloc.c:garbage_collect records its `Automatic GC' frame, then
     // makes its compact_buffer pass, before the marking.
@@ -6423,8 +6462,7 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
     if let Err(error) = compacted {
         // SAFETY: as above.
         unsafe { (*interpreter).truncate_backtrace_frames(gc_frame) };
-        with_active(|active| remember_helper_error(active, error));
-        return;
+        return Err(error);
     }
     let tot_before = crate::lisp::primitives::profiler::collection_tot_before();
     let started = {
@@ -6439,12 +6477,10 @@ extern "C" fn emaxx_native_gc_collect(stack_top: *const NativeWord) {
     };
     // SAFETY: these are the same owning activation's pointers, reborrowed
     // after the collecting runtime reference has ended.
-    let result = unsafe {
+    unsafe {
         super::finish_garbage_collection(&mut *interpreter, &mut *environment, started, tot_before)
-    };
-    if let Err(error) = result {
-        with_active(|active| remember_helper_error(active, error));
     }
+    .map(drop)
 }
 
 extern "C" fn runtime_maybe_quit() {
