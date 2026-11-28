@@ -1479,14 +1479,19 @@ unsafe fn invoke_dynamic_function(
         ),
         Err(error) => Err(error),
     };
+    // The unbinding runs watchers, Lisp that can collect, while the call's
+    // value or signal is on its way out: a root meanwhile, as GNU's signal
+    // data is the handler's and the signalling frames' during unbind_to.
     let mut restore_error = None;
-    for restore in restores.into_iter().rev() {
-        if let Err(error) = interpreter.restore_special_dynamic(restore, environment)
-            && restore_error.is_none()
-        {
-            restore_error = Some(error);
+    interpreter.with_lisp_stack_roots(&result, |interpreter| {
+        for restore in restores.into_iter().rev() {
+            if let Err(error) = interpreter.restore_special_dynamic(restore, environment)
+                && restore_error.is_none()
+            {
+                restore_error = Some(error);
+            }
         }
-    }
+    });
     match result {
         Ok(value) => restore_error.map_or(Ok(value), Err),
         Err(error) => Err(error),
