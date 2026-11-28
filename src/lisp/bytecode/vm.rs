@@ -6985,3 +6985,107 @@ fn an_activation_the_verified_loop_leaves_goes_on_where_it_left_off() {
     interp.bc_stack.leave_frame();
     assert_eq!(interp.bc_stack.frame_count(), 0);
 }
+
+#[cfg(test)]
+#[test]
+fn a_handler_pushed_before_the_verified_loop_leaves_is_popped_after_it_goes_on() {
+    // exec_byte_code's Bpophandler pops the innermost handler however many
+    // quit checks ran since its Bpushconditioncase or Bpushcatch: the
+    // handler list is the thread's, and maybe_quit leaves it as it was.
+    // Here the verified loop leaves the activation to the dispatch loop at
+    // quit checks while a condition-case of the entry's frame waits on a
+    // frame above it, and while a catch waits in the entry's frame itself;
+    // the dispatch hands the activation back and each handler is popped
+    // there, so a signal after both reaches the outer handler alone.
+    // GNU 30.2's byte code for
+    //   (defvar zz-count 0)
+    //   (defun zz-spin (n) (let ((i 0)) (while (< i n) (setq i (1+ i))) i))
+    //   (defun zz-signal (n)
+    //     (setq zz-count (1+ zz-count)) (signal 'error (list n)))
+    //   (defun zz-stale (n)
+    //     (condition-case e
+    //         (list (condition-case nil (progn (zz-spin n) 'x) (error 'y))
+    //               (catch 'c (let ((i 0)) (while (< i n) (setq i (1+ i)))) 'z)
+    //               (zz-signal n))
+    //       (error (list 'outer (cdr e) zz-count))))
+    // answers (outer (N) 1) for 3, 300 and 1000, as GNU's does, by each
+    // entry from Rust (a handler left in place would take the signal first
+    // and its code would run zz-signal again), and leaves the thread's
+    // stacks as it found them.
+    fn eval(interp: &mut Interpreter, env: &mut Env, text: &str) -> Value {
+        let form = crate::lisp::read_next_load_form(interp, text, &mut 0, env)
+            .expect("read form")
+            .expect("a form");
+        interp.eval(&form, env).expect("eval")
+    }
+    fn marks(interp: &Interpreter) -> [usize; 9] {
+        [
+            interp.bc_stack.frame,
+            interp.bc_stack.base,
+            interp.bc_stack.top,
+            interp.bc_stack.frame_count(),
+            interp.bc_frames.len(),
+            interp.bc_handlers.len(),
+            interp.specpdl_index(),
+            interp.backtrace_frames_len(),
+            interp.lisp_eval_depth,
+        ]
+    }
+    let mut interp = Interpreter::new();
+    let mut env = Env::new();
+    eval(
+        &mut interp,
+        &mut env,
+        "(progn
+           (defvar zz-count 0)
+           (defalias 'zz-spin
+             (make-byte-code 257 (unibyte-string #o300 #o211 #o2 #o127 #o203 #o13 #o0
+                                                 #o124 #o202 #o1 #o0 #o207)
+                             [0] 4))
+           (defalias 'zz-signal
+             (make-byte-code 257 (unibyte-string #o10 #o124 #o20 #o301 #o302 #o2 #o103 #o42
+                                                 #o207)
+                             [zz-count signal error] 4))
+           (defalias 'zz-stale
+             (make-byte-code 257 (unibyte-string #o301 #o61 #o53 #o0 #o302 #o61 #o21 #o0
+                                                 #o303 #o1 #o41 #o210 #o304 #o60 #o202 #o23
+                                                 #o0 #o210 #o305 #o306 #o62 #o45 #o0 #o307
+                                                 #o211 #o3 #o127 #o203 #o42 #o0 #o124 #o202
+                                                 #o30 #o0 #o210 #o310 #o60 #o311 #o3 #o41
+                                                 #o105 #o60 #o207 #o312 #o1 #o101 #o10 #o105
+                                                 #o207)
+                             [zz-count (error) (error) zz-spin x y c 0 z zz-signal outer]
+                             5)))",
+    );
+    let function = eval(&mut interp, &mut env, "(symbol-function 'zz-stale)");
+    let closure = function.closure_ref().expect("a closure");
+    interp.bc_stack.ensure_allocated();
+    // A caller's frame with operands on it, as a Bcall's.
+    interp
+        .bc_stack
+        .enter_frame(8, Value::Nil, 0)
+        .expect("the caller's frame");
+    interp.bc_stack.push(Value::Integer(1)).expect("an operand");
+    for n in [3, 300, 1000] {
+        let expected = eval(&mut interp, &mut env, &format!("'(outer ({n}) 1)"));
+        let args = [Value::Integer(n)];
+        let before = marks(&interp);
+        for entry in 0..3 {
+            eval(&mut interp, &mut env, "(setq zz-count 0)");
+            let result = match entry {
+                0 => interp.call_function_value(function, None, &args, &mut env),
+                1 => execute_closure(&mut interp, closure, &args, &mut env),
+                _ => funcall_closure(&mut interp, closure, &args, &mut env),
+            }
+            .expect("zz-stale");
+            assert!(
+                crate::lisp::primitives::values_equal(&interp, &result, &expected).expect("equal"),
+                "zz-stale {n} by entry {entry}: {result:?}"
+            );
+            assert_eq!(marks(&interp), before, "zz-stale {n} by entry {entry}");
+            assert_eq!(&*interp.bc_stack, &[Value::Integer(1)]);
+        }
+    }
+    interp.bc_stack.leave_frame();
+    assert_eq!(interp.bc_stack.frame_count(), 0);
+}
