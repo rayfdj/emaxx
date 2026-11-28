@@ -256,6 +256,9 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   aliasing rules forbid (a model of them passes both of Rust's
   models), and round 401's assertion states the real condition, so
   the library passes at four test threads again.
+  Round 409: a collection, a cleanup and the loader running Lisp
+  under a native call hold no such reference either, and a
+  collection's exit puts the record back before it jumps.
 - **Done ahead of its milestone: D119** (M3's first item; round 371).
   A dump made with a variable holding one of the session's windows
   starts again, and the loaded window answers as GNU's nilled one.
@@ -22397,6 +22400,91 @@ setup_process_coding_systems's check now refuses). A 13-form
   every group passed.  The round audit reports no hard finding, 369
   changed lines with 1 test and 8 assertions added; its notes are the
   two assertions the entry describes.
+- **Round 409: the native call path holds no reference Rust's aliasing
+  rules forbid where a collection, a cleanup or the loader runs Lisp
+  under it, and a collection's exit puts the record back first (M2,
+  A2.5, the second round of the native call's context; none closed).**
+  **The rules** are round 406's: a Rust reference is invalidated by an
+  access through another path, and a function's `&mut' argument is
+  protected for the whole call; GNU's C reaches the interpreter through
+  current_thread and the C globals by plain pointers.  The design
+  (/home/user/emaxx-work/m2/aliasing/a2-design.md, sections 9 to 14)
+  found four more places undefined under both of Rust's models: a
+  collection the evaluator starts under a native call made its
+  references from the outer call's record while the evaluator's frames
+  held protected references (garbage_collect uses globals and passes
+  nothing); a thread switch under native code read the record's
+  environment as a root while those references were live; the pointer to
+  the thread's state handed to generated code was a reborrow of a Box
+  that later writes ended (GNU: current_thread is the one pointer both
+  use); the non-local exit held `&mut' runtime references across
+  cleanups that run native code, which writes the runtime through the
+  record (GNU's unwind_to_catch reads the handler list again at each
+  step); and the loader registered a pointer to its parameter and then
+  used the parameter, and held the runtime as a reference across the
+  reader, `defalias' and a dynamic function's watchers.  **Now**: while
+  the evaluator's collection runs, the record names the evaluator's own
+  interpreter and environment, and the outer ones come back on every way
+  out (the naming is out of line: inlined, it moved two probes); a
+  thread switch takes no environment from the record, every
+  environment's buffer being a root the collector already scans; the
+  thread's state is owned by the pointer generated code is given, as
+  round 406's shared state is; the non-local exit takes the runtime's
+  raw pointer and makes a reference per statement, none live across a
+  cleanup; the loader makes one pointer and passes it, and the thread
+  cell and the link table are owned by the pointers each unit holds. The
+  model outside the tree was extended by six findings: each is undefined
+  at round 406 under both models, and the round's shape passes all
+  twelve under both (96 runs).  **The review found a break and it was
+  fixed in the round**: a throw out of `post-gc-hook' or a finalizer,
+  during a collection the evaluator began inside `eval' (whose
+  environment is its own) and caught by a native `catch', jumped over
+  the naming's put-back, and the record named an environment in a dead
+  frame: wrong answers, and a crash once the native code collected again
+  (GNU and round 406 answered right).  Now the collection returns its
+  Lisp's error to the naming, which finds the handler and runs the
+  cleanups while still named, puts the outer pointers back, and only
+  then jumps.  The review also found, in both builds, that a
+  dynamic-binding native function's signal could be collected while its
+  parameters were unbound by watchers that cons ("peculiar error" with a
+  face's attributes in it, where GNU is right); the call's value or
+  signal is now a root while it unbinds, as the handler and the
+  signalling frames hold it in GNU.  **Tests**: three that park a thread
+  with each new path's frames on the stack (structural: they pass before
+  the fixes as well); the six exits of the break (four failing before
+  the fix, one by a crash, two controls); the unbinding's signal
+  (failing before).  **Counts** (instructions, measured against the
+  branch's own base, round 406's change before the call paths of rounds
+  405, 407 and 408 were under it): unchanged on every probe of native
+  code, byte code, the recursions, `mapc' callbacks, consing and
+  `make-symbol' (native `funcall' 453.1, byte code to native 334.6,
+  interpreted code to native 1,973.0).  **Lisp sees** the four broken
+  cases and the unbinding's signal as GNU does; nothing else changes.
+  **The independent review** (the one question: does the round cheat or
+  break something) ran signals, throws and quits through native
+  cleanups, nested calls, dynamic functions with watchers, threads
+  yielding in cleanups, loads and reloads of native units with
+  `defalias' and advice, collections during load and two threads
+  loading, values held only in lexical environments across thread
+  switches under the collector's verifier and stress, against GNU and
+  round 406; it found the break above, and after the fix it found
+  sixteen ways out of the collection's window (throws, signals and quits
+  from `post-gc-hook', a finalizer and `undo-outer-limit-function', a
+  native catch of an inner call, native code that throws, a yield then a
+  throw in a thread) all as GNU, and with gdb the record naming the live
+  environment after each.
+  Validation of the round's fourteen commits, recreated on round 408
+  with changes identical to the reviewed branch's (the same patch
+  identifier), in the gate profile with one test thread a process: the
+  grouped gate 3,719 passed, 0 failed, 2 ignored; cli 30, cli_parity
+  196, ert_runner 3, native_comp_identity 1, native_thread_continuations
+  6, package_lifecycle 5, runtime_ownership 7 and
+  runtime_forgotten_handle 1; the doctests, three passing and three that
+  must fail to compile; the harness's own tests 59; clippy `-D warnings'
+  and rustfmt clean.  The implementer's run of the library at one test
+  thread and at four, at the round's last commit: every group passed.
+  The round audit reports no hard finding, 1,082 changed lines with 2
+  tests and 2 assertions added, and no note.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -26216,6 +26304,23 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 409 and its reviews), within the
+  plan's later stages or outside the round.**  One line each, all in
+  round 406's build as well: the interpreter's
+  funcall_interpreted_lambda holds the body's value across its unbinding
+  (a dynamic interpreted lambda's handler receives a watcher's conses as
+  its error data; GNU is right), the next soundness round's first item;
+  a watcher's own error during a native function's unbinding is not a
+  root while later watchers run (two watched parameters; not
+  reproduced); a throw from `post-gc-hook' to a catch in the evaluator
+  says "No catch" under native code and is dropped without it, a throw
+  from the collection's window to a native catch skips interpreted
+  `unwind-protect' cleanups between (the exit jumps over Rust frames),
+  and `thread-yield' in `post-gc-hook' then a throw to a native catch
+  loses the caller's lexical variable, the next soundness round's
+  (A2.5's unwinding across incompatible boundaries); a variable watcher
+  that switches threads loses another thread's notification of the same
+  variable (GNU calls it 4 times, Emaxx 2).
 - **Found after the scope lock (round 408 and its review), within the
   plan's later stages or outside the round.**  One line each: no
   byte-code test catches the handlers' base one lower at the entry, the
