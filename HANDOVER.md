@@ -287,6 +287,8 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   Round 407: the byte-code loop's state is its own, as
   exec_byte_code's locals are; a `mapc' callback 298.7 against 288.9,
   every probe lower.
+  Round 408: a byte-code frame is entered with its arguments by one
+  compare, as setup_frame's is; a `mapc' callback 293.7 against 288.9.
 
 ## Where things stand — 15 October 2026
 
@@ -22322,6 +22324,79 @@ setup_process_coding_systems's check now refuses). A 13-form
   round audit reports no hard finding, 574 changed lines with 1 test and
   5 assertions added; its one note is the entry's debug assertion,
   rewritten on the entry program with the same two conditions.
+- **Round 408: a byte-code frame is entered with its arguments by one
+  compare, as setup_frame's is (M2, D17, the plan of the call paths;
+  none closed).**  **GNU**: exec_byte_code's setup_frame tests the room
+  for a frame with one compare of the new frame's end against the
+  stack's end, writes the frame's header, and pushes the arguments;
+  Bcall's Ffuncall leaves the stack pointer where it was and stores the
+  result in the function's slot.  **Before**: the room test was two
+  compares (the frame's base, then its depth), the header and the
+  arguments were written apart with the top stored twice, and call_plain
+  kept the arguments' index live across the call to a subr, which
+  spilled it.  **Now**: the stack depth an entry program records is 32
+  bits wide (verified depths are below 65535; a byte-code object's
+  recorded depth is saturated, so 2^32 and more still signals "Bytecode
+  stack overflow"), the room is one compare, the header and arguments
+  are written in one block with the top stored once, and call_plain
+  finds the function's slot again from the stack's top after the call,
+  which the callee leaves where it found it.  The first commit is the
+  test the review of round 407 asked for: a handler pushed before the
+  verified loop leaves an activation is popped after the loop goes on
+  with it, byte code compiled by GNU 30.2 (a mutation of the handlers'
+  base at the resume fails it alone, answering `(outer (300) 2)' where
+  GNU answers `(outer (300) 1)').  Five forms were measured and dropped:
+  call_plain's change alone in two forms (one moved the recursions by 5
+  and 6, the other by 2), and the room test over them (one moved the
+  dynamic recursion by 6).  **Counts** (before = round 407's build,
+  instructions): a byte-compiled `mapc' callback 298.7 to 293.7 (GNU
+  288.9), of `mapatoms' 299.4 to 294.4 (298.9), of `maphash' 300.9 to
+  295.9 (291.1), a closure called by `mapatoms' 417.3 to 412.3 (458.6),
+  a dynamic-binding `mapc' callback 892.7 to 887.7 (871.9), a `&rest'
+  one 1,005.2 (889.7), native `funcall' of byte code 418.1 to 413.1
+  (316.0), byte-code calls 435.3 to 426.0 (468.0), the lexical recursion
+  343.1 to 339.1 (314.9), the dynamic one 617.1 (636.2), byte code to a
+  subr 331.7 to 332.7 (339.0) and `process-name' 381.7 to 382.7 (371.0),
+  each one instruction more from the register allocation of the arm to a
+  subr (a constant made again at the resume, a reload before the
+  code-changes compare), byte code to native 317.7 to 316.7 (337.0).
+  The loop's code is 173 bytes larger.  **What is left** of the `mapc'
+  callback's 4.8: Ffuncall's part and the loop's are level with GNU's
+  (148 against 148, 111 against 112); the map loop is 22 against
+  mapcar1's 17 (the environment loaded and stored as a seventh argument
+  on the stack, a name that is always none, and 2 not yet broken down)
+  and the list's length 10.1 against 9.5.  **Lisp sees nothing change.**
+  **The independent review** (the one question: does the round cheat or
+  break something) compared GNU 30.2 and the builds before and after on
+  frames at, one below and one above the room left, from C, from native
+  code and between byte-code frames, lexical and dynamic, with
+  `&optional' and `&rest' callees, wrong arity, declared depths from
+  65,534 to 2^33 and `most-positive-fixnum' (GNU crashes; both builds
+  signal), signals, throws and quits at a frame's first instruction, the
+  debugger at entry and exit, subrs called with 0 to 1,000 arguments
+  that call back, signal, throw, recurse 3,000 deep, collect, run a
+  timer or a process filter or switch threads, all with the collector's
+  verifier and stress and under valgrind: the same answers, no invalid
+  access.  It recompiled the new test's byte code in GNU and found it
+  the same, read the mutations it fails under, and measured the figures
+  above.  Of the two assertions the audit lists, the arguments' check
+  tests the same two conditions; the check of the function's slot is a
+  bounds check as before, and the invariant that a call leaves the
+  stack's top where it found it is now a debug assertion, where before a
+  release check caught a top dropped below the function's slot (no path
+  lowers it).
+  Validation of the round's commits, recreated on round 407 with changes
+  identical to the reviewed branch's (the same patch identifier), in the
+  gate profile with one test thread a process: the grouped gate 3,719
+  passed, 0 failed, 2 ignored; cli 30, cli_parity 196, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 4,
+  package_lifecycle 5, runtime_ownership 7 and runtime_forgotten_handle
+  1; the doctests, three passing and three that must fail to compile;
+  the harness's own tests 59; clippy `-D warnings' and rustfmt clean.
+  The implementer's run of the library at one test thread and at four:
+  every group passed.  The round audit reports no hard finding, 369
+  changed lines with 1 test and 8 assertions added; its notes are the
+  two assertions the entry describes.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -26127,6 +26202,19 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 408 and its review), within the
+  plan's later stages or outside the round.**  One line each: no
+  byte-code test catches the handlers' base one lower at the entry, the
+  frames' count an operation's error leaves zeroed at a resume, or the
+  quit counter reset at a resume; every form of the room test leaves
+  byte code to a subr and `process-name' one instruction over round
+  407's, from the allocation of the arm to a subr; malformed byte code
+  (a declared depth of 0 that pushes, a return from an empty stack)
+  stops Emaxx with a Rust panic that cannot unwind, where GNU crashes on
+  the first and returns nil on the second (the finding of malformed byte
+  code recorded before); at the stack's edge the entry in the loop
+  builds an overflow error and drops it before the call's arm signals
+  its own, as before.
 - **Found after the scope lock (round 407 and its review), within the
   plan's later stages or outside the round.**  One line each: no test
   guards the handlers' base the loop takes back at a resume (the next
