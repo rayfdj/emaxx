@@ -1736,7 +1736,6 @@ impl NativeRuntime {
         let lisp_roots = suspension::NativeLispRoots {
             handlers: &self.handlers,
             calls: CallFrames::of(&self.call),
-            environment: None,
         };
         let heap = &mut self
             .shared

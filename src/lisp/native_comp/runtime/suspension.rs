@@ -158,11 +158,13 @@ impl Drop for SuspendedStackGuard {
 /// The Lisp roots of executing and suspended native frames: their
 /// handlers and pending errors.  Their bindings and unwind records are
 /// entries of the interpreter's specpdl, which eval.c:mark_specpdl reaches
-/// with the thread.
+/// with the thread.  Their environments are no root of theirs: every Env's
+/// buffer is one the collector scans at each mark (`RootedVec'), as
+/// thread.c:mark_threads reaches a thread's lexical environment through
+/// its specpdl and its stack.
 pub(super) struct NativeLispRoots<'a> {
     pub(super) handlers: &'a [HandlerEntry],
     pub(super) calls: CallFrames<'a>,
-    pub(super) environment: Option<&'a Env>,
 }
 
 impl TraceLispRoots for NativeLispRoots<'_> {
@@ -174,9 +176,6 @@ impl TraceLispRoots for NativeLispRoots<'_> {
             if let Some(error) = call.pending_error() {
                 error.trace_lisp_roots(marker);
             }
-        }
-        if let Some(environment) = self.environment {
-            marker.environment(environment);
         }
     }
 }
@@ -204,14 +203,17 @@ pub(crate) fn with_thread_suspended<R>(
     with_spilled_registers(|stack_top| {
         super::super::loader::with_suspended_state(interpreter, |interpreter, registered| {
             let active = ACTIVE_CALL.get();
-            let (runtime, environment) = if active.is_null() {
-                (registered, None)
+            // The record's environment is not read: the frames that reached
+            // this switch (the evaluator's, a subr's) hold references
+            // derived from it, protected while they last (S-DERIVED).
+            let runtime = if active.is_null() {
+                registered
             } else {
-                // SAFETY: these are the current callback's native owner and
-                // environment, not a different or already parked thread.
+                // SAFETY: this is the current callback's native owner, not a
+                // different or already parked thread's.
                 let active = unsafe { &*active };
                 assert_eq!(active.interpreter.get(), std::ptr::from_mut(interpreter));
-                (active.runtime, Some(unsafe { &*active.environment.get() }))
+                active.runtime
             };
             if runtime.is_null() {
                 return Ok(body(interpreter));
@@ -270,7 +272,6 @@ pub(crate) fn with_thread_suspended<R>(
             let roots = NativeLispRoots {
                 handlers: &runtime.handlers,
                 calls: runtime.call_frames(),
-                environment,
             };
             let result = catch_unwind(AssertUnwindSafe(|| {
                 interpreter.with_lisp_stack_roots(&roots, body)
