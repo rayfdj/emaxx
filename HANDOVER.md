@@ -26176,6 +26176,20 @@ ert-tests as a whole 26,307 ms against 27,211.
   three doctests passing and three that must fail to compile, none
   failed.
 
+**On `a45a9a7`** (round 408): the frozen run (run 46104614650) matched
+  all 7,928 outcomes with no unsuccessful execution, on its first
+  attempt, eglot passing on both sides (28.9 s against 29.6 s in that
+  file).  Setup 59.6 s against 53.6 s (1.112), test bodies 236.0 s
+  against 230.7 s (1.023), in all 1.040 (GNU's suite took 284 s);
+  without the eglot file the bodies read 1.030.  The widest body gaps
+  are tramp-tests (16.9 s against 14.8 s), comp-tests (13.7 against
+  12.9), icalendar-tests (1.03 against 0.29, a file at its usual 0.3 s
+  in earlier runs), process-tests (2.20 against 1.52) and epg-tests
+  (2.28 against 1.76).  The Rust gate (run 46104612631) passed: 3,726
+  library tests (one more), the eight integration targets (247), the
+  binaries' tests (63) and the doc stage, three doctests passing and
+  three that must fail to compile, none failed.
+
 **The eglot mismatch of rounds 383 to 389 is GNU's own race**, found on
   25 Nov by running the one test alone.
   `eglot-test-rust-completion-exit-function' connects twice
