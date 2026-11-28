@@ -140,15 +140,19 @@ impl NativeCompilerState {
         candidate_unit: &crate::lisp::types::Value,
         late: bool,
     ) -> Result<crate::lisp::types::Value, LispError> {
-        loader::load(
-            loader::LoaderState::new(&self.compiler, &mut self.runtime),
-            interp,
-            env,
-            filename,
-            library,
-            candidate_unit,
-            late,
-        )
+        // SAFETY: the runtime is this state's, and no reference to it is
+        // made while the load lasts.
+        unsafe {
+            loader::load(
+                loader::LoaderState::new(&self.compiler, &raw mut self.runtime),
+                interp,
+                env,
+                filename,
+                library,
+                candidate_unit,
+                late,
+            )
+        }
     }
 
     pub(crate) fn call_function(
@@ -175,7 +179,8 @@ impl NativeCompilerState {
         arguments: &[crate::lisp::types::Value],
         kind: loader::RegistrationKind,
     ) -> Result<crate::lisp::types::Value, LispError> {
-        loader::register_with_state(&mut self.runtime, interp, env, arguments, kind)
+        // SAFETY: as `load's.
+        unsafe { loader::register_with_state(&raw mut self.runtime, interp, env, arguments, kind) }
     }
 
     /// The image loader's LATE_RELOCS and VERY_LATE_RELOCS phases: every

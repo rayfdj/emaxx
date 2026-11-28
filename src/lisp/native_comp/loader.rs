@@ -140,13 +140,19 @@ fn native_function_signature(
     }
 }
 
+/// What a load is given: the compiler, and the runtime as a pointer, from
+/// which the loader makes a reference for each statement.  A load runs
+/// Lisp (its top-level code, the reader's quit test, the hash calls), and
+/// native code that Lisp calls makes its own references to the runtime
+/// from the active call's record or the registered pointer, the one this
+/// was made from (S-DERIVED).
 pub(super) struct LoaderState<'a> {
     compiler: &'a SharedCompiler,
-    runtime: &'a mut NativeRuntime,
+    runtime: *mut NativeRuntime,
 }
 
 impl<'a> LoaderState<'a> {
-    pub(super) fn new(compiler: &'a SharedCompiler, runtime: &'a mut NativeRuntime) -> Self {
+    pub(super) fn new(compiler: &'a SharedCompiler, runtime: *mut NativeRuntime) -> Self {
         Self { compiler, runtime }
     }
 }
@@ -170,11 +176,19 @@ impl Drop for NativeStateGuard {
     }
 }
 
+/// Register RUNTIME and COMPILER as the ones Lisp run by BODY reaches
+/// while no native call is active (`with_active_registered_runtime'), and
+/// run BODY with the runtime's pointer.  The pointer is made once from
+/// RUNTIME, which is not used again: BODY and the registered pointer's
+/// users make their references from that one pointer, none of them held
+/// across another's.  A reference BODY were given instead would be
+/// protected for its frame, beside the registered pointer.
 pub(super) fn with_native_state<R>(
     compiler: &SharedCompiler,
     runtime: &mut NativeRuntime,
-    body: impl FnOnce(&mut NativeRuntime) -> R,
+    body: impl FnOnce(*mut NativeRuntime) -> R,
 ) -> R {
+    let runtime = std::ptr::from_mut(runtime);
     let previous_runtime = ACTIVE_REGISTERED_RUNTIME.replace(runtime);
     let previous_compiler = ACTIVE_COMPILER.replace(compiler);
     let _guard = NativeStateGuard {
@@ -516,10 +530,14 @@ unsafe fn initialize_pointer<T>(
     Ok(())
 }
 
+/// # Safety
+///
+/// RUNTIME is live, with no reference made from it live in the caller;
+/// the unit's NAME array has room for VALUES.
 unsafe fn fill_relocations(
     library: &Library,
     name: &str,
-    runtime: &mut NativeRuntime,
+    runtime: *mut NativeRuntime,
     values: &[Value],
 ) -> Result<*mut NativeWord, LispError> {
     let destination = unsafe { data_symbol::<NativeWord>(library, name) }
@@ -527,7 +545,8 @@ unsafe fn fill_relocations(
     if destination.is_null() && !values.is_empty() {
         return Err(super::lisp::native_ice("null native relocation array"));
     }
-    let encoded = runtime.encode_relocations(values)?;
+    // SAFETY: the caller's; the reference ends with the statement.
+    let encoded = unsafe { &mut *runtime }.encode_relocations(values)?;
     if !encoded.is_empty() {
         unsafe { std::ptr::copy_nonoverlapping(encoded.as_ptr(), destination, encoded.len()) };
     }
@@ -542,7 +561,13 @@ pub(crate) fn open_unit(file: &Value, path: &str) -> Result<Library, LispError> 
 }
 
 /// comp.c:load_comp_unit for an in-process (non-dump) load.
-pub(super) fn load(
+/// comp.c:load_comp_unit.
+///
+/// # Safety
+///
+/// STATE's runtime is live for the load, with no reference made from it
+/// live in the caller.
+pub(super) unsafe fn load(
     state: LoaderState<'_>,
     interpreter: &mut Interpreter,
     environment: &mut Env,
@@ -564,14 +589,19 @@ pub(super) fn load(
         // (dlopen returns the same handle for the same file).  Its static
         // relocations may be live in running frames and are never touched
         // again; only the top-level code runs.
-        let Kind::NativeCompUnit(unit) = runtime.decode_relocation(saved_word)?.kind() else {
+        // SAFETY (each `&*runtime' and `&mut *runtime' of this function):
+        // the caller's; each reference ends with its statement.
+        let Kind::NativeCompUnit(unit) = unsafe { &mut *runtime }
+            .decode_relocation(saved_word)?
+            .kind()
+        else {
             return Err(inconsistent(filename));
         };
         // Unlike GNU's one editor per process, two Rust editors may be
         // alive in this host. Their dlopen image still has only one runtime
         // relocation. Preserve the former registry's owner check using that
         // actual field before running code or changing any unit state.
-        if !unit.belongs_to_runtime(runtime.current_thread_relocation_address()) {
+        if !unit.belongs_to_runtime(unsafe { &*runtime }.current_thread_relocation_address()) {
             return Err(inconsistent(filename));
         }
         unit.loaded_once.set(true);
@@ -585,17 +615,20 @@ pub(super) fn load(
             .map_err(|_| inconsistent(&unit_file))?;
         (unit, top_level)
     } else {
-        first_load(
-            runtime,
-            interpreter,
-            environment,
-            FirstLoadInput {
-                library,
-                saved_unit,
-                candidate_unit,
-                late,
-            },
-        )?
+        // SAFETY: the caller's.
+        unsafe {
+            first_load(
+                runtime,
+                interpreter,
+                environment,
+                FirstLoadInput {
+                    library,
+                    saved_unit,
+                    candidate_unit,
+                    late,
+                },
+            )?
+        }
     };
 
     let unit_value = Value::NativeCompUnit(unit);
@@ -610,15 +643,21 @@ pub(super) fn load(
             // ephemeral data; rewriting it would clobber objects in use.
             Ok(None)
         } else {
-            fill_ephemeral_relocations(&library, &unit_file, runtime, interpreter, environment)
+            // SAFETY: the caller's.
+            unsafe {
+                fill_ephemeral_relocations(&library, &unit_file, runtime, interpreter, environment)
+            }
         };
         let result = match ephemeral {
             Ok(ephemeral) => {
                 if let Some(ephemeral) = &ephemeral {
-                    runtime.push_ephemeral_root_range(ephemeral.start, ephemeral.len);
+                    unsafe { &mut *runtime }
+                        .push_ephemeral_root_range(ephemeral.start, ephemeral.len);
                 }
-                let result = with_native_state(compiler, runtime, |runtime| {
-                    runtime.invoke(
+                // The call's record is made from the reference the call is
+                // given: everything under it is its child.
+                let result = with_native_state(compiler, unsafe { &mut *runtime }, |runtime| {
+                    unsafe { &mut *runtime }.invoke(
                         interpreter,
                         environment,
                         top_level,
@@ -630,7 +669,7 @@ pub(super) fn load(
                 // until top_level_run returns.  The explicit drop is Rust's
                 // counterpart of GNU's post-call volatile self-assignment.
                 if let Some(ephemeral) = &ephemeral {
-                    runtime.pop_ephemeral_root_range(ephemeral.len);
+                    unsafe { &mut *runtime }.pop_ephemeral_root_range(ephemeral.len);
                 }
                 result
             }
@@ -639,7 +678,7 @@ pub(super) fn load(
         if result.is_ok() {
             debug_assert!(comp_unit_relocations_match(
                 unit,
-                runtime,
+                unsafe { &mut *runtime },
                 interpreter,
                 environment,
             ));
@@ -672,8 +711,12 @@ struct FirstLoadInput<'a> {
     late: bool,
 }
 
-fn first_load(
-    runtime: &mut NativeRuntime,
+/// # Safety
+///
+/// As `load's: RUNTIME is live, with no reference made from it live in the
+/// caller.
+unsafe fn first_load(
+    runtime: *mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
     input: FirstLoadInput<'_>,
@@ -745,7 +788,7 @@ fn first_load(
         initialize_pointer(
             &library,
             CURRENT_THREAD_RELOC_SYM,
-            runtime.current_thread_relocation(),
+            (*runtime).current_thread_relocation(),
         )
         .map_err(|_| inconsistent(&file))?;
         initialize_pointer(
@@ -754,10 +797,14 @@ fn first_load(
             interpreter.symbols_with_positions_relocation(),
         )
         .map_err(|_| inconsistent(&file))?;
-        initialize_pointer(&library, PURE_RELOC_SYM, runtime.pure_relocation())
+        initialize_pointer(&library, PURE_RELOC_SYM, (*runtime).pure_relocation())
             .map_err(|_| inconsistent(&file))?;
-        initialize_pointer(&library, FUNC_LINK_TABLE_SYM, runtime.function_link_table())
-            .map_err(|_| inconsistent(&file))?;
+        initialize_pointer(
+            &library,
+            FUNC_LINK_TABLE_SYM,
+            (*runtime).function_link_table(),
+        )
+        .map_err(|_| inconsistent(&file))?;
     }
 
     let optimization_qualities = unsafe {
@@ -809,10 +856,14 @@ fn first_load(
 
 /// Ephemeral data is read and installed on every non-recursive load; GNU
 /// keeps it alive only for the duration of the top-level run.
-fn fill_ephemeral_relocations(
+///
+/// # Safety
+///
+/// As `load's for RUNTIME.
+unsafe fn fill_ephemeral_relocations(
     library: &Library,
     filename: &Value,
-    runtime: &mut NativeRuntime,
+    runtime: *mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
 ) -> Result<Option<EphemeralRelocations>, LispError> {
@@ -858,7 +909,17 @@ pub(crate) fn load_active(
         return Err(library);
     }
     Ok(with_active_compiler(|compiler| {
-        super::runtime::with_current_runtime(|runtime| {
+        // The runtime's pointer, not a reference: the load's Lisp nests
+        // native calls in the active call, which make their own from it.
+        let runtime = super::runtime::current_runtime();
+        if runtime.is_null() {
+            return Err(super::lisp::native_ice(
+                "active loader has no active runtime",
+            ));
+        }
+        // SAFETY: the runtime the active call or the loader lends, live
+        // for this synchronous load; no reference to it is live here.
+        unsafe {
             load(
                 LoaderState::new(compiler, runtime),
                 interpreter,
@@ -868,12 +929,7 @@ pub(crate) fn load_active(
                 candidate_unit,
                 late,
             )
-        })
-        .unwrap_or_else(|| {
-            Err(super::lisp::native_ice(
-                "active loader has no active runtime",
-            ))
-        })
+        }
     })
     .expect("active compiler checked above"))
 }
@@ -885,8 +941,13 @@ pub(crate) enum RegistrationKind {
     LateSubroutine,
 }
 
-pub(super) fn register_with_state(
-    runtime: &mut NativeRuntime,
+/// comp.c:Fcomp__register_lambda and Fcomp__register_subr.
+///
+/// # Safety
+///
+/// RUNTIME is live, with no reference made from it live in the caller.
+pub(super) unsafe fn register_with_state(
+    runtime: *mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
     arguments: &[Value],
@@ -1021,7 +1082,9 @@ pub(super) fn register_with_state(
             )?;
             let relocation = usize::try_from(arguments[0].as_integer()?)
                 .map_err(|_| super::lisp::native_ice("negative lambda relocation index"))?;
-            let word = runtime.encode_relocations(std::slice::from_ref(&function))?[0];
+            // SAFETY: the caller's; the reference ends with the statement.
+            let word =
+                unsafe { &mut *runtime }.encode_relocations(std::slice::from_ref(&function))?[0];
             if relocation >= unit.impure_relocation_count() {
                 return Err(super::lisp::native_ice(
                     "native lambda relocation index is out of range",
@@ -1051,16 +1114,15 @@ pub(crate) fn register_active(
     if ACTIVE_COMPILER.with(Cell::get).is_null() {
         return None;
     }
-    Some(
-        super::runtime::with_current_runtime(|runtime| {
-            register_with_state(runtime, interpreter, environment, arguments, kind)
-        })
-        .unwrap_or_else(|| {
-            Err(super::lisp::native_ice(
-                "active loader has no active runtime",
-            ))
-        }),
-    )
+    // As `load_active's runtime.
+    let runtime = super::runtime::current_runtime();
+    if runtime.is_null() {
+        return Some(Err(super::lisp::native_ice(
+            "active loader has no active runtime",
+        )));
+    }
+    // SAFETY: as `load_active's.
+    Some(unsafe { register_with_state(runtime, interpreter, environment, arguments, kind) })
 }
 
 /// `call_active_function' for the usual callee, a lexical function of
@@ -1236,17 +1298,26 @@ pub(crate) fn call_active_function(
     arguments: &[Value],
 ) -> Option<Result<Value, LispError>> {
     let function = descriptor(native);
-    super::runtime::with_current_runtime(|runtime| {
-        check_arity(native, function, arguments.len())?;
-        invoke_function(
-            function,
-            native,
-            runtime,
-            interpreter,
-            environment,
-            arguments,
-        )
-    })
+    // As `load_active's runtime: the call's specbinds run watchers.
+    let runtime = super::runtime::current_runtime();
+    if runtime.is_null() {
+        return None;
+    }
+    Some(
+        check_arity(native, function, arguments.len()).and_then(|()| {
+            // SAFETY: as `load_active's.
+            unsafe {
+                invoke_function(
+                    function,
+                    native,
+                    runtime,
+                    interpreter,
+                    environment,
+                    arguments,
+                )
+            }
+        }),
+    )
 }
 
 pub(crate) fn call_function(
@@ -1260,28 +1331,37 @@ pub(crate) fn call_function(
     let function = descriptor(native);
     check_arity(native, function, arguments.len())?;
     with_native_state(compiler, runtime, |runtime| {
-        invoke_function(
-            function,
-            native,
-            runtime,
-            interpreter,
-            environment,
-            arguments,
-        )
+        // SAFETY: the registered runtime, live for the body; no reference
+        // to it is live here.
+        unsafe {
+            invoke_function(
+                function,
+                native,
+                runtime,
+                interpreter,
+                environment,
+                arguments,
+            )
+        }
     })
 }
 
+/// # Safety
+///
+/// RUNTIME is live, with no reference made from it live in the caller.
 #[inline]
-fn invoke_function(
+unsafe fn invoke_function(
     function: NativeFunction,
     native: NativeFunctionRef,
-    runtime: &mut NativeRuntime,
+    runtime: *mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
     arguments: &[Value],
 ) -> Result<Value, LispError> {
     if !function.dynamic {
-        return runtime.invoke(
+        // SAFETY: the caller's; the call's record is made from this
+        // reference, so everything under it is its child.
+        return unsafe { &mut *runtime }.invoke(
             interpreter,
             environment,
             function.target,
@@ -1289,22 +1369,31 @@ fn invoke_function(
             arguments,
         );
     }
-    invoke_dynamic_function(
-        function,
-        native,
-        runtime,
-        interpreter,
-        environment,
-        arguments,
-    )
+    // SAFETY: the caller's.
+    unsafe {
+        invoke_dynamic_function(
+            function,
+            native,
+            runtime,
+            interpreter,
+            environment,
+            arguments,
+        )
+    }
 }
 
-/// `invoke_function' for a function compiled with dynamic binding.
+/// `invoke_function' for a function compiled with dynamic binding.  The
+/// bindings and their undoing run watchers, Lisp: the runtime is reached
+/// through RUNTIME for the call alone.
+///
+/// # Safety
+///
+/// As `invoke_function's.
 #[inline(never)]
-fn invoke_dynamic_function(
+unsafe fn invoke_dynamic_function(
     function: NativeFunction,
     native: NativeFunctionRef,
-    runtime: &mut NativeRuntime,
+    runtime: *mut NativeRuntime,
     interpreter: &mut Interpreter,
     environment: &mut Env,
     arguments: &[Value],
@@ -1380,7 +1469,8 @@ fn invoke_dynamic_function(
     })();
 
     let result = match setup {
-        Ok(()) => runtime.invoke(
+        // SAFETY: as `invoke_function's call.
+        Ok(()) => unsafe { &mut *runtime }.invoke(
             interpreter,
             environment,
             function.target,

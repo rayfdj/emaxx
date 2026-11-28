@@ -332,7 +332,9 @@ pub(crate) fn invoke_suspension_probe(interpreter: &mut Interpreter) -> Result<V
     );
     let result =
         super::super::loader::with_native_state(&state.compiler, &mut state.runtime, |runtime| {
-            runtime.invoke(
+            // SAFETY: the registered runtime, live for the body; the call
+            // is made through a reference made for it.
+            unsafe { &mut *runtime }.invoke(
                 interpreter,
                 &mut Env::new(),
                 probe as *const c_void,
