@@ -67,7 +67,10 @@ fn thread_suspension_and_signals_match_gnu_with_real_native_code() {
 /// function of the full path; and one for lisp.h:maybe_gc in the
 /// evaluator's frames under native code's funcall of an interpreted and
 /// of a byte-compiled allocator, whose collections' post-gc-hook parks
-/// the thread.
+/// the thread; and one for eval.c:unwind_to_catch and
+/// comp.c:helper_unbind_n from native code, an unwind-protect's native
+/// cleanup calling native code that parks the thread, after a normal
+/// exit and past a signal.
 /// The collector's verifier is on in each editor's environment; GNU
 /// reads no such variable.
 #[test]
@@ -117,6 +120,12 @@ fn native_helpers_go_on_after_their_callee_parks_the_thread() {
             include_str!("fixtures/thread-native-collect-hook-yield.el"),
             None,
             "(t t t ((((5000 after) t) 20) (((5000 after) t) 20)) t)\n",
+        ),
+        (
+            "unwind-cleanup-yield",
+            include_str!("fixtures/thread-native-unwind-cleanup-yield.el"),
+            None,
+            "(t t ((1 (caught listp 1)) (2 (caught listp 2)) 10) (1 2 11 12))\n",
         ),
     ];
     run_cases("native-helper-yield", &cases, true);
