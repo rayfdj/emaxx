@@ -1050,7 +1050,17 @@ fn maybe_gc_active(interpreter: &mut Interpreter, environment: &mut Env) {
     }
     // SAFETY: a non-null active call is live for its synchronous extent,
     // which contains this one.
-    let record = unsafe { &*active };
+    collect_naming(unsafe { &*active }, interpreter, environment);
+}
+
+/// `maybe_gc_active's collection, the record naming INTERPRETER and
+/// ENVIRONMENT while it runs.  Out of line, as alloc.c:garbage_collect is:
+/// inlined in the evaluator's hot frames, the naming moved their blocks,
+/// and alignment no-ops came to lie on the path every form takes
+/// (interp-to-native +22.0, conses +26.0 an iteration).
+#[cold]
+#[inline(never)]
+fn collect_naming(record: &ActiveCall, interpreter: &mut Interpreter, environment: &mut Env) {
     // Another interpreter's call (only a test makes one, see
     // `native_calls_are_all'): the collection is that call's, as it stands.
     let own = std::ptr::eq(record.interpreter.get(), interpreter);
