@@ -1397,8 +1397,14 @@ const SPARE_HANDLERS: usize = 16;
 /// changing threads updates that cell, not the machine code's relocation.
 pub(crate) struct NativeSharedState {
     heap: NativeHeap,
-    thread_pointer: Box<*mut NativeThreadState>,
-    link_table: Box<[*mut c_void]>,
+    /// comp.c's `&current_thread': the cell every loaded unit's
+    /// current_thread_reloc holds, owned by that pointer (StateOwner) and
+    /// written through it, as `thread' is owned by the pointer in the cell.
+    thread_pointer: crate::lisp::eval::StateOwner<*mut NativeThreadState>,
+    /// comp.c's freloc.link_table: lent to the units and written only
+    /// through `Vec::as_mut_ptr', which makes no reference to the entries,
+    /// so that every unit's pointer and every write are of one pointer.
+    link_table: Vec<*mut c_void>,
     linked_code: bool,
     suspended_stacks: suspension::SuspendedNativeStacks,
 }
@@ -1409,7 +1415,7 @@ impl Drop for NativeSharedState {
             // Only the final shared owner runs this, after native frames have
             // ended. Empty parked/default shells have no attached code.
             crate::lisp::alloc::vectors::close_native_units_for_runtime(
-                std::ptr::from_mut(&mut *self.thread_pointer).cast(),
+                self.thread_pointer.as_ptr().cast(),
             );
         }
     }
@@ -1569,12 +1575,12 @@ struct NativeRootRange {
 impl Default for NativeRuntime {
     fn default() -> Self {
         let thread = crate::lisp::eval::StateOwner::new(NativeThreadState::default());
-        let thread_pointer = Box::new(thread.as_ptr());
+        let thread_pointer = crate::lisp::eval::StateOwner::new(thread.as_ptr());
         Self {
             shared: Some(crate::lisp::eval::StateOwner::new(NativeSharedState {
                 heap: NativeHeap::new(),
                 thread_pointer,
-                link_table: runtime_link_table().into_boxed_slice(),
+                link_table: runtime_link_table(),
                 linked_code: false,
                 suspended_stacks: suspension::SuspendedNativeStacks::default(),
             })),
@@ -1830,7 +1836,7 @@ impl NativeRuntime {
     }
 
     pub(crate) fn current_thread_relocation_address(&self) -> *const c_void {
-        std::ptr::from_ref(&*self.thread_pointer).cast()
+        self.thread_pointer.as_ptr().cast_const().cast()
     }
 
     pub(crate) fn current_thread_relocation(&mut self) -> *mut c_void {
@@ -1838,7 +1844,7 @@ impl NativeRuntime {
         // into this stable runtime cell. This is a host clone constraint,
         // not an object registry or a GC root.
         self.linked_code = true;
-        (&mut *self.thread_pointer as *mut *mut NativeThreadState).cast()
+        self.thread_pointer.as_ptr().cast()
     }
 
     pub(crate) fn pure_relocation(&self) -> *mut c_void {
@@ -1858,11 +1864,13 @@ impl NativeRuntime {
         let slot = HELPER_COUNT
             .checked_add(subroutine_index)
             .ok_or_else(|| "native trampoline link-table index overflow".to_string())?;
-        let entry = self
-            .link_table
-            .get_mut(slot)
-            .ok_or_else(|| "native trampoline subroutine is outside the runtime ABI".to_string())?;
-        *entry = target;
+        if slot >= self.link_table.len() {
+            return Err("native trampoline subroutine is outside the runtime ABI".to_string());
+        }
+        // SAFETY: SLOT is in the table, whose buffer never moves (it never
+        // grows); written in place through the pointer the units hold, as
+        // comp.c writes freloc.link_table.
+        unsafe { self.link_table.as_mut_ptr().add(slot).write(target) };
         Ok(())
     }
 
