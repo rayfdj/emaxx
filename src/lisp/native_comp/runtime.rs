@@ -1368,7 +1368,12 @@ pub(crate) struct NativeRuntime {
     /// move between shells at a thread switch.  A Box would be borrowed
     /// anew at each `DerefMut' and retagged at each move.
     shared: Option<crate::lisp::eval::StateOwner<NativeSharedState>>,
-    thread: Box<NativeThreadState>,
+    /// Owned by its allocation's raw pointer, which is the one generated
+    /// code is given (`activate_thread'), as GNU's current_thread is the
+    /// one pointer C and generated code reach the thread through: every
+    /// reference made here for a statement is made from it.  Through a
+    /// Box, each such reference would end the pointer generated code holds.
+    thread: crate::lisp::eval::StateOwner<NativeThreadState>,
     handlers: Vec<HandlerEntry>,
     /// The innermost handler's record, null for none: what the thread's
     /// handler list points to while the two agree.
@@ -1563,8 +1568,8 @@ struct NativeRootRange {
 
 impl Default for NativeRuntime {
     fn default() -> Self {
-        let mut thread = Box::<NativeThreadState>::default();
-        let thread_pointer = Box::new((&mut *thread) as *mut NativeThreadState);
+        let thread = crate::lisp::eval::StateOwner::new(NativeThreadState::default());
+        let thread_pointer = Box::new(thread.as_ptr());
         Self {
             shared: Some(crate::lisp::eval::StateOwner::new(NativeSharedState {
                 heap: NativeHeap::new(),
@@ -1605,9 +1610,10 @@ impl NativeRuntime {
             && self.heap.is_empty()
     }
 
+    /// thread.c's `current_thread = self': this shell's thread state is
+    /// the one the loaded units' current_thread_reloc reaches.
     fn activate_thread(&mut self) {
-        let thread = std::ptr::from_mut(&mut *self.thread);
-        *self.thread_pointer = thread;
+        *self.thread_pointer = self.thread.as_ptr();
     }
 
     /// The record of a call made now from INTERPRETER, left through
@@ -10956,8 +10962,8 @@ mod tests {
         let frame = first.new_call_frame(invocation.jump_buffer(), &interpreter);
         first.begin_call(&frame);
         let first_frame = std::ptr::from_ref(&frame);
-        let first_thread = std::ptr::from_mut(&mut *first.thread);
-        let second_thread = std::ptr::from_mut(&mut *second.thread);
+        let first_thread = first.thread.as_ptr();
+        let second_thread = second.thread.as_ptr();
         assert_ne!(first_thread, second_thread);
 
         let heap = first.heap_pointer();

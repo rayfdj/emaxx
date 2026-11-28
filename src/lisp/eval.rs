@@ -6760,8 +6760,8 @@ pub struct Interpreter {
 /// and every reference into the allocation is made from that one pointer,
 /// as is any place of it another module publishes (`as_ptr').  Only its
 /// final Drop restores the Box.  It owns the editor state
-/// (`InterpreterStateOwner') and the native runtime's shared state
-/// (native_comp/runtime.rs), for the same reason.
+/// (`InterpreterStateOwner') and the native runtime's shared state and
+/// thread state (native_comp/runtime.rs), for the same reason.
 ///
 /// The editor state: the root registry and suspended continuations retain
 /// raw pointers into it, and its Drop comes after execution and borrowed
