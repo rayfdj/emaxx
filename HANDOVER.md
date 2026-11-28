@@ -284,6 +284,9 @@ Rust 1.100.0, with GNU 30.2 on this host as the oracle.
   Round 405: the trace latch read where an error is traced and
   Ffuncall's exit taking the record its callee just tested; a `mapc'
   callback 315.7 against 288.9.
+  Round 407: the byte-code loop's state is its own, as
+  exec_byte_code's locals are; a `mapc' callback 298.7 against 288.9,
+  every probe lower.
 
 ## Where things stand — 15 October 2026
 
@@ -22236,6 +22239,89 @@ setup_process_coding_systems's check now refuses). A 13-form
   native call active on the thread is the collector's, and two in tests
   that read the interpreter through the record's pointer) and one
   process spawned, the new test's child.
+- **Round 407: the byte-code loop's state is its own, as
+  exec_byte_code's locals are (M2, D17, the plan of the call paths; none
+  closed).**  **GNU**: exec_byte_code keeps the program, pc, the quit
+  counter and the bases of its frames and handlers as its own locals,
+  and a callee reaches none of them.  **Before**: the caller from Rust
+  built a record of that state, the verified loop unpacked it at its
+  head, and the helpers the loop calls took it with the interpreter and
+  the environment.  **Now**: the state (the program, pc, the count of
+  frames an operation's error leaves, the quit counter, the frames' and
+  handlers' bases) lives in the loop's own frame; the helpers take a
+  record of three words (the interpreter, the environment and the
+  state's address) that none of them writes; and the loop hands its
+  state out and back, when it leaves an activation for the outer loop to
+  resume, through one record that is its last parameter.  Four forms
+  were measured before this one: the state owned by the loop as a form
+  of two rounds ago kept it (the bases stored three times, the
+  interpreter and environment spilled; 316.7), separate locals (the
+  state's padding copied; 315.7), the bases in the state but the program
+  outside it (a `&rest' callback 17 more at the resume), and this one.
+  The frame's room test as one compare of a 32-bit depth was built and
+  dropped (a `mapc' callback 292.7, but byte code to a subr and
+  `process-name' each 4 more, a spill and three reloads in a path none
+  of the change runs), as were the map loop's parameters in a function
+  of its own (no gain).  **Counts** (before = round 405's build,
+  instructions): a byte-compiled `mapc' callback 315.7 to 298.7 (GNU
+  288.9), of `mapatoms' 316.4 to 299.4 (298.9), of `maphash' 317.9 to
+  300.9 (291.1), a closure called by `mapatoms' 435.3 to 417.3 (458.6),
+  a dynamic-binding `mapc' callback 903.7 to 892.7 (871.9), a `&rest'
+  one 1,019.2 to 1,005.2 (889.7), native `funcall' of byte code 433.1 to
+  418.1 (316.0), the lexical recursion 349.1 to 343.1 (314.9), the
+  dynamic one 626.1 to 617.1 (636.2), byte code to a subr 337.6 to 331.7
+  (339.0), `process-name' 387.6 to 381.7 (371.0), byte code to native
+  324.6 to 317.7 (337.0), `mapc' of a subr 195.7 to 191.7 (178.9), the
+  loop's base 100.6 to 98.7.  No probe rose.  The loop's code is 504
+  bytes larger (the copies at the resume and the exits, alignment,
+  address computations); the cache simulation shows no instruction-cache
+  miss on any probe, before or after.  **What is left** of the `mapc'
+  callback's 9.8: Ffuncall's part is level with GNU's; the loop's entry
+  is 4 over exec_byte_code's (its room test 8 instructions against 2,
+  the state's stores at entry 8, the helpers' record 5, against GNU's
+  stack protector and own locals), and the map loop 5 over mapcar1's (a
+  name and the environment passed on the stack).  **Lisp sees nothing
+  change.**  **The independent review** (the one question: does the
+  round cheat or break something) compared GNU 30.2 and the builds
+  before and after on six programs byte-compiled by GNU (signals, throws
+  and quits out of nested activations with the outer loop going on; the
+  debugger at entry and at exit in calls and callbacks; `aset' of a
+  caller's code string and of one two frames below; the stack's overflow
+  at an entry from C and between byte-code frames; collections in
+  callbacks; `mapc', `mapcar', `maphash', `mapatoms', `apply', `sort''s
+  predicate, `mapconcat', a timer and a process filter; threads parked
+  in `thread-yield', a mutex, a condition variable and `sleep-for' and
+  signalled while parked; dynamic, `&optional' and `&rest' callees;
+  signalling operations under `condition-case' and `handler-bind'), with
+  and without the collector's verifier: the same answers, threads'
+  shared traces apart, whose order changes from run to run in GNU
+  itself.  It read every way out of the loop, found the state handed out
+  and back always the resuming activation's and no path reaching it
+  twice, recompiled the new test's byte code in GNU, saw the tests fail
+  under mutations of the frames' base, pc, the program and the state
+  kept after a resume, and measured the figures above.  It found the
+  handlers' base at a resume guarded by no test (a mutation of it passes
+  every test, though a program of its own shows it, `(outer (300) 2)'
+  for GNU's `(outer (300) 1)'); a test of it is the next call-path
+  round's first commit.
+  Validation of the round's commits, recreated on round 406 with changes
+  identical to the reviewed branch's (the same patch identifier), in the
+  gate profile with one test thread a process: the grouped gate 3,717
+  passed, 1 failed, 2 ignored, the failure the performance runner's own
+  test `interpreter_workload_validates_all_cases_and_sample_counts',
+  which has failed before under load at the runner's check that each
+  sample's time is positive (an open question to the owner), and passed
+  three times of three alone; cli 30, cli_parity 196, ert_runner 3,
+  native_comp_identity 1, native_thread_continuations 4,
+  package_lifecycle 5, runtime_ownership 7 and runtime_forgotten_handle
+  1; the doctests, three passing and three that must fail to compile;
+  the harness's own tests 59; clippy `-D warnings' and rustfmt clean.
+  The implementer's run of the library at one test thread and at four:
+  every group passed, one at four threads only when run alone, the
+  memory limit having stopped it beside another worktree's tests.  The
+  round audit reports no hard finding, 574 changed lines with 1 test and
+  5 assertions added; its one note is the entry's debug assertion,
+  rewritten on the entry program with the same two conditions.
 - **Round 367 is unfinished: its draft is packaged in `wip/r367/`, and
   `src/` is round 366's.**  The subject is the finding below that `nil'
   and `t' are symbols to eval_sub.  `wip/r367/impl.patch` is the change
@@ -26027,6 +26113,17 @@ ert-tests as a whole 26,307 ms against 27,211.
   The first acceptance was in round 396's run: GNU's side timed out.
 
 **Findings recorded, not fixed:**
+- **Found after the scope lock (round 407 and its review), within the
+  plan's later stages or outside the round.**  One line each: no test
+  guards the handlers' base the loop takes back at a resume (the next
+  round's first commit); the test of a frame deeper than 2^32 words
+  checks the `error' condition and not its message; GNU 30.2 crashes on
+  a byte-code function whose stack depth is `most-positive-fixnum' (a
+  pointer sum overflows), where Emaxx signals the overflow; four
+  byte-code library tests fail outside the gate's layout, where GNU's
+  Lisp files are not found on the expected path; a gate run at four test
+  threads was killed by the memory limit while another worktree's test
+  binary of 4.2 GB ran beside it.
 - **Found after the scope lock (round 406 and its review), within the
   plan's later stages or outside the round.**  One line each, the next
   round's first: the collection trampoline (`maybe_gc' from the
